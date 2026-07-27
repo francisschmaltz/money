@@ -40,13 +40,23 @@ export function completedWeeklyPeriods(asOf = new Date()) {
 }
 
 export function inferBalanceGroup(account = {}) {
-  const override = canonicalBalanceGroup(account.balance_group_override);
-  if (override) return override;
-  const effective = canonicalBalanceGroup(account.balance_group);
-  if (effective) return effective;
-
   const type = normalizedAccountLabel(account.type);
   const subtype = normalizedAccountLabel(account.subtype);
+  const override = canonicalBalanceGroup(account.balance_group_override);
+  const effective = canonicalBalanceGroup(account.balance_group);
+  const retirementIdentity =
+    isRetirementSubtype(subtype) || effective === "retirement";
+  const requestedGroup = override ?? effective;
+  if (
+    retirementIdentity &&
+    ["cash", "taxable_investment"].includes(requestedGroup)
+  ) {
+    return "retirement";
+  }
+  if (override) return override;
+  if (effective) return effective;
+  if (retirementIdentity) return "retirement";
+
   const liability =
     Boolean(account.is_liability) ||
     type === "credit" ||
@@ -562,7 +572,7 @@ export function buildSpendingSummary({
       direction:
         total === previousTotal ? "flat" : total > previousTotal ? "up" : "down",
     },
-    transaction_count: current.length,
+    transaction_count: uniqueSpendingTransactionCount(current),
     segments,
     series,
   };
@@ -577,12 +587,26 @@ function groupSpendingTransactions(transactions, groupBy) {
         : groupBy === "merchant"
           ? transaction.merchant_name ?? transaction.name ?? "Unknown"
           : transaction.account_name ?? "Account";
-    const entry = grouped.get(key) ?? { amount: 0, count: 0 };
+    const entry = grouped.get(key) ?? {
+      amount: 0,
+      transactionIds: new Set(),
+    };
     entry.amount += -transaction.amount_minor;
-    entry.count += 1;
+    entry.transactionIds.add(spendingTransactionIdentity(transaction));
+    entry.count = entry.transactionIds.size;
     grouped.set(key, entry);
   }
   return grouped;
+}
+
+function uniqueSpendingTransactionCount(transactions) {
+  return new Set(
+    transactions.map(spendingTransactionIdentity),
+  ).size;
+}
+
+function spendingTransactionIdentity(transaction) {
+  return transaction.split_parent_id ?? transaction.id ?? transaction;
 }
 
 export function buildCashFlow({

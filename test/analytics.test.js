@@ -100,7 +100,9 @@ test("refunds reduce spending while payroll is income and transfers stay exclude
     currency,
   });
   assert.equal(spending.total.amount_minor, 8_000);
+  assert.equal(spending.transaction_count, 2);
   assert.equal(spending.segments[0].amount.amount_minor, 8_000);
+  assert.equal(spending.segments[0].count, 2);
   assert.equal(spending.series.length, 31);
   assert.equal(spending.series[18].value.amount_minor, 0);
   assert.equal(spending.series[19].value.amount_minor, 10_000);

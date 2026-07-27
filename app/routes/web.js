@@ -595,18 +595,18 @@ export function formatMoney(value, { sign = false } = {}) {
 
 function pageMeta(pathname) {
   const pages = {
-    "/": ["Dashboard", "A clear view of what changed and what deserves attention."],
-    "/plan": ["Plan", "Turn today’s balances into decisions the family can actually make."],
-    "/insights": ["Insights", "What to change next—and the evidence behind it."],
-    "/transactions": ["Transactions", "Every account, charge, deposit, and adjustment in one ledger."],
-    "/recurring": ["Recurring", "Subscriptions, bills, and the charges quietly becoming habits."],
-    "/portfolio": ["Portfolio", "Performance, contributions, and allocation without the investment-bro fog."],
-    "/credit": ["Credit", "Manual score tracking, limits, balances, and utilization across the household."],
-    "/accounts": ["Accounts", "Balances and connection health across every institution."],
-    "/search": ["Search", "Find transactions, accounts, recurring charges, assets, and insights."],
-    "/settings": ["Settings", "Connections, transaction cleanup, classifications, and access."],
+    "/": "Dashboard",
+    "/plan": "Plan",
+    "/insights": "Insights",
+    "/transactions": "Transactions",
+    "/recurring": "Recurring",
+    "/portfolio": "Portfolio",
+    "/credit": "Credit",
+    "/accounts": "Accounts",
+    "/search": "Search",
+    "/settings": "Settings",
   };
-  return pages[pathname] || ["Money", ""];
+  return pages[pathname] || "Money";
 }
 
 function viewerFromRequest(request, fallback) {
@@ -683,17 +683,21 @@ export function createWebRouter({
   });
 
   async function renderPage(req, res, view) {
-    const [pageTitle, pageDescription] = pageMeta(req.path);
+    const pageTitle = pageMeta(req.path);
     const planning =
-      (view === "dashboard" || view === "plan") &&
-      typeof planningService?.getPlanningOverview === "function"
-        ? await planningService.getPlanningOverview({
-            month_on:
-              /^\d{4}-\d{2}$/.test(String(req.query.month ?? ""))
-                ? `${req.query.month}-01`
-                : req.query.month,
-          })
-        : null;
+      view === "dashboard" &&
+      typeof planningService?.getSafeToSpend === "function"
+        ? {
+            safeToSpend: (
+              await planningService.getSafeToSpend()
+            ).data,
+          }
+        : view === "plan" &&
+            typeof planningService?.getPlanningOverview === "function"
+          ? await planningService.getPlanningOverview({
+              month_on: null,
+            })
+          : null;
     const serviceModel =
       view === "plan"
         ? planning
@@ -703,6 +707,7 @@ export function createWebRouter({
               req.query,
               demo,
               financeService,
+              planningService,
             )
           : await financeService?.getPageData?.(view, req);
     if (!demoMode && view !== "plan") {
@@ -716,13 +721,38 @@ export function createWebRouter({
     }
     if (
       view === "transactions" &&
-      serviceModel?.selectedTransaction?.id &&
-      typeof planningService?.getTransactionSplit === "function"
+      serviceModel?.selectedTransaction?.id
     ) {
-      const split = await planningService.getTransactionSplit({
-        transaction_id: serviceModel.selectedTransaction.id,
-      });
-      serviceModel.selectedTransactionSplits = split.lines;
+      const transactionId = serviceModel.selectedTransaction.id;
+      const [split, goalSpending, safeToSpend] = await Promise.all([
+        typeof planningService?.getTransactionSplit === "function"
+          ? planningService.getTransactionSplit({
+              transaction_id: transactionId,
+            })
+          : null,
+        typeof planningService?.getTransactionGoalSpending === "function"
+          ? planningService.getTransactionGoalSpending({
+              transaction_id: transactionId,
+            }).catch((error) => {
+              if (Number(error?.statusCode ?? error?.status) === 404) {
+                return null;
+              }
+              throw error;
+            })
+          : null,
+        typeof planningService?.getSafeToSpend === "function"
+          ? planningService.getSafeToSpend()
+          : null,
+      ]);
+      if (split) {
+        serviceModel.selectedTransactionSplits = split.lines;
+        serviceModel.selectedTransactionSplitVersion =
+          split.split_version;
+      }
+      serviceModel.selectedTransactionGoalSpending =
+        goalSpending?.data ?? null;
+      serviceModel.selectedTransactionGoals =
+        safeToSpend?.data?.goals ?? [];
     }
     if (view === "dashboard" && serviceModel?.hasAccounts === false) {
       res.render("states/empty", {
@@ -743,7 +773,6 @@ export function createWebRouter({
           (demoMode ? demo.viewer : emptyViewer()),
       ),
       pageTitle,
-      pageDescription,
       activePath: req.path,
     });
   }
@@ -813,7 +842,7 @@ export function createWebRouter({
         }
       }
 
-      const [pageTitle, pageDescription] = pageMeta("/search");
+      const pageTitle = pageMeta("/search");
       res.status(statusCode).render("search", {
         ...(demoMode ? demo : {}),
         viewer: viewerFromRequest(
@@ -821,7 +850,6 @@ export function createWebRouter({
           demoMode ? demo.viewer : emptyViewer(),
         ),
         pageTitle,
-        pageDescription,
         activePath: "/search",
         searchQuery: request.query,
         searchEntityType: request.entityType,
@@ -1083,7 +1111,92 @@ async function demoTransactionsFromService(demo, financeService) {
   ];
 }
 
-async function demoPageModel(view, query, demo, financeService = null) {
+async function demoCategorySplitProjection(
+  transactions,
+  category,
+  planningService,
+) {
+  const splitRecords = await Promise.all(
+    transactions.map(async (transaction) => [
+      transaction,
+      await planningService.getTransactionSplit({
+        transaction_id: transaction.id,
+      }),
+    ]),
+  );
+  return {
+    transactions: splitRecords.flatMap(([transaction, split]) => {
+      const grouped = validDemoSplitGroups(
+        transaction,
+        split?.lines,
+      );
+      if (!grouped) {
+        return transaction.category === category ? [transaction] : [];
+      }
+      const matching = grouped.get(category);
+      if (!matching) return [];
+      return [{
+        ...transaction,
+        category,
+        amount: {
+          amount_minor: matching.amount_minor,
+          currency: transaction.amount.currency,
+        },
+        providerAmount:
+          transaction.providerAmount ?? transaction.amount,
+        isSplitCategoryProjection: true,
+        splitCategoryLineCount: matching.line_count,
+        splitVersion: Number(split?.split_version ?? 0),
+      }];
+    }),
+  };
+}
+
+function validDemoSplitGroups(transaction, lines) {
+  const providerAmount = Number(transaction.amount?.amount_minor);
+  if (
+    transaction.status !== "posted" ||
+    transaction.amount?.currency !== "USD" ||
+    !Number.isSafeInteger(providerAmount) ||
+    providerAmount === 0 ||
+    !Array.isArray(lines) ||
+    lines.length < 2
+  ) {
+    return null;
+  }
+  const groups = new Map();
+  let total = 0;
+  for (const line of lines) {
+    const amount = Number(line?.amount_minor);
+    const category = String(line?.category ?? "").trim();
+    if (
+      !Number.isSafeInteger(amount) ||
+      amount === 0 ||
+      Math.sign(amount) !== Math.sign(providerAmount) ||
+      !category
+    ) {
+      return null;
+    }
+    total += amount;
+    if (!Number.isSafeInteger(total)) return null;
+    const existing = groups.get(category) ?? {
+      amount_minor: 0,
+      line_count: 0,
+    };
+    existing.amount_minor += amount;
+    existing.line_count += 1;
+    groups.set(category, existing);
+  }
+  return total === providerAmount ? groups : null;
+}
+
+async function demoPageModel(
+  view,
+  query,
+  demo,
+  financeService = null,
+  planningService = null,
+) {
   if (view === "settings") {
     const listedRules =
       typeof financeService?.listTransactionCleanupRules === "function"
@@ -1125,14 +1238,27 @@ async function demoPageModel(view, query, demo, financeService = null) {
   if (view === "transactions") {
     const currentTransactions =
       await demoTransactionsFromService(demo, financeService);
+    const splitProjection =
+      query.category &&
+      typeof planningService?.getTransactionSplit === "function"
+        ? await demoCategorySplitProjection(
+            currentTransactions,
+            query.category,
+            planningService,
+          )
+        : null;
+    const categoryTransactions =
+      splitProjection?.transactions ?? currentTransactions;
     const normalized = String(query.q ?? "").trim().toLowerCase();
-    const filtered = currentTransactions.filter(
+    const filtered = categoryTransactions.filter(
       (transaction) =>
         (!normalized ||
           `${transaction.merchant} ${transaction.category} ${transaction.account}`
             .toLowerCase()
             .includes(normalized)) &&
-        (!query.category || transaction.category === query.category) &&
+        (!query.category ||
+          splitProjection ||
+          transaction.category === query.category) &&
         (!query.account ||
           transaction.accountId === query.account ||
           demo.accounts.some(
@@ -1151,9 +1277,15 @@ async function demoPageModel(view, query, demo, financeService = null) {
         ? demoCategorySpendingModel(selectedCategory, demo)
         : {}),
       selectedTransaction:
-        currentTransactions.find(
+        filtered.find(
           (transaction) => transaction.id === query.transaction,
-        ) ?? null,
+        ) ??
+        (!query.category
+          ? currentTransactions.find(
+              (transaction) => transaction.id === query.transaction,
+            )
+          : null) ??
+        null,
     };
   }
   if (view === "recurring") {
@@ -1210,18 +1342,14 @@ async function demoPageModel(view, query, demo, financeService = null) {
     };
   }
   if (view === "credit") {
-    const periodName = ["1w", "1m", "1y", "all"].includes(query.period)
-      ? query.period
+    const requestedPeriod = query.period ?? query.score_period;
+    const periodName = ["1w", "1m", "1y", "all"].includes(requestedPeriod)
+      ? requestedPeriod
       : "1m";
-    const scorePeriod = ["1m", "1y", "all"].includes(
-      query.score_period,
-    )
-      ? query.score_period
-      : "1y";
     const scoreResult =
       typeof financeService?.getCreditScoreSummary === "function"
         ? await financeService.getCreditScoreSummary({
-            period: scorePeriod,
+            period: periodName,
             currentUserId: "demo-user",
           })
         : null;
@@ -1229,7 +1357,7 @@ async function demoPageModel(view, query, demo, financeService = null) {
       creditData: demo.creditHistories[periodName],
       creditScoreData:
         scoreResult?.data ??
-        (scorePeriod === "1y"
+        (periodName === "1y"
           ? demo.creditScoreData
           : buildCreditScoreSummary({
               members: demo.creditScoreData.people.map((person) => ({
@@ -1256,7 +1384,7 @@ async function demoPageModel(view, query, demo, financeService = null) {
                   })),
               ),
               currentOn: "2026-07-26",
-              period: scorePeriod,
+              period: periodName,
               currentUserId: "demo-user",
             })),
       creditScorePresets: CREDIT_SCORE_PRESETS,

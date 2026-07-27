@@ -56,7 +56,7 @@ authorization failure.
 {"period":"1y"}
 ```
 
-`period` may be `1m`, `1y`, or `all`; the default is `1y`. The result uses the
+`period` may be `1w`, `1m`, `1y`, or `all`; the default is `1y`. The result uses the
 `credit_score` finance-card kind and retains the existing 20 KB envelope cap.
 It includes manual provenance, bureau/model labels, current observation dates,
 stale state, calculation methodology, and no more than 80 historical points.

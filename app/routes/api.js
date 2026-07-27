@@ -346,8 +346,8 @@ export function createApiRouter({
     "/api/v1/credit-scores",
     (request, response, next) => {
       const period = stringValue(request.query.period, 8) || "1y";
-      if (!["1m", "1y", "all"].includes(period)) {
-        invalidRequest(response, "period must be 1m, 1y, or all.");
+      if (!["1w", "1m", "1y", "all"].includes(period)) {
+        invalidRequest(response, "period must be 1w, 1m, 1y, or all.");
         return;
       }
       invoke(
@@ -383,9 +383,13 @@ export function createApiRouter({
         planningService,
         "listFinanceGoals",
         {
-          include_archived: booleanValue(
-            request.query.include_archived,
-          ),
+          status: stringValue(request.query.status, 16),
+          purpose: stringValue(request.query.purpose, 16),
+          limit: integerValue(request.query.limit, {
+            minimum: 1,
+            maximum: 8,
+          }),
+          cursor: stringValue(request.query.cursor, 128),
         },
         response,
         next,
@@ -494,14 +498,14 @@ export function createApiRouter({
     },
   );
 
-  router.delete(
-    "/api/v1/plan/goals/:goalId",
+  router.post(
+    "/api/v1/plan/goals/:goalId/finish",
     requireCsrf,
     (request, response, next) => {
       invokePlanWrite(
         planningService,
-        "archive_finance_goal",
-        "archiveFinanceGoal",
+        "finish_finance_goal",
+        "finishFinanceGoal",
         {
           ...(request.body ?? {}),
           goal_id: request.params.goalId,
@@ -514,7 +518,7 @@ export function createApiRouter({
   );
 
   router.put(
-    "/api/v1/plan/budget/:monthOn/:category",
+    "/api/v1/plan/budget/:category",
     requireCsrf,
     (request, response, next) => {
       invokePlanWrite(
@@ -523,7 +527,6 @@ export function createApiRouter({
         "setCategoryBudget",
         {
           ...(request.body ?? {}),
-          month_on: request.params.monthOn,
           category: request.params.category,
         },
         request.user,
@@ -534,16 +537,15 @@ export function createApiRouter({
   );
 
   router.post(
-    "/api/v1/plan/budget/:monthOn/copy",
+    "/api/v1/plan/budget",
     requireCsrf,
     (request, response, next) => {
       invokePlanWrite(
         planningService,
-        "copy_budget_month",
-        "copyBudgetMonth",
+        "set_category_budget",
+        "setCategoryBudget",
         {
           ...(request.body ?? {}),
-          month_on: request.params.monthOn,
         },
         request.user,
         response,
@@ -563,6 +565,61 @@ export function createApiRouter({
         {
           ...(request.body ?? {}),
           transaction_id: request.params.transactionId,
+        },
+        request.user,
+        response,
+        next,
+      );
+    },
+  );
+
+  router.get(
+    "/api/v1/transactions/:transactionId/goal-spends",
+    (request, response, next) => {
+      invoke(
+        planningService,
+        "getTransactionGoalSpending",
+        {
+          transaction_id: request.params.transactionId,
+        },
+        response,
+        next,
+      );
+    },
+  );
+
+  router.post(
+    "/api/v1/transactions/:transactionId/goal-spends",
+    requireCsrf,
+    (request, response, next) => {
+      invokePlanWrite(
+        planningService,
+        "spend_from_finance_goal",
+        "spendFromFinanceGoal",
+        {
+          ...(request.body ?? {}),
+          transaction_id: request.params.transactionId,
+        },
+        request.user,
+        response,
+        next,
+        201,
+      );
+    },
+  );
+
+  router.delete(
+    "/api/v1/transactions/:transactionId/goal-spends/:goalSpendId",
+    requireCsrf,
+    (request, response, next) => {
+      invokePlanWrite(
+        planningService,
+        "reverse_goal_spend",
+        "reverseGoalSpend",
+        {
+          ...(request.body ?? {}),
+          transaction_id: request.params.transactionId,
+          goal_spend_id: request.params.goalSpendId,
         },
         request.user,
         response,

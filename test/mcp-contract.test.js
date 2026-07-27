@@ -1,13 +1,18 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
   FINANCE_CARD_SCHEMA,
   FINANCE_CARD_VERSION,
   FINANCE_CARD_KIND_BY_TOOL,
+  FINANCE_MCP_INSTRUCTIONS,
   FINANCE_OPEN_WEBUI_TOOL_ID,
   FINANCE_TOOL_KIND_MAP,
+  FINANCE_TOOL_NAMES,
   MAX_FINANCE_ENVELOPE_BYTES,
+  PLANNING_READ_TOOL_NAMES,
+  PLANNING_WRITE_TOOL_NAMES,
   FinanceMcpError,
   assertCanonicalJsonCopy,
   assertFinanceToolResult,
@@ -22,6 +27,43 @@ import {
 } from "../app/mcp/index.js";
 
 const NOW = new Date("2026-07-27T01:02:03.000Z");
+const README = readFileSync(
+  new URL("../README.md", import.meta.url),
+  "utf8",
+);
+
+test("README MCP table matches the tools exposed by each credential", () => {
+  const table = README.match(
+    /<!-- mcp-tool-table:start -->([\s\S]*?)<!-- mcp-tool-table:end -->/,
+  );
+  assert.ok(table, "README must contain the bounded MCP tool table.");
+
+  const documented = [...table[1].matchAll(
+    /^\| `([^`]+)` \| [^|]+ \| `([^`]+)` \|/gm,
+  )].map((match) => ({
+    access: match[1],
+    name: match[2],
+  }));
+  const expected = [
+    ...FINANCE_TOOL_NAMES.map((name) => ({ access: "read", name })),
+    ...PLANNING_READ_TOOL_NAMES.map((name) => ({
+      access: "read",
+      name,
+    })),
+    ...PLANNING_WRITE_TOOL_NAMES.map((name) => ({
+      access: "plan:write",
+      name,
+    })),
+  ];
+
+  assert.deepEqual(documented, expected);
+  assert.match(
+    README,
+    new RegExp(
+      `Fifteen read tools plus nine audited planning-write MCP tools`,
+    ),
+  );
+});
 
 test("exports stable bare and Open WebUI-prefixed tool-to-kind mappings", () => {
   assert.equal(
@@ -41,6 +83,26 @@ test("exports stable bare and Open WebUI-prefixed tool-to-kind mappings", () => 
     FINANCE_CARD_KIND_BY_TOOL.money_get_portfolio_summary,
     "portfolio",
   );
+  assert.equal(
+    FINANCE_CARD_KIND_BY_TOOL.money_get_transaction_goal_spending,
+    "goals",
+  );
+  assert.equal(
+    FINANCE_CARD_KIND_BY_TOOL.money_spend_from_finance_goal,
+    "plan_change",
+  );
+  assert.equal(
+    FINANCE_CARD_KIND_BY_TOOL.money_reverse_goal_spend,
+    "plan_change",
+  );
+  assert.equal(
+    FINANCE_CARD_KIND_BY_TOOL.money_finish_finance_goal,
+    "plan_change",
+  );
+  assert.equal(
+    financeCardKindForTool("archive_finance_goal"),
+    undefined,
+  );
   assert.equal(FINANCE_OPEN_WEBUI_TOOL_ID, "server:mcp:money");
   assert.deepEqual(Object.keys(FINANCE_TOOL_KIND_MAP), [
     "get_finance_overview",
@@ -54,6 +116,90 @@ test("exports stable bare and Open WebUI-prefixed tool-to-kind mappings", () => 
     "get_portfolio_summary",
     "get_credit_score_summary",
   ]);
+});
+
+test("MCP instructions forbid guessed optimistic versions", () => {
+  assert.match(
+    FINANCE_MCP_INSTRUCTIONS,
+    /read the current resource, pass its exact version as expected_version, and never guess or reuse a stale version/i,
+  );
+  assert.match(
+    FINANCE_MCP_INSTRUCTIONS,
+    /goal overspending never creates fake spending power/i,
+  );
+});
+
+test("goal write schemas preserve purpose and finish outcome", () => {
+  assert.deepEqual(
+    parseFinanceToolInput("create_finance_goal", {
+      name: "Family vacation",
+      target_amount_minor: 500_000,
+      idempotency_key: "family-vacation-create",
+    }),
+    {
+      name: "Family vacation",
+      purpose: "other",
+      target_amount_minor: 500_000,
+      idempotency_key: "family-vacation-create",
+    },
+  );
+  assert.equal(
+    parseFinanceToolInput("update_finance_goal", {
+      goal_id: "goal-vacation",
+      expected_version: 2,
+      purpose: "vacation",
+      idempotency_key: "family-vacation-purpose",
+    }).purpose,
+    "vacation",
+  );
+  assert.equal(
+    parseFinanceToolInput("finish_finance_goal", {
+      goal_id: "goal-vacation",
+      expected_version: 3,
+      idempotency_key: "family-vacation-finish",
+    }).outcome,
+    "completed",
+  );
+  assert.throws(
+    () =>
+      parseFinanceToolInput("finish_finance_goal", {
+        goal_id: "goal-vacation",
+        expected_version: 3,
+        outcome: "sort-of-done",
+        idempotency_key: "family-vacation-finish-nope",
+      }),
+  );
+});
+
+test("goal history reads are filtered and hard-bounded", () => {
+  assert.deepEqual(parseFinanceToolInput("list_finance_goals", {}), {
+    limit: 8,
+  });
+  assert.deepEqual(
+    parseFinanceToolInput("list_finance_goals", {
+      status: "archived",
+      purpose: "vacation",
+      limit: 4,
+      cursor: "goal.eyJ2IjoxfQ",
+    }),
+    {
+      status: "archived",
+      purpose: "vacation",
+      limit: 4,
+      cursor: "goal.eyJ2IjoxfQ",
+    },
+  );
+  assert.throws(() =>
+    parseFinanceToolInput("list_finance_goals", {
+      status: "all",
+      limit: 9,
+    }),
+  );
+  assert.throws(() =>
+    parseFinanceToolInput("list_finance_goals", {
+      include_archived: true,
+    }),
+  );
 });
 
 test("canonical JSON sorts keys recursively and compares by JSON value", () => {
@@ -393,6 +539,7 @@ test("allows nullable optional dates and date-only series timestamps", () => {
             date: "2026-07-26",
             authorized_at: null,
             amount: { amount_minor: -500, currency: "USD" },
+            split_version: 3,
           },
         ],
         series: [
@@ -405,6 +552,26 @@ test("allows nullable optional dates and date-only series timestamps", () => {
     },
   });
   assert.equal(envelope.data.transactions[0].authorized_at, null);
+  assert.equal(envelope.data.transactions[0].split_version, 3);
+});
+
+test("plan-change envelopes preserve returned optimistic versions", () => {
+  const envelope = createFinanceEnvelope({
+    kind: "plan_change",
+    generatedAt: NOW,
+    serviceResult: {
+      data: {
+        changed: {
+          after: { version: 4, split_version: 7 },
+          split_version: 7,
+        },
+      },
+    },
+  });
+
+  assert.equal(envelope.data.changed.after.version, 4);
+  assert.equal(envelope.data.changed.after.split_version, 7);
+  assert.equal(envelope.data.changed.split_version, 7);
 });
 
 test("creates exactly two text blocks with an identical canonical compatibility copy", () => {
@@ -475,6 +642,150 @@ test("input schemas apply defaults, bounds, strict keys, and range ordering", ()
   assert.throws(
     () => parseFinanceToolInput("list_accounts", { surprise: true }),
     /Unrecognized key/i,
+  );
+  assert.deepEqual(
+    parseFinanceToolInput("set_category_budget", {
+      category: "Dining",
+      amount_minor: 40_000,
+      expected_version: 0,
+      idempotency_key: "budget-dining-v1",
+    }),
+    {
+      category: "Dining",
+      amount_minor: 40_000,
+      expected_version: 0,
+      idempotency_key: "budget-dining-v1",
+    },
+  );
+  assert.deepEqual(
+    parseFinanceToolInput("split_transaction", {
+      transaction_id: "transaction-1",
+      expected_version: 2,
+      lines: [],
+      idempotency_key: "split-clear-v2",
+    }),
+    {
+      transaction_id: "transaction-1",
+      expected_version: 2,
+      lines: [],
+      idempotency_key: "split-clear-v2",
+    },
+  );
+  assert.deepEqual(
+    parseFinanceToolInput("get_transaction_goal_spending", {
+      transaction_id: "transaction-1",
+    }),
+    {
+      transaction_id: "transaction-1",
+    },
+  );
+  assert.deepEqual(
+    parseFinanceToolInput("spend_from_finance_goal", {
+      transaction_id: "transaction-1",
+      goal_id: "goal-house",
+      source: "cash",
+      amount_minor: 25_000,
+      expected_goal_version: 4,
+      expected_transaction_version: 2,
+      idempotency_key: "goal-spend-transaction-1-v2",
+    }),
+    {
+      transaction_id: "transaction-1",
+      goal_id: "goal-house",
+      source: "cash",
+      amount_minor: 25_000,
+      expected_goal_version: 4,
+      expected_transaction_version: 2,
+      idempotency_key: "goal-spend-transaction-1-v2",
+    },
+  );
+  assert.deepEqual(
+    parseFinanceToolInput("reverse_goal_spend", {
+      transaction_id: "transaction-1",
+      goal_spend_id: "goal-spend-1",
+      expected_goal_version: 5,
+      expected_transaction_version: 3,
+      idempotency_key: "goal-spend-reverse-transaction-1-v3",
+    }),
+    {
+      transaction_id: "transaction-1",
+      goal_spend_id: "goal-spend-1",
+      expected_goal_version: 5,
+      expected_transaction_version: 3,
+      idempotency_key: "goal-spend-reverse-transaction-1-v3",
+    },
+  );
+  assert.throws(
+    () =>
+      parseFinanceToolInput("set_category_budget", {
+        category: "Dining",
+        amount_minor: 40_000,
+        idempotency_key: "budget-dining-v1",
+      }),
+    /expected_version/i,
+  );
+  for (const legacyField of [
+    ["scope", "standing"],
+    ["month_on", "2026-07-01"],
+    ["effective_month_on", "2026-08-01"],
+  ]) {
+    assert.throws(
+      () =>
+        parseFinanceToolInput("set_category_budget", {
+          category: "Dining",
+          amount_minor: 40_000,
+          expected_version: 0,
+          idempotency_key: "budget-dining-v1",
+          [legacyField[0]]: legacyField[1],
+        }),
+      /Unrecognized key/i,
+    );
+  }
+  assert.throws(
+    () =>
+      parseFinanceToolInput("split_transaction", {
+        transaction_id: "transaction-1",
+        expected_version: -1,
+        lines: [],
+        idempotency_key: "split-clear-v2",
+      }),
+    /greater than or equal to 0|too small/i,
+  );
+  assert.throws(
+    () =>
+      parseFinanceToolInput("spend_from_finance_goal", {
+        transaction_id: "transaction-1",
+        goal_id: "goal-house",
+        source: "cash",
+        amount_minor: 25_000,
+        expected_goal_version: 4,
+        idempotency_key: "goal-spend-transaction-1-v2",
+      }),
+    /expected_transaction_version/i,
+  );
+  assert.throws(
+    () =>
+      parseFinanceToolInput("reverse_goal_spend", {
+        transaction_id: "transaction-1",
+        goal_spend_id: "goal-spend-1",
+        expected_goal_version: 5,
+        expected_transaction_version: -1,
+        idempotency_key: "goal-spend-reverse-transaction-1-v3",
+      }),
+    /greater than or equal to 0|too small/i,
+  );
+  assert.throws(
+    () =>
+      parseFinanceToolInput("set_goal_funding_schedule", {
+        goal_id: "goal-house",
+        expected_version: 1,
+        source: "cash",
+        cadence: "biweekly_friday",
+        amount_minor: 10_000,
+        anchor_on: "2026-07-30",
+        idempotency_key: "schedule-house-2026-07-27",
+      }),
+    /Friday/i,
   );
 });
 

@@ -27,6 +27,7 @@ import {
   buildCreditScoreSummary,
   CREDIT_SCORE_PRESETS,
 } from "./creditScoreTracking.js";
+import { expandTransactionsWithSplits } from "./planningAnalytics.js";
 
 const CATEGORY_COLORS = [
   "#2fa94f",
@@ -79,6 +80,7 @@ export class FinanceService {
     const [
       currentAccounts,
       transactions,
+      transactionSplits,
       holdings,
       recurringStreams,
       repositoryFreshness,
@@ -91,6 +93,16 @@ export class FinanceService {
         startOn: periods.current.start_on,
         endOn: periods.current.end_on,
       }),
+      optionalRepositoryCall(
+        this.#repository,
+        "listTransactionSplits",
+        [],
+        this.#workspaceId,
+        {
+          startOn: periods.current.start_on,
+          endOn: periods.current.end_on,
+        },
+      ),
       historical
         ? []
         : this.#repository.getHoldings(this.#workspaceId),
@@ -136,7 +148,10 @@ export class FinanceService {
     );
     const data = buildOverview({
       accounts,
-      transactions,
+      transactions: expandTransactionsWithSplits(
+        transactions,
+        transactionSplits,
+      ),
       holdings,
       recurringStreams,
       manualAssets,
@@ -519,17 +534,33 @@ export class FinanceService {
       12,
       30,
     );
-    const [transactions, freshness] = await Promise.all([
+    const splitAware =
+      typeof this.#repository.listTransactionSplits === "function";
+    const [transactions, splits, freshness] = await Promise.all([
       this.#repository.getTransactionsForPeriod(this.#workspaceId, {
         startOn: previous.start_on,
         endOn: current.end_on,
         accountId,
-        category,
+        category: splitAware ? null : category,
       }),
+      optionalRepositoryCall(
+        this.#repository,
+        "listTransactionSplits",
+        [],
+        this.#workspaceId,
+        {
+          startOn: previous.start_on,
+          endOn: current.end_on,
+        },
+      ),
       this.#repository.getDataFreshness(this.#workspaceId),
     ]);
     const data = buildSpendingSummary({
-      transactions,
+      transactions: expandAndFilterTransactions(
+        transactions,
+        splits,
+        splitAware ? category : null,
+      ),
       currentPeriod: current,
       previousPeriod: previous,
       groupBy,
@@ -565,18 +596,34 @@ export class FinanceService {
     const accountId = options.accountId ?? options.account_id ?? null;
     const category = options.category ?? null;
     const search = options.search ?? options.query ?? null;
-    const [transactions, freshness] = await Promise.all([
+    const splitAware =
+      typeof this.#repository.listTransactionSplits === "function";
+    const [transactions, splits, freshness] = await Promise.all([
       this.#repository.getTransactionsForPeriod(this.#workspaceId, {
         startOn: current.start_on,
         endOn: current.end_on,
         accountId,
-        category,
+        category: splitAware ? null : category,
         search,
       }),
+      optionalRepositoryCall(
+        this.#repository,
+        "listTransactionSplits",
+        [],
+        this.#workspaceId,
+        {
+          startOn: current.start_on,
+          endOn: current.end_on,
+        },
+      ),
       this.#repository.getDataFreshness(this.#workspaceId),
     ]);
     const data = buildCashFlow({
-      transactions,
+      transactions: expandAndFilterTransactions(
+        transactions,
+        splits,
+        splitAware ? category : null,
+      ),
       period: current,
       interval,
       currency: this.#currency,
@@ -1442,7 +1489,7 @@ export class FinanceService {
   async getCreditScoreSummary(options = {}) {
     const now = this.#now();
     const currentOn = dateOnly(now);
-    const period = ["1m", "1y", "all"].includes(options.period)
+    const period = ["1w", "1m", "1y", "all"].includes(options.period)
       ? options.period
       : "1y";
     const [members, sources, observations] = await Promise.all([
@@ -1488,7 +1535,7 @@ export class FinanceService {
       warnings: data.warnings.map((warning) => warning.message),
       title: "Tracked credit scores",
       subtitle: data.period.label,
-      path: `/credit?score_period=${data.period.name}`,
+      path: `/credit?period=${data.period.name}`,
       summary:
         score == null
           ? "No manually tracked credit scores have been entered. This tracking metric is not a lender or underwriting score."
@@ -1811,6 +1858,8 @@ export class FinanceService {
       };
     }
     if (view === "transactions") {
+      const splitAware =
+        typeof this.#repository.listTransactionSplits === "function";
       const periods =
         query.start && query.end
           ? resolvePeriod(
@@ -1841,6 +1890,7 @@ export class FinanceService {
       const [
         page,
         analysisTransactions,
+        analysisSplits,
         accounts,
         observedCategories,
         selectedTransaction,
@@ -1861,8 +1911,18 @@ export class FinanceService {
               startOn: previousPeriod.start_on,
               endOn: periods.end_on,
               accountId: query.account,
-              category: query.category,
+              category: splitAware ? null : query.category,
               search: query.q,
+            },
+          ),
+          optionalRepositoryCall(
+            this.#repository,
+            "listTransactionSplits",
+            [],
+            this.#workspaceId,
+            {
+              startOn: previousPeriod.start_on,
+              endOn: periods.end_on,
             },
           ),
           this.listAccounts({ limit: 100 }),
@@ -1875,18 +1935,31 @@ export class FinanceService {
             : null,
         ]);
       const cashFlow = buildCashFlow({
-        transactions: analysisTransactions,
+        transactions: expandAndFilterTransactions(
+          analysisTransactions,
+          analysisSplits,
+          splitAware ? query.category : null,
+        ),
         period: periods,
         interval: query.period === "90" ? "week" : "day",
         currency: this.#currency,
       });
       const spending = buildSpendingSummary({
-        transactions: analysisTransactions,
+        transactions: expandAndFilterTransactions(
+          analysisTransactions,
+          analysisSplits,
+          splitAware ? query.category : null,
+        ),
         currentPeriod: periods,
         previousPeriod,
         groupBy: "category",
         currency: this.#currency,
       });
+      const selectedLedgerTransaction = query.transaction
+        ? page.data.transactions.find(
+            (transaction) => transaction.id === query.transaction,
+          )
+        : null;
       return {
         ...base,
         transactions: page.data.transactions.map(webTransaction),
@@ -1895,9 +1968,11 @@ export class FinanceService {
         spendingDetails: webSpendingDetails(spending),
         accounts: flattenAccountGroups(accounts.data.groups).map(webAccount),
         categories: transactionCategoryOptions(observedCategories),
-        selectedTransaction: selectedTransaction
-          ? webTransaction(transactionCard(selectedTransaction))
-          : null,
+        selectedTransaction: selectedLedgerTransaction
+          ? webTransaction(selectedLedgerTransaction)
+          : selectedTransaction
+            ? webTransaction(transactionCard(selectedTransaction))
+            : null,
       };
     }
     if (view === "recurring") {
@@ -1934,12 +2009,16 @@ export class FinanceService {
       };
     }
     if (view === "credit") {
+      const requestedPeriod = query.period ?? query.score_period;
+      const period = ["1w", "1m", "1y", "all"].includes(requestedPeriod)
+        ? requestedPeriod
+        : "1m";
       const [credit, creditScores] = await Promise.all([
         this.getCreditSummary({
-          period: query.period ?? "1m",
+          period,
         }),
         this.getCreditScoreSummary({
-          period: query.score_period ?? "1y",
+          period,
           currentUserId: request.user?.id ?? null,
         }),
       ]);
@@ -2249,9 +2328,20 @@ function transactionCard(transaction) {
       institution: transaction.institution_name,
     },
     amount: money(transaction.amount_minor, transaction.currency_code),
+    provider_amount: money(
+      transaction.provider_amount_minor ?? transaction.amount_minor,
+      transaction.currency_code,
+    ),
+    is_split_category_projection: Boolean(
+      transaction.is_split_category_projection,
+    ),
+    split_category_line_count: Number(
+      transaction.split_category_line_count ?? 0,
+    ),
     pending: transaction.pending,
     excluded_from_spending: Boolean(transaction.excluded_from_spending),
     is_fixed: Boolean(transaction.is_fixed),
+    split_version: Number(transaction.split_version ?? 0),
   };
 }
 
@@ -2434,6 +2524,39 @@ async function optionalRepositoryCall(
 ) {
   if (typeof repository[method] !== "function") return fallback;
   return (await repository[method](...args)) ?? fallback;
+}
+
+function expandAndFilterTransactions(
+  transactions,
+  splits,
+  category = null,
+) {
+  const expanded = expandTransactionsWithSplits(
+    transactions,
+    splits,
+  );
+  if (!category) return expanded;
+  const filtered = expanded.filter(
+    (transaction) => transaction.category_primary === category,
+  );
+  const collapsed = new Map();
+  for (const transaction of filtered) {
+    if (!transaction.split_parent_id) {
+      collapsed.set(`transaction:${transaction.id}`, transaction);
+      continue;
+    }
+    const key = `split:${transaction.split_parent_id}`;
+    const existing = collapsed.get(key);
+    if (existing) {
+      existing.amount_minor += transaction.amount_minor;
+      continue;
+    }
+    collapsed.set(key, {
+      ...transaction,
+      id: transaction.split_parent_id,
+    });
+  }
+  return [...collapsed.values()];
 }
 
 function parseAsOf(value, fallback) {
@@ -3125,10 +3248,19 @@ function webTransaction(transaction) {
     category: transaction.category ?? "Uncategorized",
     account: transaction.account.name,
     amount: transaction.amount,
+    providerAmount:
+      transaction.provider_amount ?? transaction.amount,
+    isSplitCategoryProjection: Boolean(
+      transaction.is_split_category_projection,
+    ),
+    splitCategoryLineCount: Number(
+      transaction.split_category_line_count ?? 0,
+    ),
     date: transaction.date,
     status: transaction.pending ? "pending" : "posted",
     excludedFromSpending: transaction.excluded_from_spending,
     isFixed: transaction.is_fixed,
+    splitVersion: Number(transaction.split_version ?? 0),
     icon: categoryIcon(transaction.category),
   };
 }

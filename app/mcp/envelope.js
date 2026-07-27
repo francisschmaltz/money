@@ -29,12 +29,12 @@ const KIND_DISPLAY = Object.freeze({
   portfolio: { title: "Portfolio", path: "/portfolio" },
   credit_score: {
     title: "Tracked credit scores",
-    path: "/credit?score_period=1y",
+    path: "/credit?period=1y",
   },
   safe_to_spend: { title: "Safe to Spend", path: "/plan" },
   goals: { title: "Finance goals", path: "/plan#goals" },
   budget: { title: "Monthly budget", path: "/plan#budget" },
-  scenario: { title: "Finance plan scenario", path: "/plan#scenario" },
+  scenario: { title: "Finance plan scenario", path: "/plan#goals" },
   plan_change: { title: "Plan change", path: "/plan" },
 });
 

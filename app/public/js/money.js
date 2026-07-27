@@ -2758,6 +2758,41 @@
     if (!forms.length) return;
     const csrfToken =
       document.querySelector('meta[name="csrf-token"]')?.content || "";
+    const goalDialogOpeners = document.querySelectorAll(
+      "[data-goal-dialog-open]",
+    );
+    const goalDialogOpenersByDialog = new WeakMap();
+
+    goalDialogOpeners.forEach((opener) => {
+      opener.addEventListener("click", () => {
+        const dialog = document.getElementById(
+          opener.dataset.goalDialogTarget || "",
+        );
+        if (!(dialog instanceof HTMLDialogElement)) return;
+        goalDialogOpenersByDialog.set(dialog, opener);
+        dialog.showModal();
+        dialog.querySelector("[data-goal-dialog-initial-focus]")?.focus();
+      });
+    });
+
+    document.querySelectorAll("[data-goal-dialog]").forEach((dialog) => {
+      dialog
+        .querySelectorAll("[data-goal-dialog-close]")
+        .forEach((button) =>
+          button.addEventListener("click", () => dialog.close()),
+        );
+      dialog.addEventListener("click", (event) => {
+        if (event.target === dialog) dialog.close();
+      });
+      dialog.addEventListener("close", () => {
+        dialog.querySelectorAll("form").forEach((form) => {
+          form.reset();
+          const status = form.querySelector("[data-plan-status]");
+          if (status) status.textContent = "";
+        });
+        goalDialogOpenersByDialog.get(dialog)?.focus();
+      });
+    });
 
     const minorUnits = (value) => {
       const normalized = String(value ?? "")
@@ -2775,10 +2810,25 @@
       return amount;
     };
 
+    const idempotencyKeyFor = (form) => {
+      const key =
+        form.dataset.idempotencyKey ||
+        (window.crypto?.randomUUID?.() ??
+          `web-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+      form.dataset.idempotencyKey = key;
+      return key;
+    };
+
     const payloadFor = (form, submitter) => {
       if (form.dataset.transactionSplit !== undefined) {
         if (submitter?.dataset.clearSplit !== undefined) {
-          return { lines: [] };
+          return {
+            lines: [],
+            expected_version: Number(
+              form.elements.namedItem("expected_version")?.value ?? 0,
+            ),
+            idempotency_key: idempotencyKeyFor(form),
+          };
         }
         const sign = Math.sign(Number(form.dataset.sourceAmount)) || 1;
         return {
@@ -2790,6 +2840,10 @@
                 minorUnits(line.querySelector("[data-split-amount]").value),
             }),
           ),
+          expected_version: Number(
+            form.elements.namedItem("expected_version")?.value ?? 0,
+          ),
+          idempotency_key: idempotencyKeyFor(form),
         };
       }
       const payload = Object.fromEntries(new FormData(form));
@@ -2805,24 +2859,48 @@
           delete payload[key];
         }
       }
-      if (
-        form.dataset.planScenario === undefined &&
-        (form.dataset.method || "POST") !== "GET"
-      ) {
-        payload.idempotency_key =
-          form.dataset.idempotencyKey ||
-          (window.crypto?.randomUUID?.() ??
-            `web-${Date.now()}-${Math.random().toString(16).slice(2)}`);
-        form.dataset.idempotencyKey = payload.idempotency_key;
+      if ((form.dataset.method || "POST") !== "GET") {
+        payload.idempotency_key = idempotencyKeyFor(form);
       }
       return payload;
     };
 
-    const moneyText = (money) =>
-      new Intl.NumberFormat("en-US", {
-        style: "currency",
-        currency: money?.currency || "USD",
-      }).format(Number(money?.amount_minor || 0) / 100);
+    document
+      .querySelectorAll("[data-goal-spend-form]")
+      .forEach((form) => {
+        const goalSelect = form.querySelector("[data-goal-spend-select]");
+        const sourceSelect = form.querySelector("[data-goal-spend-source]");
+        const versionInput = form.querySelector("[data-goal-spend-version]");
+        const syncGoalVersion = () => {
+          const option = goalSelect?.selectedOptions?.[0];
+          if (versionInput) {
+            versionInput.value = option?.dataset.goalVersion || "";
+          }
+          sourceSelect?.querySelectorAll("[data-source-label]").forEach(
+            (sourceOption) => {
+              const source = sourceOption.value;
+              const availableMinor = Number(
+                option?.dataset[
+                  source === "brokerage"
+                    ? "brokerageEarmarked"
+                    : "cashEarmarked"
+                ] || 0,
+              );
+              sourceOption.textContent = option?.value
+                ? `${sourceOption.dataset.sourceLabel} · ${new Intl.NumberFormat(
+                    "en-US",
+                    {
+                      style: "currency",
+                      currency: "USD",
+                    },
+                  ).format(availableMinor / 100)} earmarked · overspend allowed`
+                : `${sourceOption.dataset.sourceLabel} · overspend allowed`;
+            },
+          );
+        };
+        goalSelect?.addEventListener("change", syncGoalVersion);
+        syncGoalVersion();
+      });
 
     forms.forEach((form) => {
       form.addEventListener("submit", async (event) => {
@@ -2845,29 +2923,6 @@
           const body = await response.json().catch(() => ({}));
           if (!response.ok) {
             throw new Error(body.message || body.error || "The plan did not save.");
-          }
-          if (form.dataset.planScenario !== undefined) {
-            const scenario = body.data || {};
-            const result = document.querySelector(
-              "[data-plan-scenario-result]",
-            );
-            if (result) {
-              const timing =
-                scenario.months_to_target == null
-                  ? "These contributions do not reach the target."
-                  : scenario.months_to_target === 0
-                    ? "The goal is already funded under these assumptions."
-                    : `Funded in about ${scenario.months_to_target} months, around ${scenario.estimated_target_on}.`;
-              result.replaceChildren();
-              const heading = document.createElement("strong");
-              heading.textContent = scenario.goal_name || "Scenario";
-              const copy = document.createElement("p");
-              copy.textContent = `${timing} Brokerage after the modeled change: ${moneyText(scenario.shocked_brokerage_value)}.`;
-              result.append(heading, copy);
-            }
-            if (status) status.textContent = "Scenario updated";
-            if (submitter) submitter.disabled = false;
-            return;
           }
           if (status) status.textContent = body.title || "Saved";
           window.setTimeout(() => window.location.reload(), 250);

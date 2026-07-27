@@ -2,43 +2,163 @@
 <body data-page="plan">
   <%- include("partials/site-header", { activePath, viewer }) %>
   <%
-    const selectedMonth = budget.month_on;
-    const selectedMonthDate = new Date(`${selectedMonth}T00:00:00Z`);
-    const selectedMonthLabel = new Intl.DateTimeFormat("en-US", {
-      month: "long",
-      year: "numeric",
-      timeZone: "UTC",
-    }).format(selectedMonthDate);
-    const priorMonthDate = new Date(selectedMonthDate);
-    priorMonthDate.setUTCMonth(priorMonthDate.getUTCMonth() - 1);
-    const priorMonth = priorMonthDate.toISOString().slice(0, 7) + "-01";
+    const editBudget = String(query.edit_budget || "") === "1";
+    const budgetViewHref = "/plan#budget";
+    const budgetEditHref = "/plan?edit_budget=1#budget";
+    const priorBudget =
+      typeof previousBudget !== "undefined" && previousBudget
+        ? previousBudget
+        : {
+            lines: [],
+            actual_total: {
+              amount_minor: 0,
+              currency: budget.actual_total.currency,
+            },
+          };
+    const previousActualByCategory = new Map(
+      priorBudget.lines.map((line) => [line.category, line.actual]),
+    );
+    const zeroBudgetMoney = {
+      amount_minor: 0,
+      currency: budget.actual_total.currency,
+    };
+    const remainingStatus = (remaining) =>
+      remaining.amount_minor < 0
+        ? `${formatMoney({
+            amount_minor: Math.abs(remaining.amount_minor),
+            currency: remaining.currency,
+          })} over`
+        : remaining.amount_minor > 0
+          ? `${formatMoney(remaining)} under`
+          : "On budget";
+    const remainingClass = (remaining) =>
+      remaining.amount_minor < 0
+        ? "budget-status--over"
+        : remaining.amount_minor > 0
+          ? "budget-status--under"
+          : "budget-status--even";
     const percent = (basisPoints) =>
       `${Math.max(0, Number(basisPoints || 0) / 100).toFixed(0)}%`;
+    const progressValue = (basisPoints) =>
+      Math.max(
+        0,
+        Math.min(100, Number(basisPoints || 0) / 100),
+      ).toFixed(0);
+    const goalPurposes = [
+      ["vacation", "Vacation"],
+      ["home", "Home"],
+      ["vehicle", "Vehicle"],
+      ["education", "Education"],
+      ["emergency", "Emergency"],
+      ["event", "Event"],
+      ["purchase", "Purchase"],
+      ["other", "Other"],
+    ];
+    const goalPurposeLabels = new Map(goalPurposes);
+    const goalPurpose = (purpose) =>
+      goalPurposeLabels.has(purpose) ? purpose : "other";
+    const goalPurposeLabel = (purpose) =>
+      goalPurposeLabels.get(goalPurpose(purpose));
+    const goalMoney = (value, amountMinor = 0, currency = "USD") =>
+      value && Number.isFinite(Number(value.amount_minor))
+        ? value
+        : {
+            amount_minor: Number(amountMinor) || 0,
+            currency,
+          };
+    const goalPlanned = (goal) =>
+      goalMoney(
+        goal.planned,
+        goal.target_amount_minor,
+        goal.currency_code,
+      );
+    const goalActual = (goal) =>
+      goalMoney(
+        goal.actual,
+        goal.spent?.amount_minor,
+        goal.currency_code,
+      );
+    const goalPlanRemaining = (goal) =>
+      goalMoney(goal.plan_remaining, 0, goal.currency_code);
+    const goalUsageBasisPoints = (goal) => {
+      if (
+        goal.used_basis_points != null &&
+        Number.isFinite(Number(goal.used_basis_points))
+      ) {
+        return Math.max(0, Number(goal.used_basis_points));
+      }
+      return 0;
+    };
+    const goalUsagePercent = (goal) =>
+      `${(goalUsageBasisPoints(goal) / 100).toLocaleString(undefined, {
+        minimumFractionDigits: 0,
+        maximumFractionDigits: 1,
+      })}%`;
+    const goalOverAmount = (goal) => {
+      const overBy = goalMoney(goal.over_by, 0, goal.currency_code);
+      return {
+        ...overBy,
+        amount_minor: Math.max(0, overBy.amount_minor),
+      };
+    };
+    const goalUnusedAmount = (goal) => {
+      const remaining = goalPlanRemaining(goal);
+      return {
+        amount_minor: Math.max(0, remaining.amount_minor),
+        currency: remaining.currency || goal.currency_code || "USD",
+      };
+    };
+    const finishedGoals =
+      typeof archivedGoals !== "undefined" && Array.isArray(archivedGoals)
+        ? archivedGoals
+        : [];
+    const goalHistoryInsights =
+      typeof historyInsights !== "undefined" && Array.isArray(historyInsights)
+        ? historyInsights
+        : [];
+    const finishedDateLabel = (value) => {
+      if (!value) return "Finish date unavailable";
+      const date = new Date(value);
+      return Number.isNaN(date.getTime())
+        ? `Finished ${value}`
+        : `Finished ${date.toLocaleDateString(undefined, {
+            year: "numeric",
+            month: "short",
+            day: "numeric",
+          })}`;
+    };
+    const variancePercent = (basisPoints) => {
+      const value = Math.abs(Number(basisPoints) || 0) / 100;
+      return Number.isInteger(value) ? value.toFixed(0) : value.toFixed(1);
+    };
+    const historyInsightCopy = (insight) => {
+      if (insight.copy) return insight.copy;
+      if (insight.kind !== "purpose_actual_variance") return "";
+      const count = Number(insight.completed_goal_count) || 0;
+      const variance = Number(insight.median_actual_variance_basis_points) || 0;
+      const purpose = goalPurposeLabel(insight.purpose).toLowerCase();
+      if (count < 2) {
+        if (variance === 0) {
+          return `Your finished ${purpose} goal landed on plan.`;
+        }
+        return `Your finished ${purpose} goal was ${variancePercent(variance)}% ${variance > 0 ? "over" : "under"} plan.`;
+      }
+      if (variance === 0) {
+        return `You tend to land right on plan for ${purpose} goals.`;
+      }
+      return `You tend to spend ${variancePercent(variance)}% ${variance > 0 ? "more" : "less"} on ${purpose} goals than planned.`;
+    };
   %>
   <main class="page-shell">
     <%- include("partials/page-heading", {
       eyebrow: freshness ? `Balances through ${new Date(freshness).toLocaleString()}` : "Family plan",
       pageTitle,
-      pageDescription,
       actionLabel: "View accounts",
       actionHref: "/accounts",
       actionIcon: "ph-bank"
     }) %>
 
-    <section class="card plan-safe <%= safeToSpend.safe_to_spend.amount_minor < 0 ? 'plan-safe--negative' : '' %>" aria-labelledby="plan-safe-heading">
-      <div>
-        <p class="card-kicker">The daily number</p>
-        <h2 id="plan-safe-heading">Safe to Spend</h2>
-        <p class="display-money"><%= formatMoney(safeToSpend.safe_to_spend) %></p>
-        <p class="card-note"><%= safeToSpend.formula %></p>
-      </div>
-      <dl class="plan-math" aria-label="Safe to Spend calculation">
-        <div><dt>Liquid checking and savings</dt><dd><%= formatMoney(safeToSpend.liquid_cash) %></dd></div>
-        <div><dt>Positive current card balances</dt><dd>− <%= formatMoney(safeToSpend.current_card_liabilities) %></dd></div>
-        <div><dt>Cash-backed goal earmarks</dt><dd>− <%= formatMoney(safeToSpend.cash_goal_earmarks) %></dd></div>
-        <div class="plan-math__result"><dt>Safe to Spend</dt><dd><%= formatMoney(safeToSpend.safe_to_spend) %></dd></div>
-      </dl>
-    </section>
+    <%- include("partials/safe-to-spend-card", { safeToSpend }) %>
 
     <dl class="card plan-source-strip" aria-label="Taxable brokerage goal backing">
       <div><dt>Taxable brokerage</dt><dd><%= formatMoney(safeToSpend.taxable_brokerage_value) %></dd></div>
@@ -62,156 +182,388 @@
     <section id="goals" class="plan-section" aria-labelledby="goals-heading">
       <div class="section-heading">
         <div><p class="card-kicker">Shared household</p><h2 id="goals-heading">Goals</h2></div>
-        <p><%= goals.length %> active</p>
+        <div class="goal-section__actions">
+          <p><%= goals.length %> active</p>
+          <button
+            class="button button--dark"
+            type="button"
+            data-goal-dialog-open="create"
+            data-goal-dialog-target="goal-create-dialog"
+          >
+            <i class="ph ph-plus" aria-hidden="true"></i>
+            New goal
+          </button>
+        </div>
       </div>
       <div class="goal-grid">
-        <% goals.forEach((goal) => { const schedule = goal.schedules?.[0]; %>
+        <% goals.forEach((goal, goalIndex) => { const schedule = goal.schedules?.[0]; const usageBasisPoints = goalUsageBasisPoints(goal); const overAmount = goalOverAmount(goal); const overPlan = usageBasisPoints > 10_000 || overAmount.amount_minor > 0; const planBalance = goalUnusedAmount(goal); const unfundedSpend = goalMoney(goal.unfunded_spend, 0, goal.currency_code); %>
           <article class="card goal-card">
             <div class="goal-card__heading">
               <div>
                 <h3><%= goal.name %></h3>
-                <p><%= goal.target_on ? `Target ${goal.target_on}` : "No target date" %></p>
+                <p><%= goalPurposeLabel(goal.purpose) %> · <%= goal.target_on ? `Target ${goal.target_on}` : "No target date" %></p>
               </div>
-              <strong><%= percent(goal.progress_basis_points) %></strong>
+              <strong><%= percent(goal.progress_basis_points) %> funded</strong>
             </div>
-            <div class="plan-progress" aria-label="<%= goal.name %> funding progress">
+            <div
+              class="plan-progress"
+              role="progressbar"
+              aria-label="<%= goal.name %> funding progress"
+              aria-valuemin="0"
+              aria-valuemax="100"
+              aria-valuenow="<%= progressValue(goal.progress_basis_points) %>"
+            >
               <span style="width: <%= Math.min(100, goal.progress_basis_points / 100) %>%"></span>
             </div>
             <div class="goal-card__money">
               <strong><%= formatMoney(goal.funded) %></strong>
               <span>of <%= formatMoney({ amount_minor: goal.target_amount_minor, currency: goal.currency_code }) %></span>
             </div>
+            <dl class="goal-plan-summary" aria-label="<%= goal.name %> spending plan">
+              <div><dt>Planned</dt><dd><%= formatMoney(goalPlanned(goal)) %></dd></div>
+              <div><dt>Actual</dt><dd><%= formatMoney(goalActual(goal)) %></dd></div>
+              <div class="<%= overPlan ? 'goal-plan-summary__usage--over' : '' %>">
+                <dt>Usage</dt>
+                <dd><%= goalUsagePercent(goal) %></dd>
+              </div>
+              <div>
+                <dt>Remaining</dt>
+                <dd><%= formatMoney(planBalance) %></dd>
+              </div>
+            </dl>
+            <% if (overPlan) { %>
+              <p class="goal-plan-overage"><span>Over by</span><strong><%= formatMoney(overAmount) %></strong></p>
+            <% } %>
             <dl class="goal-composition">
               <div><dt>Cash</dt><dd><%= formatMoney(goal.cash_earmarked) %></dd></div>
               <div><dt>Brokerage earmark</dt><dd><%= formatMoney(goal.brokerage_earmarked) %></dd></div>
               <div><dt>Brokerage backed now</dt><dd><%= formatMoney(goal.brokerage_backed) %></dd></div>
+              <div><dt>Spent</dt><dd><%= formatMoney(goal.spent || { amount_minor: 0, currency: goal.currency_code }) %></dd></div>
               <div><dt>Still needed</dt><dd><%= formatMoney(goal.shortfall) %></dd></div>
+              <% if (unfundedSpend.amount_minor > 0) { %>
+                <div class="goal-composition__warning"><dt>Unfunded spending</dt><dd><%= formatMoney(unfundedSpend) %></dd></div>
+              <% } %>
+              <div>
+                <dt>Automatic funding</dt>
+                <dd>
+                  <% if (schedule) { %>
+                    <%= formatMoney({ amount_minor: schedule.amount_minor, currency: goal.currency_code }) %>
+                    <%= schedule.cadence === "biweekly_friday" ? "every other Friday" : `monthly on day ${schedule.monthly_day}` %><%= schedule.status === "paused" ? " · paused" : "" %>
+                  <% } else { %>
+                    Not set
+                  <% } %>
+                </dd>
+              </div>
             </dl>
 
-            <form class="plan-inline-form" data-plan-form data-plan-idempotent data-endpoint="/api/v1/plan/goals/<%= encodeURIComponent(goal.id) %>/allocations" data-method="POST">
-              <input type="hidden" name="expected_version" value="<%= goal.version %>">
-              <label>Move
-                <select name="direction"><option value="allocate">Allocate</option><option value="release">Release</option></select>
-              </label>
-              <label>From
-                <select name="source"><option value="cash">Cash</option><option value="brokerage">Brokerage</option></select>
-              </label>
-              <label>Amount
-                <span class="money-input"><span>$</span><input data-money-minor="amount_minor" inputmode="decimal" value="100.00" required></span>
-              </label>
-              <button class="button button--secondary" type="submit">Update funding</button>
-              <span class="form-status" data-plan-status aria-live="polite"></span>
-            </form>
+            <div class="goal-card__actions">
+              <button
+                class="button button--secondary"
+                type="button"
+                data-goal-dialog-open="edit"
+                data-goal-dialog-target="goal-edit-dialog-<%= goalIndex %>"
+                aria-label="Edit <%= goal.name %>"
+              >
+                <i class="ph ph-pencil-simple" aria-hidden="true"></i>
+                Edit
+              </button>
+              <button
+                class="button button--dark"
+                type="button"
+                data-goal-dialog-open="allocate"
+                data-goal-dialog-target="goal-allocate-dialog-<%= goalIndex %>"
+                aria-label="Move money for <%= goal.name %>"
+              >
+                <i class="ph ph-arrows-left-right" aria-hidden="true"></i>
+                Move money
+              </button>
+            </div>
+          </article>
 
-            <details class="plan-details">
-              <summary><i class="ph ph-calendar-dots"></i> <%= schedule ? "Edit automatic funding" : "Add automatic funding" %></summary>
-              <form class="plan-form-grid" data-plan-form data-endpoint="/api/v1/plan/goals/<%= encodeURIComponent(goal.id) %>/schedule" data-method="PUT">
-                <% if (schedule) { %><input type="hidden" name="schedule_id" value="<%= schedule.id %>"><% } %>
-                <input type="hidden" name="expected_version" value="<%= schedule?.version || 1 %>">
-                <label>Source
-                  <select name="source"><option value="cash" <%= schedule?.source === "cash" ? "selected" : "" %>>Cash</option><option value="brokerage" <%= schedule?.source === "brokerage" ? "selected" : "" %>>Brokerage</option></select>
-                </label>
-                <label>Cadence
-                  <select name="cadence"><option value="monthly" <%= schedule?.cadence === "monthly" ? "selected" : "" %>>Monthly</option><option value="biweekly_friday" <%= schedule?.cadence === "biweekly_friday" ? "selected" : "" %>>Every other Friday</option></select>
-                </label>
-                <label>Amount
-                  <span class="money-input"><span>$</span><input data-money-minor="amount_minor" inputmode="decimal" value="<%= ((schedule?.amount_minor || 10000) / 100).toFixed(2) %>" required></span>
-                </label>
-                <label>Monthly day
-                  <input name="monthly_day" type="number" min="1" max="31" value="<%= schedule?.monthly_day || 1 %>">
-                </label>
-                <label>Friday anchor
-                  <input name="anchor_on" type="date" value="<%= schedule?.anchor_on || "" %>">
-                </label>
-                <label>Status
-                  <select name="status"><option value="active" <%= schedule?.status !== "paused" ? "selected" : "" %>>Active</option><option value="paused" <%= schedule?.status === "paused" ? "selected" : "" %>>Paused</option></select>
-                </label>
-                <button class="button button--secondary" type="submit">Save schedule</button>
-                <span class="form-status" data-plan-status aria-live="polite"></span>
-              </form>
-            </details>
-            <details class="plan-details">
-              <summary><i class="ph ph-pencil-simple"></i> Edit goal</summary>
-              <form class="plan-form-grid" data-plan-form data-endpoint="/api/v1/plan/goals/<%= encodeURIComponent(goal.id) %>" data-method="PUT">
-                <input type="hidden" name="expected_version" value="<%= goal.version %>">
-                <label>Name<input name="name" maxlength="120" value="<%= goal.name %>" required></label>
-                <label>Target amount<span class="money-input"><span>$</span><input data-money-minor="target_amount_minor" inputmode="decimal" value="<%= (goal.target_amount_minor / 100).toFixed(2) %>" required></span></label>
-                <label>Target date <span class="optional">optional</span><input name="target_on" type="date" value="<%= goal.target_on || "" %>" data-null-when-empty></label>
-                <button class="button button--secondary" type="submit">Save goal</button>
-                <span class="form-status" data-plan-status aria-live="polite"></span>
-              </form>
-              <% if (goal.cash_earmarked.amount_minor === 0 && goal.brokerage_earmarked.amount_minor === 0) { %>
-                <form data-plan-form data-endpoint="/api/v1/plan/goals/<%= encodeURIComponent(goal.id) %>" data-method="DELETE">
+          <dialog
+            data-goal-dialog="edit"
+            id="goal-edit-dialog-<%= goalIndex %>"
+            class="plan-dialog"
+            aria-labelledby="goal-edit-dialog-title-<%= goalIndex %>"
+          >
+            <div class="plan-dialog__surface">
+              <header class="plan-dialog__heading">
+                <div>
+                  <p class="card-kicker">Goal settings</p>
+                  <h3 id="goal-edit-dialog-title-<%= goalIndex %>">Edit <%= goal.name %></h3>
+                </div>
+                <button class="icon-button" type="button" data-goal-dialog-close aria-label="Close edit goal">
+                  <i class="ph ph-x" aria-hidden="true"></i>
+                </button>
+              </header>
+              <div class="plan-dialog__scroll">
+                <form
+                  id="goal-edit-form-<%= goalIndex %>"
+                  class="plan-dialog__body plan-form-grid"
+                  data-plan-form
+                  data-endpoint="/api/v1/plan/goals/<%= encodeURIComponent(goal.id) %>"
+                  data-method="PUT"
+                >
                   <input type="hidden" name="expected_version" value="<%= goal.version %>">
-                  <button class="button button--ghost" type="submit">Archive goal</button>
+                  <label>Name<input name="name" maxlength="120" value="<%= goal.name %>" required data-goal-dialog-initial-focus></label>
+                  <label>Purpose
+                    <select name="purpose" required>
+                      <% goalPurposes.forEach(([value, label]) => { %>
+                        <option value="<%= value %>" <%= goalPurpose(goal.purpose) === value ? "selected" : "" %>><%= label %></option>
+                      <% }) %>
+                    </select>
+                  </label>
+                  <label>Target amount<span class="money-input"><span>$</span><input data-money-minor="target_amount_minor" inputmode="decimal" value="<%= (goal.target_amount_minor / 100).toFixed(2) %>" required></span></label>
+                  <label>Target date <span class="optional">optional</span><input name="target_on" type="date" value="<%= goal.target_on || "" %>" data-null-when-empty></label>
                   <span class="form-status" data-plan-status aria-live="polite"></span>
                 </form>
-              <% } else { %>
-                <p class="card-note">Release both earmarks before archiving.</p>
-              <% } %>
-            </details>
-          </article>
+                <details class="plan-dialog__schedule">
+                  <summary><i class="ph ph-calendar-dots" aria-hidden="true"></i> <%= schedule ? "Edit automatic funding" : "Add automatic funding" %></summary>
+                  <form class="plan-form-grid" data-plan-form data-endpoint="/api/v1/plan/goals/<%= encodeURIComponent(goal.id) %>/schedule" data-method="PUT">
+                    <% if (schedule) { %><input type="hidden" name="schedule_id" value="<%= schedule.id %>"><% } %>
+                    <input type="hidden" name="expected_version" value="<%= schedule?.version || 1 %>">
+                    <label>Source
+                      <select name="source"><option value="cash" <%= schedule?.source === "cash" ? "selected" : "" %>>Cash</option><option value="brokerage" <%= schedule?.source === "brokerage" ? "selected" : "" %>>Brokerage</option></select>
+                    </label>
+                    <label>Cadence
+                      <select name="cadence"><option value="monthly" <%= schedule?.cadence === "monthly" ? "selected" : "" %>>Monthly</option><option value="biweekly_friday" <%= schedule?.cadence === "biweekly_friday" ? "selected" : "" %>>Every other Friday</option></select>
+                    </label>
+                    <label>Amount
+                      <span class="money-input"><span>$</span><input data-money-minor="amount_minor" inputmode="decimal" value="<%= ((schedule?.amount_minor || 10000) / 100).toFixed(2) %>" required></span>
+                    </label>
+                    <label>Monthly day
+                      <input name="monthly_day" type="number" min="1" max="31" value="<%= schedule?.monthly_day || 1 %>">
+                    </label>
+                    <label>Friday anchor
+                      <input name="anchor_on" type="date" value="<%= schedule?.anchor_on || "" %>">
+                    </label>
+                    <label>Status
+                      <select name="status"><option value="active" <%= schedule?.status !== "paused" ? "selected" : "" %>>Active</option><option value="paused" <%= schedule?.status === "paused" ? "selected" : "" %>>Paused</option></select>
+                    </label>
+                    <button class="button button--secondary" type="submit">Save schedule</button>
+                    <span class="form-status" data-plan-status aria-live="polite"></span>
+                  </form>
+                </details>
+              </div>
+              <footer class="plan-dialog__footer">
+                <div class="plan-dialog__finish">
+                  <form data-plan-form data-endpoint="/api/v1/plan/goals/<%= encodeURIComponent(goal.id) %>/finish" data-method="POST">
+                    <input type="hidden" name="expected_version" value="<%= goal.version %>">
+                    <label>
+                      Outcome
+                      <select name="outcome" aria-label="Outcome for <%= goal.name %>">
+                        <option value="completed">Completed</option>
+                        <option value="cancelled">Cancelled</option>
+                      </select>
+                    </label>
+                    <button class="button button--ghost" type="submit">Finish goal</button>
+                    <span class="form-status" data-plan-status aria-live="polite"></span>
+                  </form>
+                </div>
+                <div class="plan-dialog__footer-actions">
+                  <button class="button button--secondary" type="button" data-goal-dialog-close>Cancel</button>
+                  <button class="button button--dark" type="submit" form="goal-edit-form-<%= goalIndex %>">Save goal</button>
+                </div>
+              </footer>
+            </div>
+          </dialog>
+
+          <dialog
+            data-goal-dialog="allocate"
+            id="goal-allocate-dialog-<%= goalIndex %>"
+            class="plan-dialog"
+            aria-labelledby="goal-allocate-dialog-title-<%= goalIndex %>"
+          >
+            <form
+              class="plan-dialog__surface"
+              data-plan-form
+              data-plan-idempotent
+              data-endpoint="/api/v1/plan/goals/<%= encodeURIComponent(goal.id) %>/allocations"
+              data-method="POST"
+            >
+              <header class="plan-dialog__heading">
+                <div>
+                  <p class="card-kicker">Goal funding</p>
+                  <h3 id="goal-allocate-dialog-title-<%= goalIndex %>">Move money for <%= goal.name %></h3>
+                </div>
+                <button class="icon-button" type="button" data-goal-dialog-close aria-label="Close goal funding">
+                  <i class="ph ph-x" aria-hidden="true"></i>
+                </button>
+              </header>
+              <div class="plan-dialog__body plan-form-grid">
+                <input type="hidden" name="expected_version" value="<%= goal.version %>">
+                <dl class="plan-dialog__funding-summary" aria-label="Current goal funding">
+                  <div><dt>Cash</dt><dd><%= formatMoney(goal.cash_earmarked) %></dd></div>
+                  <div><dt>Brokerage</dt><dd><%= formatMoney(goal.brokerage_earmarked) %></dd></div>
+                  <div><dt>Still needed</dt><dd><%= formatMoney(goal.shortfall) %></dd></div>
+                </dl>
+                <label>Move
+                  <select name="direction" data-goal-dialog-initial-focus><option value="allocate">Allocate</option><option value="release">Release</option></select>
+                </label>
+                <label>From
+                  <select name="source"><option value="cash">Cash</option><option value="brokerage">Brokerage</option></select>
+                </label>
+                <label>Amount
+                  <span class="money-input"><span>$</span><input data-money-minor="amount_minor" inputmode="decimal" value="100.00" required></span>
+                </label>
+              </div>
+              <footer class="plan-dialog__footer">
+                <span class="form-status" data-plan-status aria-live="polite"></span>
+                <div class="plan-dialog__footer-actions">
+                  <button class="button button--secondary" type="button" data-goal-dialog-close>Cancel</button>
+                  <button class="button button--dark" type="submit">Update funding</button>
+                </div>
+              </footer>
+            </form>
+          </dialog>
         <% }) %>
       </div>
 
-      <details class="card plan-create">
-        <summary><i class="ph ph-plus-circle"></i> Create a goal</summary>
-        <form class="plan-form-grid" data-plan-form data-endpoint="/api/v1/plan/goals" data-method="POST">
-          <label>Name<input name="name" maxlength="120" required></label>
-          <label>Target amount<span class="money-input"><span>$</span><input data-money-minor="target_amount_minor" inputmode="decimal" required></span></label>
-          <label>Target date <span class="optional">optional</span><input name="target_on" type="date"></label>
-          <button class="button button--dark" type="submit">Create goal</button>
-          <span class="form-status" data-plan-status aria-live="polite"></span>
+      <dialog
+        id="goal-create-dialog"
+        class="plan-dialog"
+        data-goal-dialog="create"
+        aria-labelledby="goal-create-dialog-title"
+      >
+        <form class="plan-dialog__surface" data-plan-form data-endpoint="/api/v1/plan/goals" data-method="POST">
+          <header class="plan-dialog__heading">
+            <div>
+              <p class="card-kicker">Shared household</p>
+              <h3 id="goal-create-dialog-title">New goal</h3>
+            </div>
+            <button class="icon-button" type="button" data-goal-dialog-close aria-label="Close new goal">
+              <i class="ph ph-x" aria-hidden="true"></i>
+            </button>
+          </header>
+          <div class="plan-dialog__body plan-form-grid">
+            <label>Name<input name="name" maxlength="120" required data-goal-dialog-initial-focus></label>
+            <label>Purpose
+              <select name="purpose" required>
+                <% goalPurposes.forEach(([value, label]) => { %>
+                  <option value="<%= value %>" <%= value === "other" ? "selected" : "" %>><%= label %></option>
+                <% }) %>
+              </select>
+            </label>
+            <label>Target amount<span class="money-input"><span>$</span><input data-money-minor="target_amount_minor" inputmode="decimal" required></span></label>
+            <label>Target date <span class="optional">optional</span><input name="target_on" type="date"></label>
+          </div>
+          <footer class="plan-dialog__footer">
+            <span class="form-status" data-plan-status aria-live="polite"></span>
+            <div class="plan-dialog__footer-actions">
+              <button class="button button--secondary" type="button" data-goal-dialog-close>Cancel</button>
+              <button class="button button--dark" type="submit">Create goal</button>
+            </div>
+          </footer>
         </form>
-      </details>
+      </dialog>
     </section>
+
+    <% if (finishedGoals.length || goalHistoryInsights.length) { %>
+      <details class="card plan-section finished-goals" aria-labelledby="finished-goals-heading">
+        <summary>
+          <span>
+            <strong id="finished-goals-heading">Finished goals</strong>
+            <small><%= finishedGoals.length %> <%= finishedGoals.length === 1 ? "goal" : "goals" %></small>
+          </span>
+          <i class="ph ph-caret-down" aria-hidden="true"></i>
+        </summary>
+        <div class="finished-goals__body">
+          <% if (goalHistoryInsights.length) { %>
+            <div class="goal-history-insights" aria-label="Goal history insights">
+              <% goalHistoryInsights.forEach((insight) => { const copy = historyInsightCopy(insight); %>
+                <% if (copy) { %>
+                  <p><i class="ph ph-chart-line-up" aria-hidden="true"></i><span><%= copy %></span></p>
+                <% } %>
+              <% }) %>
+            </div>
+          <% } %>
+          <div class="finished-goals__grid">
+            <% finishedGoals.forEach((goal) => { const usageBasisPoints = goalUsageBasisPoints(goal); const overAmount = goalOverAmount(goal); const overPlan = usageBasisPoints > 10_000 || overAmount.amount_minor > 0; const unusedAmount = goalUnusedAmount(goal); %>
+              <article class="finished-goal-card">
+                <header>
+                  <div>
+                    <h3><%= goal.name %></h3>
+                    <p><%= goalPurposeLabel(goal.purpose) %> · <%= finishedDateLabel(goal.archived_at) %></p>
+                  </div>
+                  <span class="goal-outcome goal-outcome--<%= goal.archive_outcome === 'cancelled' ? 'cancelled' : 'completed' %>"><%= goal.archive_outcome === "cancelled" ? "Cancelled" : "Completed" %></span>
+                </header>
+                <dl>
+                  <div><dt>Planned</dt><dd><%= formatMoney(goalPlanned(goal)) %></dd></div>
+                  <div><dt>Actual</dt><dd><%= formatMoney(goalActual(goal)) %></dd></div>
+                  <div class="<%= overPlan ? 'goal-plan-summary__usage--over' : '' %>">
+                    <dt>Usage</dt>
+                    <dd><%= goalUsagePercent(goal) %></dd>
+                  </div>
+                  <div>
+                    <dt><%= overPlan ? "Remaining" : "Unused" %></dt>
+                    <dd><%= formatMoney(unusedAmount) %></dd>
+                  </div>
+                </dl>
+                <% if (overPlan) { %>
+                  <p class="goal-plan-overage"><span>Over by</span><strong><%= formatMoney(overAmount) %></strong></p>
+                <% } %>
+              </article>
+            <% }) %>
+          </div>
+        </div>
+      </details>
+    <% } %>
 
     <section id="budget" class="card plan-section budget-board" aria-labelledby="budget-heading">
       <div class="card-heading">
-        <div><p class="card-kicker">No rollover. No guilt archaeology.</p><h2 id="budget-heading"><%= selectedMonthLabel %> budget</h2></div>
-        <form data-plan-form data-endpoint="/api/v1/plan/budget/<%= selectedMonth %>/copy" data-method="POST">
-          <input type="hidden" name="source_month_on" value="<%= priorMonth %>">
-          <input type="hidden" name="month_on" value="<%= selectedMonth %>">
-          <button class="button button--secondary" type="submit"><i class="ph ph-copy"></i> Copy last month</button>
-          <span class="form-status" data-plan-status aria-live="polite"></span>
-        </form>
+        <h2 id="budget-heading">Budget</h2>
+        <a class="button button--secondary" href="<%= editBudget ? budgetViewHref : budgetEditHref %>"><i class="ph ph-<%= editBudget ? 'check' : 'pencil-simple' %>"></i> <%= editBudget ? "Done" : "Edit budget" %></a>
       </div>
-      <form class="plan-month-picker" action="/plan" method="get">
-        <label>Budget month<input type="month" name="month" value="<%= selectedMonth.slice(0, 7) %>"></label>
-        <button class="button button--ghost" type="submit">View month</button>
-      </form>
-      <div class="budget-summary">
-        <div><span>Planned</span><strong><%= formatMoney(budget.planned_total) %></strong></div>
-        <div><span>Actual</span><strong><%= formatMoney(budget.actual_total) %></strong></div>
-        <div><span>Remaining</span><strong class="<%= budget.remaining_total.amount_minor < 0 ? 'negative' : '' %>"><%= formatMoney(budget.remaining_total) %></strong></div>
-      </div>
-      <div class="budget-table" role="table" aria-label="<%= selectedMonthLabel %> budget status">
-        <div class="budget-row budget-row--heading" role="row"><span>Category</span><span>Plan</span><span>Actual</span><span>Remaining</span><span></span></div>
-        <% budget.lines.forEach((line) => { %>
-          <form class="budget-row <%= line.over.amount_minor > 0 ? 'budget-row--over' : '' %>" role="row" data-plan-form data-endpoint="/api/v1/plan/budget/<%= selectedMonth %>/<%= encodeURIComponent(line.category) %>" data-method="PUT">
-            <input type="hidden" name="month_on" value="<%= selectedMonth %>">
-            <span role="cell"><strong><%= line.category %></strong><% if (line.over.amount_minor > 0) { %><small><%= formatMoney(line.over) %> over</small><% } %></span>
-            <span class="money-input" role="cell"><span>$</span><input data-money-minor="amount_minor" inputmode="decimal" value="<%= (line.planned.amount_minor / 100).toFixed(2) %>" aria-label="<%= line.category %> planned amount"></span>
-            <span role="cell"><%= formatMoney(line.actual) %></span>
-            <span role="cell" class="<%= line.remaining.amount_minor < 0 ? 'negative' : '' %>"><%= formatMoney(line.remaining) %></span>
-            <span role="cell"><button class="button button--ghost" type="submit">Save month</button><label class="future-default"><input type="checkbox" name="scope" value="future_default"> Future default</label><span class="form-status" data-plan-status aria-live="polite"></span></span>
+      <% if (editBudget) { %>
+        <details class="plan-disclosure">
+          <summary>Add a budget category</summary>
+          <form class="plan-inline-form" data-plan-form data-endpoint="/api/v1/plan/budget" data-method="POST">
+            <input type="hidden" name="expected_version" value="0">
+            <label>Category<input name="category" maxlength="100" required></label>
+            <label>Plan amount<span class="money-input"><span>$</span><input data-money-minor="amount_minor" inputmode="decimal" required></span></label>
+            <button class="button button--secondary" type="submit">Add category</button>
+            <span class="form-status" data-plan-status aria-live="polite"></span>
           </form>
+        </details>
+      <% } %>
+      <div class="budget-table" role="table" aria-label="Budget status" tabindex="0">
+        <div class="budget-row budget-row--heading <%= editBudget ? 'budget-row--edit' : 'budget-row--view' %>" role="row"><span role="columnheader">Category</span><span role="columnheader">Planned</span><span role="columnheader">Actual</span><span role="columnheader">Remaining</span><span role="columnheader">Previous month actual</span><% if (editBudget) { %><span role="columnheader"><span class="sr-only">Actions</span></span><% } %></div>
+        <div class="budget-row budget-row--total <%= editBudget ? 'budget-row--edit' : 'budget-row--view' %>" role="row">
+          <span role="cell">Total</span>
+          <span role="cell"><%= formatMoney(budget.planned_total) %></span>
+          <span role="cell"><%= formatMoney(budget.actual_total) %></span>
+          <span role="cell" class="budget-status <%= remainingClass(budget.remaining_total) %>"><%= remainingStatus(budget.remaining_total) %></span>
+          <span role="cell"><%= formatMoney(priorBudget.actual_total) %></span>
+          <% if (editBudget) { %><span role="cell"></span><% } %>
+        </div>
+        <% budget.lines.forEach((line) => { %>
+          <%
+            const budgetStatus = remainingStatus(line.remaining);
+            const previousActual =
+              previousActualByCategory.get(line.category) ||
+              zeroBudgetMoney;
+          %>
+          <% if (editBudget) { %>
+            <form class="budget-row budget-row--edit <%= line.over.amount_minor > 0 ? 'budget-row--over' : '' %>" role="row" data-plan-form data-endpoint="/api/v1/plan/budget/<%= encodeURIComponent(line.category) %>" data-method="PUT">
+              <input type="hidden" name="expected_version" value="<%= line.version %>">
+              <span role="cell"><a class="budget-category-link" href="/transactions?category=<%= encodeURIComponent(line.category) %>"><%= line.category %></a></span>
+              <span class="money-input" role="cell"><span>$</span><input data-money-minor="amount_minor" inputmode="decimal" value="<%= (line.planned.amount_minor / 100).toFixed(2) %>" aria-label="<%= line.category %> planned amount"></span>
+              <span role="cell"><%= formatMoney(line.actual) %></span>
+              <span role="cell" class="budget-status <%= remainingClass(line.remaining) %>"><%= budgetStatus %></span>
+              <span role="cell"><%= formatMoney(previousActual) %></span>
+              <span role="cell"><button class="button button--ghost" type="submit">Save</button><span class="form-status" data-plan-status aria-live="polite"></span></span>
+            </form>
+          <% } else { %>
+            <div class="budget-row budget-row--view <%= line.over.amount_minor > 0 ? 'budget-row--over' : '' %>" role="row">
+              <span role="cell"><a class="budget-category-link" href="/transactions?category=<%= encodeURIComponent(line.category) %>"><%= line.category %></a></span>
+              <span role="cell"><%= formatMoney(line.planned) %></span>
+              <span role="cell"><%= formatMoney(line.actual) %></span>
+              <span role="cell" class="budget-status <%= remainingClass(line.remaining) %>"><%= budgetStatus %></span>
+              <span role="cell"><%= formatMoney(previousActual) %></span>
+            </div>
+          <% } %>
         <% }) %>
       </div>
-    </section>
-
-    <section id="scenario" class="card plan-section scenario-card" aria-labelledby="scenario-heading">
-      <div class="card-heading"><div><p class="card-kicker">Deterministic, editable assumptions</p><h2 id="scenario-heading">Model a scenario</h2></div></div>
-      <form class="plan-form-grid" data-plan-form data-plan-scenario data-endpoint="/api/v1/plan/scenarios" data-method="POST">
-        <label>Goal<select name="goal_id"><% goals.forEach((goal) => { %><option value="<%= goal.id %>"><%= goal.name %></option><% }) %></select></label>
-        <label>One-time contribution<span class="money-input"><span>$</span><input data-money-minor="one_time_contribution_minor" inputmode="decimal" value="0"></span></label>
-        <label>Monthly contribution<span class="money-input"><span>$</span><input data-money-minor="monthly_contribution_minor" inputmode="decimal" value="0"></span></label>
-        <label>Every-other-week contribution<span class="money-input"><span>$</span><input data-money-minor="biweekly_contribution_minor" inputmode="decimal" value="0"></span></label>
-        <label>Brokerage change<input name="brokerage_change_basis_points" type="number" min="-10000" max="100000" step="100" value="-3000"><small>-3000 means a 30% fall</small></label>
-        <button class="button button--dark" type="submit">Run scenario</button>
-        <span class="form-status" data-plan-status aria-live="polite"></span>
-      </form>
-      <div class="scenario-result" data-plan-scenario-result aria-live="polite"></div>
     </section>
 
     <section class="card plan-section" aria-labelledby="history-heading">

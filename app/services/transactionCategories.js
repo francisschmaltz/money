@@ -36,6 +36,15 @@ export function transactionCategoryOptions(observedCategories = []) {
     }
   }
   return [...labels.values()]
-    .sort((left, right) => left.localeCompare(right))
+    .sort((left, right) => {
+      const leftIsOther =
+        left.trim().toLocaleLowerCase() === "other";
+      const rightIsOther =
+        right.trim().toLocaleLowerCase() === "other";
+      if (leftIsOther !== rightIsOther) {
+        return leftIsOther ? 1 : -1;
+      }
+      return left.localeCompare(right);
+    })
     .map((label) => ({ label }));
 }

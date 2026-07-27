@@ -1,0 +1,189 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import { PgFinanceRepository } from "../app/db/financeRepository.js";
+
+function fakePool(rows = []) {
+  const calls = [];
+  return {
+    calls,
+    pool: {
+      async query(sql, params = []) {
+        calls.push({
+          sql: String(sql).replace(/\s+/g, " ").trim(),
+          params,
+        });
+        return { rows };
+      },
+    },
+  };
+}
+
+test("transaction category and text filters include split categories", async () => {
+  const db = fakePool();
+  const repository = new PgFinanceRepository(db.pool);
+
+  await repository.listTransactions("shared", {
+    category: "Dining",
+    search: "dining",
+    minAmountMinor: 1_000,
+    maxAmountMinor: 5_000,
+  });
+
+  assert.match(
+    db.calls[0].sql,
+    /SUM\(split_filter\.amount_minor\)::bigint AS amount_minor/,
+  );
+  assert.match(
+    db.calls[0].sql,
+    /split_filter\.category = \$5/,
+  );
+  assert.match(
+    db.calls[0].sql,
+    /GROUP BY split_filter\.category/,
+  );
+  assert.match(
+    db.calls[0].sql,
+    /OR category_split\.category IS NOT NULL/,
+  );
+  assert.match(
+    db.calls[0].sql,
+    /FROM transaction_splits split_override/,
+  );
+  assert.match(
+    db.calls[0].sql,
+    /FROM transaction_splits split_search/,
+  );
+  assert.match(
+    db.calls[0].sql,
+    /split_search\.category ILIKE '%' \|\| \$7 \|\| '%'/,
+  );
+  assert.match(
+    db.calls[0].sql,
+    /OR split_search\.category = \$5/,
+  );
+  assert.equal(
+    (
+      db.calls[0].sql.match(
+        /abs\( COALESCE\(category_split\.amount_minor, t\.amount_minor\) \)/g,
+      ) ?? []
+    ).length,
+    2,
+  );
+  assert.deepEqual(db.calls[0].params.slice(11, 13), [1_000, 5_000]);
+});
+
+test("category-filtered transactions expose one split aggregate without replacing provider data", async () => {
+  const db = fakePool([
+    {
+      id: "transaction-1",
+      account_id: "account-1",
+      account_name: "Checking",
+      account_mask: "1234",
+      institution_name: "Bank",
+      merchant_name: "Family market",
+      name: "Family market",
+      category_primary: "Shopping",
+      category_detailed: "Shopping other",
+      effective_category_primary: "Shopping",
+      effective_category_detailed: "Shopping other",
+      split_category: "Dining",
+      split_category_amount_minor: "-4250",
+      split_category_line_count: "2",
+      amount_minor: "-10000",
+      currency_code: "USD",
+      posted_on: "2026-07-27",
+      pending: false,
+      split_version: "3",
+    },
+  ]);
+  const repository = new PgFinanceRepository(db.pool);
+
+  const result = await repository.listTransactions("shared", {
+    category: "Dining",
+  });
+  const [transaction] = result.transactions;
+
+  assert.equal(transaction.id, "transaction-1");
+  assert.equal(transaction.category_primary, "Dining");
+  assert.equal(transaction.category_detailed, null);
+  assert.equal(transaction.amount_minor, -4_250);
+  assert.equal(transaction.provider_amount_minor, -10_000);
+  assert.equal(transaction.is_split_category_projection, true);
+  assert.equal(transaction.split_category_line_count, 2);
+  assert.equal(transaction.split_version, 3);
+});
+
+test("observed categories include split-only categories", async () => {
+  const db = fakePool();
+  const repository = new PgFinanceRepository(db.pool);
+
+  await repository.listTransactionCategories("shared");
+
+  assert.match(db.calls[0].sql, /WITH base_categories AS/);
+  assert.match(
+    db.calls[0].sql,
+    /UNION SELECT split\.category FROM transaction_splits split/,
+  );
+});
+
+test("finance repository returns typed split lines for analytics", async () => {
+  const db = fakePool([
+    {
+      id: "split-1",
+      transaction_id: "transaction-1",
+      split_version: "3",
+      line_index: "0",
+      category: "Dining",
+      amount_minor: "-2500",
+      note: null,
+      created_at: "2026-07-27T10:00:00.000Z",
+      updated_at: "2026-07-27T10:00:00.000Z",
+    },
+  ]);
+  const repository = new PgFinanceRepository(db.pool);
+
+  const result = await repository.listTransactionSplits("shared", {
+    startOn: "2026-07-01",
+    endOn: "2026-08-01",
+  });
+
+  assert.equal(result[0].line_index, 0);
+  assert.equal(result[0].split_version, 3);
+  assert.equal(result[0].amount_minor, -2_500);
+  assert.match(
+    db.calls[0].sql,
+    /SELECT split\.\*, transaction\.split_version/,
+  );
+  assert.deepEqual(db.calls[0].params, [
+    "shared",
+    null,
+    "2026-07-01",
+    "2026-08-01",
+  ]);
+});
+
+test("finance repository returns the parent split version with transactions", async () => {
+  const db = fakePool([
+    {
+      id: "transaction-1",
+      posted_on: "2026-07-27",
+      amount_minor: "-5000",
+      currency_code: "USD",
+      pending: false,
+      split_version: "4",
+      goal_spend_version: "2",
+    },
+  ]);
+  const repository = new PgFinanceRepository(db.pool);
+
+  const result = await repository.listTransactions("shared");
+
+  assert.equal(result.transactions[0].split_version, 4);
+  assert.equal(result.transactions[0].goal_spend_version, 2);
+  assert.equal(result.transactions[0].provider_amount_minor, -5_000);
+  assert.equal(
+    result.transactions[0].is_split_category_projection,
+    false,
+  );
+});

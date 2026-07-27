@@ -22,6 +22,7 @@ export const PLANNING_READ_TOOL_KIND_MAP = Object.freeze({
   list_finance_goals: "goals",
   get_budget_status: "budget",
   model_finance_plan: "scenario",
+  get_transaction_goal_spending: "goals",
 });
 
 export const PLANNING_WRITE_TOOL_KIND_MAP = Object.freeze({
@@ -29,9 +30,11 @@ export const PLANNING_WRITE_TOOL_KIND_MAP = Object.freeze({
   update_finance_goal: "plan_change",
   allocate_finance_goal: "plan_change",
   set_goal_funding_schedule: "plan_change",
-  archive_finance_goal: "plan_change",
+  finish_finance_goal: "plan_change",
   set_category_budget: "plan_change",
   split_transaction: "plan_change",
+  spend_from_finance_goal: "plan_change",
+  reverse_goal_spend: "plan_change",
 });
 
 export const PLANNING_TOOL_KIND_MAP = Object.freeze({

@@ -621,6 +621,7 @@ function publicDemoTransaction(transaction) {
     account: { ...transaction.account },
     amount: { ...transaction.amount },
     tags: [...transaction.tags],
+    split_version: Number(transaction.split_version ?? 0),
   };
 }
 
@@ -1335,7 +1336,7 @@ export class DemoFinanceService {
     return result({
       title: "Tracked credit scores",
       subtitle: data.period.label,
-      path: `/credit?score_period=${data.period.name}`,
+      path: `/credit?period=${data.period.name}`,
       summary:
         data.household.average_score == null
           ? "No manually tracked credit scores have been entered. Data as of July 26, 2026."

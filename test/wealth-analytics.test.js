@@ -201,6 +201,35 @@ test("balance-group overrides win over inferred account subtype", () => {
   );
 });
 
+test("retirement identity cannot be overridden into spendable cash", () => {
+  for (const override of ["cash", "taxable_investment"]) {
+    assert.equal(
+      inferBalanceGroup(
+        account({
+          id: `retirement-${override}`,
+          type: "investment",
+          subtype: "roth ira",
+          balance: 100_000,
+          override,
+        }),
+      ),
+      "retirement",
+    );
+  }
+  assert.equal(
+    inferBalanceGroup(
+      account({
+        id: "retirement-excluded",
+        type: "investment",
+        subtype: "roth ira",
+        balance: 100_000,
+        override: "excluded",
+      }),
+    ),
+    "excluded",
+  );
+});
+
 test("portfolio supports all, non-retirement, and retirement-only scopes", async () => {
   const accounts = [
     account({

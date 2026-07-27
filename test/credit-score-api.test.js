@@ -43,6 +43,7 @@ test("credit score reads are shared while every mutation requires CSRF", async (
   });
 
   await request(app).get("/api/v1/credit-scores?period=1m").expect(200);
+  await request(app).get("/api/v1/credit-scores?period=1w").expect(200);
   await request(app)
     .post("/api/v1/credit-score-sources")
     .send({ label: "Experian" })
@@ -63,6 +64,10 @@ test("credit score reads are shared while every mutation requires CSRF", async (
     { period: "1m", current_user_id: "person_1" },
   ]);
   assert.deepEqual(calls[1], [
+    "read",
+    { period: "1w", current_user_id: "person_1" },
+  ]);
+  assert.deepEqual(calls[2], [
     "create",
     {
       label: "Experian",

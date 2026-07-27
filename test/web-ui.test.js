@@ -62,6 +62,48 @@ test("all primary finance views render with shared navigation and local assets",
   }
 });
 
+test("primary page headings omit redundant subtitles", async () => {
+  const sharedHeadingPages = [
+    "Dashboard",
+    "Plan",
+    "Insights",
+    "Transactions",
+    "Recurring",
+    "Portfolio",
+    "Credit",
+    "Accounts",
+    "Settings",
+  ];
+  const redundantSubtitle = "This page already explains itself.";
+
+  for (const pageTitle of sharedHeadingPages) {
+    const html = await render("partials/page-heading", {
+      pageTitle,
+      pageDescription: redundantSubtitle,
+      eyebrow: "Your finances",
+    });
+
+    assert.doesNotMatch(
+      html,
+      /class="page-description"/,
+      `${pageTitle} should not render a page subtitle`,
+    );
+    assert.doesNotMatch(
+      html,
+      new RegExp(redundantSubtitle),
+      `${pageTitle} should not render pageDescription`,
+    );
+  }
+
+  const searchHtml = await render("search", {
+    pageTitle: "Search",
+    pageDescription: redundantSubtitle,
+    activePath: "/search",
+  });
+  assert.doesNotMatch(searchHtml, /class="page-description"/);
+  assert.doesNotMatch(searchHtml, new RegExp(redundantSubtitle));
+});
+
 test("dashboard defaults to cash and exposes four truthful balance views", async () => {
   const html = await render("dashboard");
   assert.match(html, /data-chart="line"/);
@@ -184,7 +226,10 @@ test("transactions puts detailed spending analysis before the ledger", async () 
   assert.match(html, /\$4,126\.84/);
   assert.match(html, /\$4,605\.00/);
   assert.match(html, /10\.4% less than the prior period/);
-  assert.match(html, />38<\/dd>/);
+  assert.match(
+    html,
+    />38<small>Pending activity is excluded<\/small><\/dd>/,
+  );
   assert.match(html, /\$108\.60/);
   assert.match(html, /data-chart="spending"/);
   assert.match(html, /data-chart="line"/);
@@ -227,6 +272,115 @@ test("selected transactions link administrators to Settings cleanup", async () =
   );
   assert.match(html, /Clean up name, category &amp; tags/);
   assert.doesNotMatch(html, /data-transaction-classification/);
+});
+
+test("transaction split editing preserves custom categories and hides unsupported currencies", async () => {
+  const customCategory = "Shared family expense";
+  const customHtml = await render("transactions", {
+    pageTitle: "Transactions",
+    activePath: "/transactions",
+    selectedTransaction: demo.transactions[0],
+    selectedTransactionSplits: [
+      { category: customCategory, amount_minor: -5_000 },
+      { category: "Groceries", amount_minor: -8_842 },
+    ],
+  });
+  assert.match(
+    customHtml,
+    new RegExp(
+      `<option value="${customCategory}" selected>${customCategory}<\\/option>`,
+    ),
+  );
+
+  const foreignHtml = await render("transactions", {
+    pageTitle: "Transactions",
+    activePath: "/transactions",
+    selectedTransaction: {
+      ...demo.transactions[0],
+      amount: { amount_minor: -13_842, currency: "CAD" },
+    },
+  });
+  assert.match(
+    foreignHtml,
+    /Transaction splits currently support USD only\./,
+  );
+  assert.doesNotMatch(foreignHtml, /data-transaction-split/);
+});
+
+test("category-filtered transaction HTTP keeps the split projection in rows and detail", async () => {
+  const projected = {
+    id: "split-parent",
+    merchant: "Family market",
+    displayName: "Family market",
+    rawMerchant: "Family market",
+    rawName: "Family market",
+    tags: [],
+    category: "Dining",
+    account: "Checking",
+    amount: { amount_minor: -4_250, currency: "USD" },
+    providerAmount: { amount_minor: -10_000, currency: "USD" },
+    date: "2026-07-20",
+    status: "posted",
+    excludedFromSpending: false,
+    isFixed: false,
+    splitVersion: 3,
+    isSplitCategoryProjection: true,
+    splitCategoryLineCount: 2,
+    icon: "ph-fork-knife",
+  };
+  const app = express();
+  app.set("views", viewsRoot);
+  app.set("view engine", "ejs");
+  app.use(
+    createWebRouter({
+      demoMode: false,
+      financeService: {
+        async getPageData() {
+          return {
+            ...demo,
+            freshness: "Fresh",
+            transactions: [projected],
+            transactionPageInfo: {
+              has_more: false,
+              next_cursor: null,
+            },
+            selectedTransaction: projected,
+          };
+        },
+      },
+      planningService: {
+        async getTransactionSplit() {
+          return {
+            split_version: 3,
+            lines: [
+              { category: "Dining", amount_minor: -4_250 },
+              { category: "Groceries", amount_minor: -5_750 },
+            ],
+          };
+        },
+      },
+    }),
+  );
+
+  const result = await request(app)
+    .get(
+      "/transactions?category=Dining&transaction=split-parent",
+    )
+    .expect(200);
+
+  assert.match(
+    result.text,
+    /href="\/transactions\?category=Dining&amp;transaction=split-parent"/,
+  );
+  assert.match(
+    result.text,
+    /id="selected-transaction-heading">Family market<\/h2>/,
+  );
+  assert.match(result.text, /Dining · Checking · 2026-07-20/);
+  assert.match(result.text, /data-source-amount="-10000"/);
+  assert.match(result.text, /name="expected_version" value="3"/);
+  assert.match(result.text, /-\$42\.50/);
+  assert.doesNotMatch(result.text, /Shopping · Checking/);
 });
 
 test("accounts show inventory with direct Settings edit links", async () => {

@@ -64,20 +64,23 @@ function average(values) {
 }
 
 function scorePeriod(value, currentOn) {
-  const name = ["1m", "1y", "all"].includes(value) ? value : "1y";
+  const name = ["1w", "1m", "1y", "all"].includes(value) ? value : "1y";
   return {
     name,
     label: {
+      "1w": "Last week",
       "1m": "Last month",
       "1y": "Last year",
       all: "All history",
     }[name],
     start_on:
-      name === "1m"
-        ? shiftDateOnly(currentOn, -30)
-        : name === "1y"
-          ? shiftDateOnly(currentOn, -365)
-          : "1970-01-01",
+      name === "1w"
+        ? shiftDateOnly(currentOn, -7)
+        : name === "1m"
+          ? shiftDateOnly(currentOn, -30)
+          : name === "1y"
+            ? shiftDateOnly(currentOn, -365)
+            : "1970-01-01",
     end_on: shiftDateOnly(currentOn, 1),
   };
 }
@@ -179,6 +182,15 @@ function privateForMcp(data) {
     ...data,
     disclosure:
       "Scores are manually supplied, shared with the Money workspace and its MCP, and are not lender or underwriting scores.",
+    history: data.history.map((point) => ({
+      ...point,
+      person_scores: point.person_scores.map(
+        ({ person_id: personId, ...score }) => ({
+          person_label: labels.get(personId),
+          ...score,
+        }),
+      ),
+    })),
     people: orderedPeople.map((person) => ({
       person_label: labels.get(person.person_id),
       average_score: person.average_score,
@@ -374,16 +386,18 @@ export function buildCreditScoreSummary({
     .filter((onDate) => effectiveStart && onDate >= effectiveStart)
     .sort()
     .map((onDate) => {
-      const averages = memberRows
-        .map((member) =>
-          personAverageAt(
-            normalizedSources.filter(
-              (source) => source.user_id === member.id,
-            ),
-            observationsBySource,
-            onDate,
+      const personScores = memberRows.map((member) => ({
+        person_id: member.id,
+        raw_average: personAverageAt(
+          normalizedSources.filter(
+            (source) => source.user_id === member.id,
           ),
-        )
+          observationsBySource,
+          onDate,
+        ),
+      }));
+      const averages = personScores
+        .map((person) => person.raw_average)
         .filter((value) => value != null);
       const household = average(averages);
       return {
@@ -392,6 +406,13 @@ export function buildCreditScoreSummary({
         average_score:
           household == null ? null : Math.round(household),
         contributor_count: averages.length,
+        person_scores: personScores.map(
+          ({ person_id: personId, raw_average: rawAverage }) => ({
+            person_id: personId,
+            average_score:
+              rawAverage == null ? null : Math.round(rawAverage),
+          }),
+        ),
       };
     });
   const boundedHistoryWithRawAverages = sampleHistory(

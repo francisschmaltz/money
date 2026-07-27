@@ -17,6 +17,7 @@ function transaction({
   merchant = id,
   pending = false,
   excludedFromSpending = false,
+  splitVersion = 0,
 }) {
   return {
     id,
@@ -35,6 +36,7 @@ function transaction({
     pending,
     excluded_from_spending: excludedFromSpending,
     is_fixed: false,
+    split_version: splitVersion,
   };
 }
 
@@ -55,6 +57,7 @@ test("transactions page builds detailed spending from one complete filtered anal
     amountMinor: -999_999,
     category: "Shopping",
     merchant: "Paginated sentinel",
+    splitVersion: 4,
   });
   const analysisTransactions = [
     transaction({
@@ -173,6 +176,7 @@ test("transactions page builds detailed spending from one complete filtered anal
 
   assert.equal(result.transactions.length, 1);
   assert.equal(result.transactions[0].merchant, "Paginated sentinel");
+  assert.equal(result.transactions[0].splitVersion, 4);
   assert.equal(result.transactionPageInfo.has_more, true);
   assert.equal(
     result.categories.filter(
@@ -232,5 +236,119 @@ test("transactions page builds detailed spending from one complete filtered anal
       (category) => category.label === "Shopping",
     ),
     false,
+  );
+});
+
+test("category drill-down keeps split ledger, detail, and summary on the same amount", async () => {
+  const parent = transaction({
+    id: "split-parent",
+    postedOn: "2026-07-20",
+    amountMinor: -10_000,
+    category: "Shopping",
+    merchant: "Family market",
+    splitVersion: 3,
+  });
+  const projected = {
+    ...parent,
+    amount_minor: -4_250,
+    provider_amount_minor: -10_000,
+    category_primary: "Dining",
+    category_detailed: null,
+    is_split_category_projection: true,
+    split_category_line_count: 2,
+  };
+  const splits = [
+    {
+      id: "split-dining-1",
+      transaction_id: parent.id,
+      line_index: 0,
+      category: "Dining",
+      amount_minor: -2_500,
+    },
+    {
+      id: "split-dining-2",
+      transaction_id: parent.id,
+      line_index: 1,
+      category: "Dining",
+      amount_minor: -1_750,
+    },
+    {
+      id: "split-groceries",
+      transaction_id: parent.id,
+      line_index: 2,
+      category: "Groceries",
+      amount_minor: -5_750,
+    },
+  ];
+  const repository = {
+    async getDataFreshness() {
+      return FRESHNESS;
+    },
+    async listTransactions(_workspaceId, options) {
+      assert.equal(options.category, "Dining");
+      assert.equal(options.search, "family");
+      return {
+        transactions: [projected],
+        pageInfo: { has_more: false, next_cursor: null },
+      };
+    },
+    async getTransactionsForPeriod(_workspaceId, options) {
+      assert.equal(options.category, null);
+      return [parent];
+    },
+    async listTransactionSplits() {
+      return splits;
+    },
+    async listAccounts() {
+      return [];
+    },
+    async listTransactionCategories() {
+      return ["Dining", "Groceries"];
+    },
+    async getTransaction() {
+      return parent;
+    },
+  };
+  const service = createFinanceService({
+    repository,
+    now: () => new Date("2026-07-26T19:00:00.000Z"),
+  });
+
+  const result = await service.getPageData("transactions", {
+    query: {
+      category: "Dining",
+      q: "family",
+      transaction: parent.id,
+    },
+  });
+
+  assert.equal(result.transactions.length, 1);
+  assert.equal(result.transactions[0].id, parent.id);
+  assert.equal(result.transactions[0].category, "Dining");
+  assert.equal(result.transactions[0].amount.amount_minor, -4_250);
+  assert.equal(
+    result.transactions[0].providerAmount.amount_minor,
+    -10_000,
+  );
+  assert.equal(result.transactions[0].isSplitCategoryProjection, true);
+  assert.equal(result.transactions[0].splitCategoryLineCount, 2);
+  assert.equal(result.selectedTransaction.category, "Dining");
+  assert.equal(
+    result.selectedTransaction.amount.amount_minor,
+    -4_250,
+  );
+  assert.equal(
+    result.selectedTransaction.providerAmount.amount_minor,
+    -10_000,
+  );
+  assert.equal(result.spendingDetails.total.amount_minor, 4_250);
+  assert.equal(result.spendingDetails.transactionCount, 1);
+  assert.deepEqual(
+    result.spendingDetails.categories.map((entry) => ({
+      label: entry.label,
+      amount: entry.amount.amount_minor,
+      count: entry.count,
+    })),
+    [{ label: "Dining", amount: 4_250, count: 1 }],
   );
 });

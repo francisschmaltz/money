@@ -231,27 +231,28 @@
 
   function creditScoreChart(canvas) {
     const labels = parse(canvas, "labels");
-    const values = parse(canvas, "values");
+    const series = parse(canvas, "series");
     return new window.Chart(canvas, {
       type: "line",
       data: {
         labels,
-        datasets: [{
-          label: "Tracked household average",
-          data: values,
-          borderColor: "#249342",
-          backgroundColor: "rgba(36, 147, 66, 0.08)",
-          borderWidth: 2.5,
-          pointRadius: values.length < 12 ? 3 : 0,
+        datasets: series.map((item) => ({
+          label: item.label,
+          data: item.values,
+          borderColor: item.color,
+          backgroundColor: "transparent",
+          borderWidth: item.border_width || 2,
+          borderDash: item.border_dash || [],
+          pointRadius: item.values.length < 12 ? 3 : 0,
           pointHoverRadius: 4,
-          pointHoverBackgroundColor: "#249342",
+          pointHoverBackgroundColor: item.color,
           pointHoverBorderColor: "#fff",
           pointHoverBorderWidth: 2,
           tension: 0.25,
           spanGaps: false,
-          fill: true,
+          fill: false,
           stepped: "before",
-        }],
+        })),
       },
       options: {
         ...shared,
@@ -268,8 +269,8 @@
           },
           y: {
             position: "right",
-            suggestedMin: 300,
-            suggestedMax: 850,
+            min: 300,
+            max: 850,
             border: { display: false },
             grid: { color: "#efefef" },
             ticks: {
@@ -287,8 +288,8 @@
             callbacks: {
               label: (context) =>
                 context.parsed.y == null
-                  ? "Tracked average: unavailable"
-                  : `Tracked average: ${Math.round(context.parsed.y)}`,
+                  ? `${context.dataset.label}: unavailable`
+                  : `${context.dataset.label}: ${Math.round(context.parsed.y)}`,
             },
           },
         },

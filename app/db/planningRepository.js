@@ -1,17 +1,146 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+
 import { withTransaction } from "./pool.js";
 
 const DEFAULT_WORKSPACE_ID = "shared";
 
 export class PgPlanningRepository {
   #pool;
+  #transactionContext = new AsyncLocalStorage();
 
   constructor(pool) {
     if (!pool) throw new TypeError("pool is required");
     this.#pool = pool;
   }
 
+  #client() {
+    return this.#transactionContext.getStore()?.client ?? this.#pool;
+  }
+
+  async #withTransaction(operation) {
+    const existing = this.#transactionContext.getStore();
+    if (existing) return operation(existing.client);
+    return withTransaction(this.#pool, (client) =>
+      this.#transactionContext.run(
+        { client, workspaceLocks: new Set() },
+        () => operation(client),
+      ),
+    );
+  }
+
+  async withWorkspacePlanningLock(workspaceId, operation) {
+    return this.#withTransaction(async (client) => {
+      const context = this.#transactionContext.getStore();
+      if (!context.workspaceLocks.has(workspaceId)) {
+        await client.query(
+          `
+            SELECT pg_advisory_xact_lock(
+              hashtextextended('money:planning:' || $1, 0)
+            )
+          `,
+          [workspaceId],
+        );
+        context.workspaceLocks.add(workspaceId);
+      }
+      return operation(client);
+    });
+  }
+
+  async executePlanWrite(
+    workspaceId,
+    { actor, operation, idempotencyKey, requestHash },
+    mutation,
+  ) {
+    return this.#withTransaction(async (client) => {
+      const inserted = await client.query(
+        `
+          INSERT INTO plan_idempotency_keys (
+            workspace_id,
+            actor_type,
+            actor_id,
+            operation,
+            idempotency_key,
+            request_hash
+          )
+          VALUES ($1, $2, $3, $4, $5, $6)
+          ON CONFLICT DO NOTHING
+          RETURNING request_hash
+        `,
+        [
+          workspaceId,
+          actor.type,
+          actor.id,
+          operation,
+          idempotencyKey,
+          requestHash,
+        ],
+      );
+      if (!inserted.rows[0]) {
+        const existing = await client.query(
+          `
+            SELECT request_hash, response_value
+            FROM plan_idempotency_keys
+            WHERE workspace_id = $1
+              AND actor_type = $2
+              AND actor_id = $3
+              AND operation = $4
+              AND idempotency_key = $5
+            FOR UPDATE
+          `,
+          [
+            workspaceId,
+            actor.type,
+            actor.id,
+            operation,
+            idempotencyKey,
+          ],
+        );
+        const row = existing.rows[0];
+        if (!row || row.request_hash !== requestHash) {
+          return { mismatch: true };
+        }
+        if (row.response_value != null) {
+          return { replay: true, response: row.response_value };
+        }
+        // Rows created by the pre-atomic implementation cannot be retried
+        // safely: the old process may have committed the mutation before it
+        // died. Keep them blocked instead of guessing and duplicating money.
+        return { pending: true };
+      }
+
+      const response = await mutation(client);
+      const completed = await client.query(
+        `
+          UPDATE plan_idempotency_keys
+          SET response_value = $7::jsonb, completed_at = now()
+          WHERE workspace_id = $1
+            AND actor_type = $2
+            AND actor_id = $3
+            AND operation = $4
+            AND idempotency_key = $5
+            AND request_hash = $6
+            AND response_value IS NULL
+          RETURNING idempotency_key
+        `,
+        [
+          workspaceId,
+          actor.type,
+          actor.id,
+          operation,
+          idempotencyKey,
+          requestHash,
+          JSON.stringify(response),
+        ],
+      );
+      if (!completed.rows[0]) {
+        throw new Error("Idempotent plan write could not be completed.");
+      }
+      return { executed: true, response };
+    });
+  }
+
   async getWorkspaceTimezone(workspaceId = DEFAULT_WORKSPACE_ID) {
-    const result = await this.#pool.query(
+    const result = await this.#client().query(
       `SELECT timezone FROM workspaces WHERE id = $1`,
       [workspaceId],
     );
@@ -22,7 +151,7 @@ export class PgPlanningRepository {
     workspaceId,
     { actor, operation, idempotencyKey, requestHash },
   ) {
-    return withTransaction(this.#pool, async (client) => {
+    return this.#withTransaction(async (client) => {
       const inserted = await client.query(
         `
           INSERT INTO plan_idempotency_keys (
@@ -81,7 +210,7 @@ export class PgPlanningRepository {
     workspaceId,
     { actor, operation, idempotencyKey, requestHash, response },
   ) {
-    const result = await this.#pool.query(
+    const result = await this.#client().query(
       `
         UPDATE plan_idempotency_keys
         SET response_value = $7::jsonb, completed_at = now()
@@ -113,7 +242,7 @@ export class PgPlanningRepository {
     workspaceId,
     { actor, operation, idempotencyKey, requestHash },
   ) {
-    await this.#pool.query(
+    await this.#client().query(
       `
         DELETE FROM plan_idempotency_keys
         WHERE workspace_id = $1
@@ -138,13 +267,17 @@ export class PgPlanningRepository {
   async listGoals(
     workspaceId = DEFAULT_WORKSPACE_ID,
     { includeArchived = false } = {},
-    client = this.#pool,
+    client = null,
   ) {
-    const result = await client.query(
+    const result = await (client ?? this.#client()).query(
       `
         SELECT
           goal.*,
-          COALESCE(allocation.allocations, '[]'::jsonb) AS allocations,
+          COALESCE(
+            recorded_allocation.recorded_allocations,
+            '[]'::jsonb
+          ) AS recorded_allocations,
+          COALESCE(spending.spending, '[]'::jsonb) AS spending,
           COALESCE(schedule.schedules, '[]'::jsonb) AS schedules
         FROM finance_goals goal
         LEFT JOIN LATERAL (
@@ -154,14 +287,30 @@ export class PgPlanningRepository {
               'amount_minor', grouped.amount_minor
             )
             ORDER BY grouped.source
-          ) AS allocations
+          ) AS recorded_allocations
           FROM (
             SELECT source, SUM(amount_delta_minor)::bigint AS amount_minor
             FROM goal_allocation_events
             WHERE goal_id = goal.id
             GROUP BY source
           ) grouped
-        ) allocation ON true
+        ) recorded_allocation ON true
+        LEFT JOIN LATERAL (
+          SELECT jsonb_agg(
+            jsonb_build_object(
+              'source', grouped.source,
+              'amount_minor', grouped.amount_minor
+            )
+            ORDER BY grouped.source
+          ) AS spending
+          FROM (
+            SELECT source, SUM(amount_minor)::bigint AS amount_minor
+            FROM goal_transaction_spends
+            WHERE goal_id = goal.id
+              AND status = 'active'
+            GROUP BY source
+          ) grouped
+        ) spending ON true
         LEFT JOIN LATERAL (
           SELECT jsonb_agg(
             jsonb_build_object(
@@ -196,7 +345,7 @@ export class PgPlanningRepository {
   async getGoal(
     workspaceId = DEFAULT_WORKSPACE_ID,
     goalId,
-    client = this.#pool,
+    client = null,
   ) {
     const goals = await this.listGoals(
       workspaceId,
@@ -207,26 +356,28 @@ export class PgPlanningRepository {
   }
 
   async createGoal(workspaceId, goal, actor) {
-    return withTransaction(this.#pool, async (client) => {
+    return this.#withTransaction(async (client) => {
       const result = await client.query(
         `
           INSERT INTO finance_goals (
             id,
             workspace_id,
             name,
+            purpose,
             target_amount_minor,
             currency_code,
             target_on,
             created_by,
             updated_by
           )
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)
           RETURNING *
         `,
         [
           goal.id,
           workspaceId,
           goal.name,
+          goal.purpose ?? "other",
           goal.target_amount_minor,
           goal.currency_code,
           goal.target_on,
@@ -235,7 +386,8 @@ export class PgPlanningRepository {
       );
       const created = mapGoal({
         ...result.rows[0],
-        allocations: [],
+        recorded_allocations: [],
+        spending: [],
         schedules: [],
       });
       const auditEventId = await insertAudit(client, {
@@ -258,7 +410,7 @@ export class PgPlanningRepository {
   }
 
   async updateGoal(workspaceId, goalId, changes, expectedVersion, actor, ids) {
-    return withTransaction(this.#pool, async (client) => {
+    return this.#withTransaction(async (client) => {
       const before = await this.getGoal(workspaceId, goalId, client);
       if (!before) return null;
       const result = await client.query(
@@ -266,20 +418,23 @@ export class PgPlanningRepository {
           UPDATE finance_goals
           SET
             name = COALESCE($3, name),
-            target_amount_minor = COALESCE($4, target_amount_minor),
-            target_on = CASE WHEN $5::boolean THEN $6::date ELSE target_on END,
-            updated_by = $7,
+            purpose = COALESCE($4, purpose),
+            target_amount_minor = COALESCE($5, target_amount_minor),
+            target_on = CASE WHEN $6::boolean THEN $7::date ELSE target_on END,
+            updated_by = $8,
             updated_at = now(),
             version = version + 1
           WHERE workspace_id = $1
             AND id = $2
-            AND version = $8
+            AND status = 'active'
+            AND version = $9
           RETURNING *
         `,
         [
           workspaceId,
           goalId,
           changes.name ?? null,
+          changes.purpose ?? null,
           changes.target_amount_minor ?? null,
           Object.hasOwn(changes, "target_on"),
           changes.target_on ?? null,
@@ -309,7 +464,7 @@ export class PgPlanningRepository {
   }
 
   async archiveGoal(workspaceId, goalId, expectedVersion, actor, ids) {
-    return withTransaction(this.#pool, async (client) => {
+    return this.#withTransaction(async (client) => {
       const before = await this.getGoal(workspaceId, goalId, client);
       if (!before) return null;
       const result = await client.query(
@@ -318,6 +473,7 @@ export class PgPlanningRepository {
           SET
             status = 'archived',
             archived_at = now(),
+            archive_outcome = COALESCE($5, 'completed'),
             updated_by = $3,
             updated_at = now(),
             version = version + 1
@@ -327,7 +483,13 @@ export class PgPlanningRepository {
             AND version = $4
           RETURNING id
         `,
-        [workspaceId, goalId, actor.id, expectedVersion],
+        [
+          workspaceId,
+          goalId,
+          actor.id,
+          expectedVersion,
+          ids.outcome ?? null,
+        ],
       );
       if (!result.rows[0]) return { conflict: true, current: before };
       await client.query(
@@ -348,7 +510,7 @@ export class PgPlanningRepository {
       const auditEventId = await insertAudit(client, {
         id: ids.auditEventId,
         workspaceId,
-        eventType: "goal.archived",
+        eventType: "goal.finished",
         subjectType: "goal",
         subjectId: goalId,
         actor,
@@ -377,7 +539,7 @@ export class PgPlanningRepository {
     },
     actor,
   ) {
-    return withTransaction(this.#pool, async (client) => {
+    return this.#withTransaction(async (client) => {
       if (idempotencyKey) {
         const existing = await client.query(
           `
@@ -474,25 +636,44 @@ export class PgPlanningRepository {
     expectedVersion,
     actor,
     auditEventId,
+    { matchExistingGoal = false } = {},
   ) {
-    return withTransaction(this.#pool, async (client) => {
-      const existing = schedule.id
-        ? await client.query(
-            `
-              SELECT * FROM goal_funding_schedules
-              WHERE workspace_id = $1 AND id = $2
-              FOR UPDATE
-            `,
-            [workspaceId, schedule.id],
-          )
-        : { rows: [] };
+    return this.withWorkspacePlanningLock(workspaceId, async (client) => {
+      const existing = await client.query(
+        `
+          SELECT *
+          FROM goal_funding_schedules
+          WHERE workspace_id = $1
+            AND (
+              id = $2
+              OR goal_id = $3
+            )
+          ORDER BY (id = $2) DESC, updated_at DESC, id DESC
+          LIMIT 1
+          FOR UPDATE
+        `,
+        [
+          workspaceId,
+          schedule.id,
+          schedule.goal_id,
+        ],
+      );
       const before = existing.rows[0]
         ? mapSchedule(existing.rows[0])
         : null;
       if (before && before.goal_id !== schedule.goal_id) {
         return { conflict: true, current: before };
       }
-      if (before && before.version !== expectedVersion) {
+      if (
+        before &&
+        (!matchExistingGoal && before.id !== schedule.id)
+      ) {
+        return { conflict: true, current: before };
+      }
+      if (
+        before &&
+        (expectedVersion == null || before.version !== expectedVersion)
+      ) {
         return { conflict: true, current: before };
       }
       const result = before
@@ -510,12 +691,14 @@ export class PgPlanningRepository {
                 updated_by = $10,
                 updated_at = now(),
                 version = version + 1
-              WHERE workspace_id = $1 AND id = $2
+              WHERE workspace_id = $1
+                AND id = $2
+                AND version = $11
               RETURNING *
             `,
             [
               workspaceId,
-              schedule.id,
+              before.id,
               schedule.source,
               schedule.cadence,
               schedule.amount_minor,
@@ -524,6 +707,7 @@ export class PgPlanningRepository {
               schedule.next_run_on,
               schedule.status,
               actor.id,
+              expectedVersion,
             ],
           )
         : await client.query(
@@ -559,6 +743,9 @@ export class PgPlanningRepository {
               actor.id,
             ],
           );
+      if (!result.rows[0]) {
+        return { conflict: true, current: before };
+      }
       const after = mapSchedule(result.rows[0]);
       const auditId = await insertAudit(client, {
         id: auditEventId,
@@ -583,7 +770,7 @@ export class PgPlanningRepository {
     workspaceId = DEFAULT_WORKSPACE_ID,
     throughOn,
   ) {
-    const result = await this.#pool.query(
+    const result = await this.#client().query(
       `
         SELECT schedule.*, goal.status AS goal_status
         FROM goal_funding_schedules schedule
@@ -601,6 +788,61 @@ export class PgPlanningRepository {
     }));
   }
 
+  async lockGoalScheduleForRun(
+    workspaceId,
+    { scheduleId, dueOn, throughOn, expectedVersion },
+  ) {
+    const client = this.#transactionContext.getStore()?.client;
+    if (!client) {
+      throw new Error(
+        "lockGoalScheduleForRun requires a planning transaction.",
+      );
+    }
+    const scheduleResult = await client.query(
+      `
+        SELECT schedule.*, goal.status AS goal_status
+        FROM goal_funding_schedules schedule
+        JOIN finance_goals goal ON goal.id = schedule.goal_id
+        WHERE schedule.workspace_id = $1
+          AND schedule.id = $2
+        FOR UPDATE OF schedule
+      `,
+      [workspaceId, scheduleId],
+    );
+    if (!scheduleResult.rows[0]) return { missing: true };
+    const current = {
+      ...mapSchedule(scheduleResult.rows[0]),
+      goal_status: scheduleResult.rows[0].goal_status,
+    };
+    const existingRun = await client.query(
+      `
+        SELECT id, status
+        FROM goal_schedule_runs
+        WHERE workspace_id = $1
+          AND schedule_id = $2
+          AND due_on = $3
+      `,
+      [workspaceId, scheduleId, dueOn],
+    );
+    if (existingRun.rows[0]) {
+      return {
+        replayed: true,
+        run_id: existingRun.rows[0].id,
+        status: existingRun.rows[0].status,
+        current,
+      };
+    }
+    if (
+      current.status !== "active" ||
+      current.next_run_on !== dueOn ||
+      current.next_run_on > throughOn ||
+      current.version !== expectedVersion
+    ) {
+      return { stale: true, current };
+    }
+    return { schedule: current };
+  }
+
   async finishGoalScheduleRun(
     workspaceId,
     schedule,
@@ -612,9 +854,10 @@ export class PgPlanningRepository {
       detail = {},
       nextRunOn,
       pauseSchedule = false,
+      actorId = "goal-scheduler",
     },
   ) {
-    return withTransaction(this.#pool, async (client) => {
+    return this.#withTransaction(async (client) => {
       const inserted = await client.query(
         `
           INSERT INTO goal_schedule_runs (
@@ -641,22 +884,42 @@ export class PgPlanningRepository {
         ],
       );
       if (!inserted.rows[0]) return { replayed: true };
-      await client.query(
+      const advanced = await client.query(
         `
           UPDATE goal_funding_schedules
           SET
             next_run_on = $3,
             status = CASE WHEN $4::boolean THEN 'paused' ELSE status END,
+            updated_by = $7,
             updated_at = now(),
-            version = CASE
-              WHEN $4::boolean THEN version + 1
-              ELSE version
-            END
-          WHERE workspace_id = $1 AND id = $2
+            version = version + 1
+          WHERE workspace_id = $1
+            AND id = $2
+            AND status = 'active'
+            AND next_run_on = $5
+            AND version = $6
+          RETURNING *
         `,
-        [workspaceId, schedule.id, nextRunOn, pauseSchedule],
+        [
+          workspaceId,
+          schedule.id,
+          nextRunOn,
+          pauseSchedule,
+          dueOn,
+          schedule.version,
+          actorId,
+        ],
       );
-      return { replayed: false, run_id: runId };
+      if (!advanced.rows[0]) {
+        throw new Error(
+          "Goal schedule changed while its due run was being applied.",
+        );
+      }
+      return {
+        replayed: false,
+        run_id: runId,
+        schedule: mapSchedule(advanced.rows[0]),
+      };
     });
   }
 
@@ -664,7 +927,7 @@ export class PgPlanningRepository {
     workspaceId = DEFAULT_WORKSPACE_ID,
     { limit = 30 } = {},
   ) {
-    const result = await this.#pool.query(
+    const result = await this.#client().query(
       `
         SELECT run.*, schedule.goal_id, schedule.source
         FROM goal_schedule_runs run
@@ -690,9 +953,10 @@ export class PgPlanningRepository {
   async listResolvedBudgetLines(
     workspaceId = DEFAULT_WORKSPACE_ID,
     monthOn,
-    client = this.#pool,
+    client = null,
+    { includeExact = true } = {},
   ) {
-    const result = await client.query(
+    const result = await (client ?? this.#client()).query(
       `
         WITH defaults AS (
           SELECT DISTINCT ON (category)
@@ -708,21 +972,46 @@ export class PgPlanningRepository {
         overrides AS (
           SELECT category, amount_minor, currency_code
           FROM budget_lines
-          WHERE workspace_id = $1 AND month_on = $2
+          WHERE workspace_id = $1
+            AND month_on = $2
+            AND $3::boolean
         )
         SELECT
           COALESCE(overrides.category, defaults.category) AS category,
           COALESCE(overrides.amount_minor, defaults.amount_minor) AS amount_minor,
           COALESCE(overrides.currency_code, defaults.currency_code) AS currency_code,
           (overrides.category IS NOT NULL) AS exact_month,
-          defaults.effective_month_on
+          defaults.effective_month_on,
+          COALESCE(category_version.version, 0) AS version
         FROM defaults
         FULL OUTER JOIN overrides USING (category)
+        LEFT JOIN budget_category_versions category_version
+          ON category_version.workspace_id = $1
+         AND category_version.category =
+            COALESCE(overrides.category, defaults.category)
         ORDER BY category
       `,
-      [workspaceId, monthOn],
+      [workspaceId, monthOn, includeExact],
     );
     return result.rows.map(mapBudgetLine);
+  }
+
+  async listBudgetCategoryVersions(
+    workspaceId = DEFAULT_WORKSPACE_ID,
+  ) {
+    const result = await this.#client().query(
+      `
+        SELECT category, version
+        FROM budget_category_versions
+        WHERE workspace_id = $1
+        ORDER BY category
+      `,
+      [workspaceId],
+    );
+    return result.rows.map((row) => ({
+      category: row.category,
+      version: Number(row.version),
+    }));
   }
 
   async ensureBudgetMonthSnapshot(
@@ -730,7 +1019,7 @@ export class PgPlanningRepository {
     monthOn,
     actorId = "budget-snapshot",
   ) {
-    return withTransaction(this.#pool, async (client) => {
+    return this.#withTransaction(async (client) => {
       const inserted = await client.query(
         `
           INSERT INTO budget_months (
@@ -786,20 +1075,49 @@ export class PgPlanningRepository {
       category,
       amountMinor,
       scope,
+      expectedVersion,
       auditEventId,
     },
     actor,
   ) {
-    return withTransaction(this.#pool, async (client) => {
-      const table =
-        scope === "future_default"
-          ? "budget_default_revisions"
-          : "budget_lines";
-      const dateColumn =
-        scope === "future_default" ? "effective_month_on" : "month_on";
-      const dateValueInput =
-        scope === "future_default" ? effectiveMonthOn : monthOn;
-      if (scope !== "future_default") {
+    return this.withWorkspacePlanningLock(workspaceId, async (client) => {
+      const isRevision = scope !== "month";
+      const table = isRevision
+        ? "budget_default_revisions"
+        : "budget_lines";
+      const dateColumn = isRevision ? "effective_month_on" : "month_on";
+      const dateValueInput = isRevision ? effectiveMonthOn : monthOn;
+      const versionResult = await client.query(
+        `
+          SELECT version
+          FROM budget_category_versions
+          WHERE workspace_id = $1 AND category = $2
+          FOR UPDATE
+        `,
+        [workspaceId, category],
+      );
+      const currentVersion = Number(
+        versionResult.rows[0]?.version ?? 0,
+      );
+      if (currentVersion !== expectedVersion) {
+        const currentLines = await this.listResolvedBudgetLines(
+          workspaceId,
+          dateValueInput,
+          client,
+          { includeExact: scope === "month" },
+        );
+        return {
+          conflict: true,
+          current:
+            currentLines.find((line) => line.category === category) ?? {
+              category,
+              amount_minor: null,
+              currency_code: "USD",
+              version: currentVersion,
+            },
+        };
+      }
+      if (!isRevision) {
         await client.query(
           `
             INSERT INTO budget_months (
@@ -812,14 +1130,35 @@ export class PgPlanningRepository {
           [workspaceId, monthOn, actor.id],
         );
       }
-      const before = await client.query(
-        `
-          SELECT category, amount_minor, currency_code
-          FROM ${table}
-          WHERE workspace_id = $1 AND ${dateColumn} = $2 AND category = $3
-        `,
-        [workspaceId, dateValueInput, category],
-      );
+      let beforeValue;
+      if (isRevision) {
+        beforeValue =
+          (
+            await this.listResolvedBudgetLines(
+              workspaceId,
+              dateValueInput,
+              client,
+              { includeExact: false },
+            )
+          ).find((line) => line.category === category) ?? null;
+      } else {
+        const before = await client.query(
+          `
+            SELECT category, amount_minor, currency_code
+            FROM ${table}
+            WHERE workspace_id = $1
+              AND ${dateColumn} = $2
+              AND category = $3
+          `,
+          [workspaceId, dateValueInput, category],
+        );
+        beforeValue = before.rows[0]
+          ? mapBudgetLine({
+              ...before.rows[0],
+              version: currentVersion,
+            })
+          : null;
+      }
       const result = await client.query(
         `
           INSERT INTO ${table} (
@@ -840,24 +1179,43 @@ export class PgPlanningRepository {
         `,
         [workspaceId, dateValueInput, category, amountMinor, actor.id],
       );
-      const after = mapBudgetLine(result.rows[0]);
+      const version = await client.query(
+        `
+          INSERT INTO budget_category_versions (
+            workspace_id,
+            category,
+            version
+          )
+          VALUES ($1, $2, 1)
+          ON CONFLICT (workspace_id, category)
+          DO UPDATE SET
+            version = budget_category_versions.version + 1,
+            updated_at = now()
+          RETURNING version
+        `,
+        [workspaceId, category],
+      );
+      const after = mapBudgetLine({
+        ...result.rows[0],
+        version: version.rows[0].version,
+      });
       const auditId = await insertAudit(client, {
         id: auditEventId,
         workspaceId,
         eventType:
-          scope === "future_default"
-            ? "budget.default_set"
-            : "budget.month_set",
+          scope === "standing"
+            ? "budget.standing_set"
+            : scope === "future_default"
+              ? "budget.default_set"
+              : "budget.month_set",
         subjectType: "budget_line",
         subjectId: `${dateValueInput}:${category}`,
         actor,
-        before: before.rows[0] ? mapBudgetLine(before.rows[0]) : null,
+        before: beforeValue,
         after,
       });
       return {
-        before: before.rows[0]
-          ? mapBudgetLine(before.rows[0])
-          : null,
+        before: beforeValue,
         after,
         line: after,
         audit_event_id: auditId,
@@ -870,7 +1228,7 @@ export class PgPlanningRepository {
     { monthOn, copiedFromMonthOn, lines, auditEventId },
     actor,
   ) {
-    return withTransaction(this.#pool, async (client) => {
+    return this.withWorkspacePlanningLock(workspaceId, async (client) => {
       const before = await this.listResolvedBudgetLines(
         workspaceId,
         monthOn,
@@ -909,6 +1267,29 @@ export class PgPlanningRepository {
           [workspaceId, monthOn, line.category, line.amount_minor, actor.id],
         );
       }
+      const changedCategories = [
+        ...new Set(
+          before.concat(lines).map((line) => line.category),
+        ),
+      ];
+      if (changedCategories.length > 0) {
+        await client.query(
+          `
+            INSERT INTO budget_category_versions (
+              workspace_id,
+              category,
+              version
+            )
+            SELECT $1, category, 1
+            FROM unnest($2::text[]) category
+            ON CONFLICT (workspace_id, category)
+            DO UPDATE SET
+              version = budget_category_versions.version + 1,
+              updated_at = now()
+          `,
+          [workspaceId, changedCategories],
+        );
+      }
       const after = await this.listResolvedBudgetLines(
         workspaceId,
         monthOn,
@@ -933,15 +1314,494 @@ export class PgPlanningRepository {
     });
   }
 
+  async getTransactionGoalSpending(
+    workspaceId = DEFAULT_WORKSPACE_ID,
+    transactionId,
+    client = null,
+  ) {
+    const database = client ?? this.#client();
+    const transactionResult = await database.query(
+      `
+        SELECT
+          id,
+          provider_transaction_id,
+          amount_minor,
+          currency_code,
+          posted_on,
+          pending,
+          excluded_from_spending,
+          goal_spend_version
+        FROM transactions
+        WHERE workspace_id = $1
+          AND id = $2
+      `,
+      [workspaceId, transactionId],
+    );
+    if (!transactionResult.rows[0]) return null;
+    const spendResult = await database.query(
+      `
+        SELECT spend.*
+        FROM goal_transaction_spends spend
+        WHERE spend.workspace_id = $1
+          AND spend.transaction_id = $2
+          AND spend.status = 'active'
+        ORDER BY spend.line_index, spend.id
+      `,
+      [workspaceId, transactionId],
+    );
+    const transaction = mapGoalSpendTransaction(
+      transactionResult.rows[0],
+    );
+    return {
+      transaction,
+      goal_spend_version: transaction.goal_spend_version,
+      goal_spends: spendResult.rows.map(mapGoalSpend),
+    };
+  }
+
+  async replaceTransactionGoalSpending(
+    workspaceId,
+    transactionId,
+    lines,
+    expectedTransactionVersion,
+    expectedGoalVersions,
+    actor,
+    auditEventId,
+  ) {
+    return this.withWorkspacePlanningLock(workspaceId, async (client) => {
+      const transactionResult = await client.query(
+        `
+          SELECT
+            id,
+            provider_transaction_id,
+            amount_minor,
+            currency_code,
+            posted_on,
+            pending,
+            excluded_from_spending,
+            goal_spend_version
+          FROM transactions
+          WHERE workspace_id = $1
+            AND id = $2
+          FOR UPDATE
+        `,
+        [workspaceId, transactionId],
+      );
+      if (!transactionResult.rows[0]) return null;
+      const transaction = mapGoalSpendTransaction(
+        transactionResult.rows[0],
+      );
+      const beforeResult = await client.query(
+        `
+          SELECT spend.*
+          FROM goal_transaction_spends spend
+          WHERE spend.workspace_id = $1
+            AND spend.transaction_id = $2
+            AND spend.status = 'active'
+          ORDER BY spend.line_index, spend.id
+          FOR UPDATE
+        `,
+        [workspaceId, transactionId],
+      );
+      const before = beforeResult.rows.map(mapGoalSpend);
+      const current = {
+        transaction,
+        goal_spend_version: transaction.goal_spend_version,
+        goal_spends: before,
+      };
+      if (
+        transaction.goal_spend_version !== expectedTransactionVersion
+      ) {
+        return { conflict: true, current };
+      }
+
+      const normalized = normalizeGoalSpendLines(lines);
+      if (normalized.error) {
+        return validationFailure(normalized.error, current);
+      }
+      const nextLines = normalized.lines;
+      if (
+        nextLines.length > 0 &&
+        (
+          transaction.pending ||
+          transaction.currency_code !== "USD" ||
+          transaction.amount_minor >= 0 ||
+          transaction.excluded_from_spending
+        )
+      ) {
+        return validationFailure(
+          {
+            code: "transaction_not_posted_usd_expense",
+            message:
+              "Only posted, included USD expense transactions can spend from goals.",
+          },
+          current,
+        );
+      }
+      const nextTotal = nextLines.reduce(
+        (sum, line) => sum + line.amount_minor,
+        0,
+      );
+      if (nextTotal > -transaction.amount_minor) {
+        return validationFailure(
+          {
+            code: "goal_spend_exceeds_transaction",
+            message:
+              "Goal spending cannot exceed the transaction expense.",
+          },
+          current,
+        );
+      }
+      if (sameGoalSpendLines(before, nextLines)) {
+        return {
+          before,
+          after: before,
+          goal_spends: before,
+          goal_spend_version: transaction.goal_spend_version,
+          noop: true,
+          audit_event_id: null,
+        };
+      }
+
+      const beforeByGoalSource = sumGoalSpendLines(before);
+      const nextByGoalSource = sumGoalSpendLines(nextLines);
+      const candidateGoalIds = [
+        ...new Set(
+          before
+            .map((line) => line.goal_id)
+            .concat(nextLines.map((line) => line.goal_id)),
+        ),
+      ];
+      const affectedGoalIds = candidateGoalIds
+        .filter((goalId) =>
+          ["cash", "brokerage"].some((source) => {
+            const key = `${goalId}:${source}`;
+            return (
+              (beforeByGoalSource.get(key) ?? 0) !==
+              (nextByGoalSource.get(key) ?? 0)
+            );
+          }),
+        )
+        .sort();
+      const goalResult = affectedGoalIds.length
+        ? await client.query(
+            `
+              SELECT *
+              FROM finance_goals
+              WHERE workspace_id = $1
+                AND id = ANY($2::text[])
+              ORDER BY id
+              FOR UPDATE
+            `,
+            [workspaceId, affectedGoalIds],
+          )
+        : { rows: [] };
+      const goalsById = new Map(
+        goalResult.rows.map((goal) => [goal.id, goal]),
+      );
+      if (goalsById.size !== affectedGoalIds.length) {
+        return validationFailure(
+          {
+            code: "goal_not_found",
+            message: "One or more goals no longer exist.",
+          },
+          {
+            ...current,
+            goals: goalResult.rows.map(mapGoalVersion),
+          },
+        );
+      }
+      const expectedVersions = goalVersionMap(expectedGoalVersions);
+      for (const goalId of affectedGoalIds) {
+        const goal = goalsById.get(goalId);
+        if (
+          !expectedVersions.has(goalId) ||
+          expectedVersions.get(goalId) !== Number(goal.version)
+        ) {
+          return {
+            conflict: true,
+            current: {
+              ...current,
+              goals: goalResult.rows.map(mapGoalVersion),
+            },
+          };
+        }
+      }
+
+      const reactivatedGoalIds = [];
+      for (const goalId of affectedGoalIds) {
+        const goal = goalsById.get(goalId);
+        if (goal.status !== "archived") continue;
+        let restored = false;
+        for (const source of ["cash", "brokerage"]) {
+          const key = `${goalId}:${source}`;
+          const previous = beforeByGoalSource.get(key) ?? 0;
+          const next = nextByGoalSource.get(key) ?? 0;
+          if (next > previous) {
+            return validationFailure(
+              {
+                code: "goal_archived",
+                message:
+                  "Archived goals cannot receive new transaction spending.",
+              },
+              {
+                ...current,
+                goals: goalResult.rows.map(mapGoalVersion),
+              },
+            );
+          }
+          restored ||= next < previous;
+        }
+        if (restored) reactivatedGoalIds.push(goalId);
+      }
+
+      const beforeByKey = new Map(
+        before.map((line) => [goalSpendKey(line), line]),
+      );
+      const retained = nextLines
+        .map((line) => ({
+          current: beforeByKey.get(goalSpendKey(line)),
+          next: line,
+        }))
+        .filter(
+          ({ current, next }) =>
+            current && current.amount_minor === next.amount_minor,
+        );
+      const retainedKeys = new Set(
+        retained.map(({ next }) => goalSpendKey(next)),
+      );
+      const reversedIds = before
+        .filter((line) => !retainedKeys.has(goalSpendKey(line)))
+        .map((line) => line.id);
+      const insertedLines = nextLines.filter(
+        (line) => !retainedKeys.has(goalSpendKey(line)),
+      );
+      const activeIds = new Set(before.map((line) => line.id));
+      if (insertedLines.some((line) => activeIds.has(line.id))) {
+        return validationFailure(
+          {
+            code: "goal_spend_id_reused",
+            message:
+              "Changed goal spending lines must use a new record ID.",
+          },
+          current,
+        );
+      }
+      if (reversedIds.length > 0) {
+        await client.query(
+          `
+            UPDATE goal_transaction_spends
+            SET
+              status = 'reversed',
+              ended_reason = 'replaced_by_user',
+              updated_by = $4,
+              updated_at = now(),
+              ended_at = now()
+            WHERE workspace_id = $1
+              AND transaction_id = $2
+              AND id = ANY($3::text[])
+              AND status = 'active'
+          `,
+          [
+            workspaceId,
+            transactionId,
+            reversedIds,
+            actor.id,
+          ],
+        );
+      }
+      for (const { current: retainedLine, next: nextLine } of retained) {
+        if (retainedLine.line_index === nextLine.line_index) continue;
+        await client.query(
+          `
+            UPDATE goal_transaction_spends
+            SET
+              line_index = $3,
+              updated_by = $4,
+              updated_at = now()
+            WHERE workspace_id = $1
+              AND id = $2
+              AND status = 'active'
+          `,
+          [
+            workspaceId,
+            retainedLine.id,
+            nextLine.line_index,
+            actor.id,
+          ],
+        );
+      }
+      for (const line of insertedLines) {
+        await client.query(
+          `
+            INSERT INTO goal_transaction_spends (
+              id,
+              workspace_id,
+              transaction_id,
+              transaction_provider_id,
+              goal_id,
+              source,
+              line_index,
+              amount_minor,
+              created_by,
+              updated_by
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)
+          `,
+          [
+            line.id,
+            workspaceId,
+            transactionId,
+            transaction.provider_transaction_id,
+            line.goal_id,
+            line.source,
+            line.line_index,
+            line.amount_minor,
+            actor.id,
+          ],
+        );
+      }
+
+      for (const goalId of reactivatedGoalIds) {
+        const goal = goalsById.get(goalId);
+        await insertAudit(client, {
+          id: `${auditEventId}:reactivate:${goalId}`,
+          workspaceId,
+          eventType: "goal.reactivated_after_spend_reversal",
+          subjectType: "goal",
+          subjectId: goalId,
+          actor,
+          before: {
+            status: goal.status,
+            version: Number(goal.version),
+            archived_at: dateValue(goal.archived_at),
+            archive_outcome: goal.archive_outcome ?? null,
+          },
+          after: {
+            status: "active",
+            version: Number(goal.version) + 1,
+            archived_at: null,
+            archive_outcome: null,
+          },
+        });
+      }
+      const advancedGoals = affectedGoalIds.length
+        ? await client.query(
+            `
+              UPDATE finance_goals
+              SET
+                status = CASE
+                  WHEN id = ANY($3::text[]) THEN 'active'
+                  ELSE status
+                END,
+                archived_at = CASE
+                  WHEN id = ANY($3::text[]) THEN NULL
+                  ELSE archived_at
+                END,
+                archive_outcome = CASE
+                  WHEN id = ANY($3::text[]) THEN NULL
+                  ELSE archive_outcome
+                END,
+                updated_by = $4,
+                updated_at = now(),
+                version = version + 1
+              WHERE workspace_id = $1
+                AND id = ANY($2::text[])
+              RETURNING
+                id,
+                status,
+                version,
+                archived_at,
+                archive_outcome
+            `,
+            [
+              workspaceId,
+              affectedGoalIds,
+              reactivatedGoalIds,
+              actor.id,
+            ],
+          )
+        : { rows: [] };
+      const advancedTransaction = await client.query(
+        `
+          UPDATE transactions
+          SET goal_spend_version = goal_spend_version + 1
+          WHERE workspace_id = $1
+            AND id = $2
+            AND goal_spend_version = $3
+          RETURNING goal_spend_version
+        `,
+        [
+          workspaceId,
+          transactionId,
+          expectedTransactionVersion,
+        ],
+      );
+      if (!advancedTransaction.rows[0]) {
+        throw new Error(
+          "Transaction goal-spend version changed while its lines were being saved.",
+        );
+      }
+      const nextVersion = Number(
+        advancedTransaction.rows[0].goal_spend_version,
+      );
+      const afterResult = await client.query(
+        `
+          SELECT spend.*
+          FROM goal_transaction_spends spend
+          WHERE spend.workspace_id = $1
+            AND spend.transaction_id = $2
+            AND spend.status = 'active'
+          ORDER BY spend.line_index, spend.id
+        `,
+        [workspaceId, transactionId],
+      );
+      const after = afterResult.rows.map((row) =>
+        mapGoalSpend({
+          ...row,
+          goal_spend_version: nextVersion,
+        }),
+      );
+      const auditId = await insertAudit(client, {
+        id: auditEventId,
+        workspaceId,
+        eventType: after.length
+          ? "transaction.goal_spends_replaced"
+          : "transaction.goal_spends_cleared",
+        subjectType: "transaction",
+        subjectId: transactionId,
+        actor,
+        before: {
+          goal_spend_version: transaction.goal_spend_version,
+          goal_spends: before,
+        },
+        after: {
+          goal_spend_version: nextVersion,
+          goal_spends: after,
+        },
+      });
+      return {
+        before,
+        after,
+        goal_spends: after,
+        goal_spend_version: nextVersion,
+        goals: advancedGoals.rows.map(mapGoalVersion),
+        audit_event_id: auditId,
+      };
+    });
+  }
+
   async listTransactionSplits(
     workspaceId = DEFAULT_WORKSPACE_ID,
     { transactionIds = null, startOn = null, endOn = null } = {},
   ) {
-    const result = await this.#pool.query(
+    const result = await this.#client().query(
       `
-        SELECT split.*
+        SELECT split.*, transaction.split_version
         FROM transaction_splits split
-        JOIN transactions transaction ON transaction.id = split.transaction_id
+        JOIN transactions transaction
+          ON transaction.workspace_id = split.workspace_id
+         AND transaction.id = split.transaction_id
         WHERE split.workspace_id = $1
           AND ($2::text[] IS NULL OR split.transaction_id = ANY($2))
           AND ($3::date IS NULL OR transaction.posted_on >= $3)
@@ -957,10 +1817,27 @@ export class PgPlanningRepository {
     workspaceId,
     transactionId,
     lines,
+    expectedVersion,
     actor,
     auditEventId,
   ) {
-    return withTransaction(this.#pool, async (client) => {
+    return this.#withTransaction(async (client) => {
+      const parentResult = await client.query(
+        `
+          SELECT
+            id,
+            amount_minor,
+            currency_code,
+            pending,
+            split_version
+          FROM transactions
+          WHERE workspace_id = $1 AND id = $2
+          FOR UPDATE
+        `,
+        [workspaceId, transactionId],
+      );
+      const parent = parentResult.rows[0];
+      if (!parent) return null;
       const beforeResult = await client.query(
         `
           SELECT * FROM transaction_splits
@@ -969,6 +1846,46 @@ export class PgPlanningRepository {
         `,
         [workspaceId, transactionId],
       );
+      const currentVersion = Number(parent.split_version ?? 0);
+      const current = {
+        transaction_id: transactionId,
+        split_version: currentVersion,
+        lines: beforeResult.rows.map((row) =>
+          mapSplit({ ...row, split_version: currentVersion }),
+        ),
+      };
+      if (currentVersion !== expectedVersion) {
+        return { conflict: true, current };
+      }
+      if (lines.length > 0) {
+        const parentAmount = integer(parent.amount_minor);
+        const total = lines.reduce(
+          (sum, line) => sum + Number(line.amount_minor),
+          0,
+        );
+        const invalid =
+          lines.length < 2 ||
+          parent.pending ||
+          parent.currency_code !== "USD" ||
+          parentAmount === 0 ||
+          lines.some(
+            (line) =>
+              Math.sign(Number(line.amount_minor)) !==
+              Math.sign(parentAmount),
+          ) ||
+          total !== parentAmount;
+        if (invalid) {
+          return {
+            conflict: true,
+            current: {
+              ...current,
+              amount_minor: parentAmount,
+              currency_code: parent.currency_code,
+              pending: Boolean(parent.pending),
+            },
+          };
+        }
+      }
       await client.query(
         `
           DELETE FROM transaction_splits
@@ -1011,8 +1928,29 @@ export class PgPlanningRepository {
         `,
         [workspaceId, transactionId],
       );
-      const before = beforeResult.rows.map(mapSplit);
-      const after = afterResult.rows.map(mapSplit);
+      const advanced = await client.query(
+        `
+          UPDATE transactions
+          SET split_version = split_version + 1
+          WHERE workspace_id = $1
+            AND id = $2
+            AND split_version = $3
+          RETURNING split_version
+        `,
+        [workspaceId, transactionId, expectedVersion],
+      );
+      if (!advanced.rows[0]) {
+        throw new Error(
+          "Transaction split version changed while its lines were being saved.",
+        );
+      }
+      const nextVersion = Number(advanced.rows[0].split_version);
+      const before = beforeResult.rows.map((row) =>
+        mapSplit({ ...row, split_version: currentVersion }),
+      );
+      const after = afterResult.rows.map((row) =>
+        mapSplit({ ...row, split_version: nextVersion }),
+      );
       const auditId = await insertAudit(client, {
         id: auditEventId,
         workspaceId,
@@ -1029,6 +1967,7 @@ export class PgPlanningRepository {
         before,
         after,
         splits: after,
+        split_version: nextVersion,
         audit_event_id: auditId,
       };
     });
@@ -1038,7 +1977,7 @@ export class PgPlanningRepository {
     workspaceId = DEFAULT_WORKSPACE_ID,
     { limit = 40 } = {},
   ) {
-    const result = await this.#pool.query(
+    const result = await this.#client().query(
       `
         SELECT *
         FROM plan_audit_events
@@ -1106,23 +2045,97 @@ async function insertAudit(
 }
 
 function mapGoal(row) {
+  const recordedAllocations = mapSourceAmounts(
+    row.recorded_allocations ?? row.allocations ?? [],
+  );
+  const spending = mapSourceAmounts(row.spending ?? []);
+  const recordedBySource = new Map(
+    recordedAllocations.map((entry) => [
+      entry.source,
+      entry.amount_minor,
+    ]),
+  );
+  const spentBySource = new Map(
+    spending.map((entry) => [entry.source, entry.amount_minor]),
+  );
+  const sources = [
+    ...new Set([
+      ...recordedBySource.keys(),
+      ...spentBySource.keys(),
+    ]),
+  ].sort();
+  const allocations =
+    row.status === "archived"
+      ? []
+      : deriveGoalAllocations(
+          recordedBySource,
+          spentBySource,
+          sources,
+        );
   return {
     id: row.id,
     name: row.name,
+    purpose: row.purpose ?? "other",
     target_amount_minor: integer(row.target_amount_minor),
     currency_code: row.currency_code ?? "USD",
     target_on: row.target_on ? String(row.target_on) : null,
     status: row.status,
     version: Number(row.version),
-    allocations: (row.allocations ?? []).map((entry) => ({
-      source: entry.source,
-      amount_minor: integer(entry.amount_minor),
-    })),
+    allocations,
+    recorded_allocations: recordedAllocations,
+    spending,
     schedules: (row.schedules ?? []).map(mapSchedule),
     archived_at: dateValue(row.archived_at),
+    archive_outcome: row.archive_outcome ?? null,
     created_at: dateValue(row.created_at),
     updated_at: dateValue(row.updated_at),
   };
+}
+
+function deriveGoalAllocations(
+  recordedBySource,
+  spentBySource,
+  sources,
+) {
+  const remainingBySource = new Map(
+    sources.map((source) => [
+      source,
+      Math.max(
+        0,
+        (recordedBySource.get(source) ?? 0) -
+          (spentBySource.get(source) ?? 0),
+      ),
+    ]),
+  );
+  for (const source of sources) {
+    let overrun = Math.max(
+      0,
+      (spentBySource.get(source) ?? 0) -
+        (recordedBySource.get(source) ?? 0),
+    );
+    if (overrun === 0) continue;
+    for (const fallbackSource of sources) {
+      if (fallbackSource === source || overrun === 0) continue;
+      const available = remainingBySource.get(fallbackSource) ?? 0;
+      const consumed = Math.min(available, overrun);
+      remainingBySource.set(
+        fallbackSource,
+        available - consumed,
+      );
+      overrun -= consumed;
+    }
+  }
+  return sources.map((source) => ({
+    source,
+    amount_minor: remainingBySource.get(source) ?? 0,
+  }));
+}
+
+function mapSourceAmounts(entries) {
+  return entries.map((entry) => ({
+    source: entry.source,
+    amount_minor: integer(entry.amount_minor),
+  }));
 }
 
 function mapAllocation(row) {
@@ -1156,6 +2169,7 @@ function mapBudgetLine(row) {
     category: row.category,
     amount_minor: integer(row.amount_minor),
     currency_code: row.currency_code ?? "USD",
+    version: Number(row.version ?? 0),
     exact_month: Boolean(row.exact_month),
     effective_month_on: row.effective_month_on
       ? String(row.effective_month_on)
@@ -1167,10 +2181,170 @@ function mapSplit(row) {
   return {
     id: row.id,
     transaction_id: row.transaction_id,
+    split_version: Number(row.split_version ?? 0),
     line_index: Number(row.line_index),
     category: row.category,
     amount_minor: integer(row.amount_minor),
     note: row.note ?? null,
+  };
+}
+
+function mapGoalSpend(row) {
+  return {
+    id: row.id,
+    transaction_id: row.transaction_id ?? null,
+    transaction_provider_id: row.transaction_provider_id,
+    goal_id: row.goal_id,
+    source: row.source,
+    line_index: Number(row.line_index),
+    amount_minor: integer(row.amount_minor),
+    status: row.status ?? "active",
+    ended_reason: row.ended_reason ?? null,
+    created_at: dateValue(row.created_at),
+    updated_at: dateValue(row.updated_at),
+    ended_at: dateValue(row.ended_at),
+  };
+}
+
+function mapGoalSpendTransaction(row) {
+  return {
+    id: row.id,
+    provider_transaction_id: row.provider_transaction_id,
+    amount_minor: integer(row.amount_minor),
+    currency_code: row.currency_code,
+    posted_on: String(row.posted_on),
+    pending: Boolean(row.pending),
+    excluded_from_spending: Boolean(row.excluded_from_spending),
+    goal_spend_version: Number(row.goal_spend_version ?? 0),
+  };
+}
+
+function mapGoalVersion(row) {
+  return {
+    id: row.id,
+    status: row.status,
+    version: Number(row.version),
+    archived_at: dateValue(row.archived_at),
+    archive_outcome: row.archive_outcome ?? null,
+  };
+}
+
+function normalizeGoalSpendLines(lines) {
+  if (!Array.isArray(lines) || lines.length > 50) {
+    return {
+      error: {
+        code: "invalid_goal_spend_lines",
+        message:
+          "Goal spending lines must be an array with at most 50 entries.",
+      },
+    };
+  }
+  const normalized = [];
+  const indices = new Set();
+  const goalSources = new Set();
+  for (const line of lines) {
+    const amountMinor = Number(line?.amount_minor);
+    const lineIndex = Number(line?.line_index);
+    const id = String(line?.id ?? "");
+    const goalId = String(line?.goal_id ?? "");
+    const source = String(line?.source ?? "");
+    const goalSource = `${goalId}:${source}`;
+    if (
+      !id ||
+      !goalId ||
+      !["cash", "brokerage"].includes(source) ||
+      !Number.isSafeInteger(lineIndex) ||
+      lineIndex < 0 ||
+      lineIndex > 49 ||
+      !Number.isSafeInteger(amountMinor) ||
+      amountMinor <= 0 ||
+      indices.has(lineIndex) ||
+      goalSources.has(goalSource)
+    ) {
+      return {
+        error: {
+          code: "invalid_goal_spend_lines",
+          message:
+            "Each goal spending line needs a unique index and goal/source pair with a positive safe-integer amount.",
+        },
+      };
+    }
+    indices.add(lineIndex);
+    goalSources.add(goalSource);
+    normalized.push({
+      id,
+      line_index: lineIndex,
+      goal_id: goalId,
+      source,
+      amount_minor: amountMinor,
+    });
+  }
+  normalized.sort(
+    (left, right) =>
+      left.line_index - right.line_index ||
+      left.id.localeCompare(right.id),
+  );
+  return { lines: normalized };
+}
+
+function sameGoalSpendLines(current, proposed) {
+  if (current.length !== proposed.length) return false;
+  return current.every((line, index) => {
+    const next = proposed[index];
+    return (
+      line.line_index === next.line_index &&
+      line.goal_id === next.goal_id &&
+      line.source === next.source &&
+      line.amount_minor === next.amount_minor
+    );
+  });
+}
+
+function sumGoalSpendLines(lines) {
+  const result = new Map();
+  for (const line of lines) {
+    const key = goalSpendKey(line);
+    result.set(key, (result.get(key) ?? 0) + line.amount_minor);
+  }
+  return result;
+}
+
+function goalSpendKey(line) {
+  return `${line.goal_id}:${line.source}`;
+}
+
+function goalVersionMap(value) {
+  if (value instanceof Map) return value;
+  if (Array.isArray(value)) {
+    return new Map(
+      value.map((entry) => [
+        entry.goal_id ?? entry.id,
+        Number(entry.version),
+      ]),
+    );
+  }
+  if (value && typeof value === "object") {
+    return new Map(
+      Object.entries(value).map(([goalId, version]) => [
+        goalId,
+        Number(version),
+      ]),
+    );
+  }
+  return new Map();
+}
+
+function validationFailure(error, current) {
+  return {
+    validation: true,
+    code: error.code,
+    message: error.message,
+    current,
+    ...(error.goal_id ? { goal_id: error.goal_id } : {}),
+    ...(error.source ? { source: error.source } : {}),
+    ...(error.available_minor == null
+      ? {}
+      : { available_minor: error.available_minor }),
   };
 }
 

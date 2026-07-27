@@ -48,11 +48,15 @@ test("HTTP MCP discovery separates read and plan-write credentials", async () =>
   const readNames = read.body.result.tools.map((tool) => tool.name);
   const writeNames = write.body.result.tools.map((tool) => tool.name);
 
-  assert.equal(readNames.length, 14);
-  assert.equal(writeNames.length, 21);
+  assert.equal(readNames.length, 15);
+  assert.equal(writeNames.length, 24);
   assert.ok(readNames.includes("get_safe_to_spend"));
   assert.equal(readNames.includes("create_finance_goal"), false);
+  assert.ok(readNames.includes("get_transaction_goal_spending"));
+  assert.equal(readNames.includes("spend_from_finance_goal"), false);
   assert.ok(writeNames.includes("create_finance_goal"));
+  assert.ok(writeNames.includes("spend_from_finance_goal"));
+  assert.ok(writeNames.includes("reverse_goal_spend"));
 });
 
 test("only the plan credential can execute an idempotent audited write", async () => {
@@ -103,20 +107,218 @@ test("only the plan credential can execute an idempotent audited write", async (
   );
 });
 
-test("the Plan page renders the daily number, goals, schedules, budgets, and scenarios", async () => {
+test("the Plan page renders the daily number, goals, schedules, and budgets", async () => {
   const app = createApp({
     config,
     financeService: createDemoFinanceService(),
     planningService: createDemoPlanningService(),
   });
   const response = await request(app)
-    .get("/plan?month=2026-07")
+    .get("/plan?month=2030-01")
     .set("Host", "money.test")
     .expect(200);
   assert.match(response.text, /Safe to Spend/);
   assert.match(response.text, /House down payment/);
   assert.match(response.text, /Every other Friday/);
-  assert.match(response.text, /Copy last month/);
-  assert.match(response.text, /Model a scenario/);
+  assert.match(response.text, /Edit budget/);
+  assert.match(response.text, /<h2 id="budget-heading">Budget<\/h2>/);
+  assert.match(response.text, /Previous month actual/);
+  assert.match(response.text, /budget-row--total/);
+  assert.match(response.text, /href="\/transactions\?category=Dining"/);
+  assert.match(response.text, /\$71\.46 over/);
+  assert.match(response.text, /\$65\.70 under/);
+  assert.doesNotMatch(
+    response.text,
+    /type="month"|Budget month|View month|Standing plan|July 2026 actuals/,
+  );
+  assert.doesNotMatch(response.text, /Copy last month|Save month|Future default/);
+  assert.doesNotMatch(response.text, /Add a budget category/);
+  assert.doesNotMatch(response.text, /Model a scenario|Run scenario/);
   assert.match(response.text, /Allocation and plan history/);
+
+  const totalIndex = response.text.indexOf("budget-row--total");
+  const utilitiesIndex = response.text.indexOf(
+    'href="/transactions?category=Utilities"',
+  );
+  const otherIndex = response.text.indexOf(
+    'href="/transactions?category=Other"',
+  );
+  assert.ok(totalIndex >= 0 && totalIndex < otherIndex);
+  assert.ok(utilitiesIndex >= 0 && utilitiesIndex < otherIndex);
+  assert.match(
+    response.text,
+    /href="\/transactions\?category=Dining">Dining<\/a><\/span>\s*<span role="cell">\$450\.00<\/span>\s*<span role="cell">\$521\.46<\/span>[\s\S]*?<span role="cell">\$460\.00<\/span>/,
+  );
+});
+
+test("the budget is view-only until edit mode is explicit", async () => {
+  const app = createApp({
+    config,
+    financeService: createDemoFinanceService(),
+    planningService: createDemoPlanningService(),
+  });
+  const response = await request(app)
+    .get("/plan?edit_budget=1")
+    .set("Host", "money.test")
+    .expect(200);
+
+  assert.match(response.text, /Done<\/a>/);
+  assert.match(response.text, /Add a budget category/);
+  assert.match(
+    response.text,
+    /data-endpoint="\/api\/v1\/plan\/budget"/,
+  );
+  assert.match(
+    response.text,
+    /name="expected_version" value="0"/,
+  );
+  assert.match(
+    response.text,
+    /name="expected_version" value="[1-9]\d*"/,
+  );
+  assert.match(response.text, /data-money-minor="amount_minor"/);
+  assert.doesNotMatch(
+    response.text,
+    /name="scope"|name="effective_month_on"/,
+  );
+  assert.doesNotMatch(response.text, /Copy last month|Save month|Future default/);
+});
+
+test("Dashboard and Plan render one identical Safe to Spend card without a link", async () => {
+  const planningService = createDemoPlanningService();
+  const app = createApp({
+    config,
+    financeService: createDemoFinanceService(),
+    planningService,
+  });
+  const dashboard = await request(app)
+    .get("/")
+    .set("Host", "money.test")
+    .expect(200);
+  const plan = await request(app)
+    .get("/plan?month=2026-07")
+    .set("Host", "money.test")
+    .expect(200);
+  const safeCard = (html) =>
+    html.match(
+      /<section class="card safe-to-spend-hero[\s\S]*?<\/section>/,
+    )?.[0];
+
+  assert.ok(safeCard(dashboard.text));
+  assert.equal(safeCard(dashboard.text), safeCard(plan.text));
+  assert.match(dashboard.text, /<h2 id="safe-to-spend-heading">Safe to Spend<\/h2>/);
+  assert.match(dashboard.text, /class="display-money">\$34,563\.17<\/p>/);
+  assert.doesNotMatch(
+    safeCard(dashboard.text),
+    /Available after cards and cash-backed goals|Open the family plan|Cash details|quiet-link/,
+  );
+});
+
+test("demo category drill-down projects saved splits into its ledger and detail", async () => {
+  const planningService = createDemoPlanningService();
+  await planningService.splitTransaction({
+    transaction_id: "txn_whole_foods",
+    expected_version: 0,
+    lines: [
+      { category: "Groceries", amount_minor: -8_842 },
+      { category: "Other", amount_minor: -5_000 },
+    ],
+  });
+  const app = createApp({
+    config,
+    financeService: createDemoFinanceService(),
+    planningService,
+  });
+
+  const response = await request(app)
+    .get(
+      "/transactions?category=Other&transaction=txn_whole_foods",
+    )
+    .set("Host", "money.test")
+    .expect(200);
+
+  assert.match(
+    response.text,
+    /href="\/transactions\?category=Other&amp;transaction=txn_whole_foods"/,
+  );
+  assert.match(
+    response.text,
+    /id="selected-transaction-heading">Whole Foods Market<\/h2>[\s\S]*?<p>Other · Everyday checking · 2026-07-25(?: · [^<]+)*<\/p>/,
+  );
+  assert.match(
+    response.text,
+    /Whole Foods Market<\/strong>\s*<span>Other · Everyday checking(?: · [^<]+)*<\/span>[\s\S]*?-\$50\.00/,
+  );
+  assert.match(response.text, /data-source-amount="-13842"/);
+  assert.match(
+    response.text,
+    /name="expected_version" value="1"/,
+  );
+  assert.match(response.text, /Showing 1 transactions/);
+});
+
+test("the dashboard does not load the full family plan for Safe to Spend", async () => {
+  const planningService = createDemoPlanningService();
+  planningService.getPlanningOverview = async () => {
+    throw new Error("dashboard must not load the full family plan");
+  };
+  const app = createApp({
+    config,
+    financeService: createDemoFinanceService(),
+    planningService,
+  });
+
+  await request(app)
+    .get("/")
+    .set("Host", "money.test")
+    .expect(200);
+});
+
+test("the transaction goal picker uses every active goal, not the paginated goal list", async () => {
+  const planningService = createDemoPlanningService();
+  const getSafeToSpend =
+    planningService.getSafeToSpend.bind(planningService);
+  planningService.getSafeToSpend = async () => {
+    const result = await getSafeToSpend();
+    return {
+      ...result,
+      data: {
+        ...result.data,
+        goals: Array.from({ length: 9 }, (_, index) => ({
+          id: `goal_${index + 1}`,
+          name: `Goal ${index + 1}`,
+          status: "active",
+          version: 1,
+          cash_earmarked: {
+            amount_minor: 0,
+            currency: "USD",
+          },
+          brokerage_earmarked: {
+            amount_minor: 0,
+            currency: "USD",
+          },
+        })),
+      },
+    };
+  };
+  planningService.listFinanceGoals = async () => {
+    throw new Error(
+      "The transaction picker must not use the paginated goal list.",
+    );
+  };
+  const app = createApp({
+    config,
+    financeService: createDemoFinanceService(),
+    planningService,
+  });
+
+  const response = await request(app)
+    .get("/transactions?transaction=txn_whole_foods")
+    .set("Host", "money.test")
+    .expect(200);
+
+  assert.match(
+    response.text,
+    /value="goal_9"[\s\S]*?>Goal 9<\/option>/,
+  );
 });

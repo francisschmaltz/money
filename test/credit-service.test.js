@@ -147,6 +147,7 @@ test("credit page data and accounts expose the same current credit facts", async
     query: { period: "1w" },
   });
   assert.equal(page.creditData.period.name, "1w");
+  assert.equal(page.creditScoreData.period.name, "1w");
   assert.equal(
     page.creditData.summary.utilization_basis_points,
     2_500,

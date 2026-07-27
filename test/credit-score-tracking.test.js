@@ -63,6 +63,14 @@ test("source averages update over time while household members stay equally weig
       ["2026-07-27", 700],
     ],
   );
+  assert.deepEqual(result.history[0].person_scores, [
+    { person_id: "person_1", average_score: 750 },
+    { person_id: "person_2", average_score: 600 },
+  ]);
+  assert.deepEqual(result.history[1].person_scores, [
+    { person_id: "person_1", average_score: 800 },
+    { person_id: "person_2", average_score: 600 },
+  ]);
   assert.equal(result.household.change, 25);
 });
 
@@ -149,6 +157,14 @@ test("history is bounded and MCP output removes names and mutation controls", ()
   assert.equal(result.people[0].person_label, "Person 1");
   assert.equal(Object.hasOwn(result.people[0], "person_name"), false);
   assert.equal(Object.hasOwn(result.people[0], "can_manage"), false);
+  assert.equal(
+    result.history[0].person_scores[0].person_label,
+    "Person 1",
+  );
+  assert.equal(
+    Object.hasOwn(result.history[0].person_scores[0], "person_id"),
+    false,
+  );
   assert.doesNotMatch(JSON.stringify(result), /Alex|Blair/);
 });
 

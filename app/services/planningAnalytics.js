@@ -1,6 +1,7 @@
 import { inferBalanceGroup, money, shiftDateOnly } from "./analytics.js";
 
 const SUPPORTED_SOURCES = new Set(["cash", "brokerage"]);
+const DEFAULT_GOAL_PURPOSE = "other";
 
 export function workspaceDate(value = new Date(), timeZone = "America/Los_Angeles") {
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -40,14 +41,22 @@ export function nextMonthlyDueOn(afterOn, monthlyDay) {
 
 export function nextBiweeklyFridayDueOn(afterOn, anchorOn) {
   const anchor = parseDate(anchorOn);
-  if (anchor.getUTCDay() !== 5) {
-    throw new TypeError("Biweekly schedule anchors must be Fridays.");
-  }
+  assertFridayAnchor(anchor);
   const after = parseDate(afterOn);
   if (anchor > after) return anchor.toISOString().slice(0, 10);
   const elapsedDays = Math.floor((after - anchor) / 86_400_000);
   const periods = Math.floor(elapsedDays / 14) + 1;
   return shiftDateOnly(anchor, periods * 14);
+}
+
+export function assertFridayAnchor(value) {
+  const anchor = value instanceof Date ? value : parseDate(value);
+  if (anchor.getUTCDay() !== 5) {
+    throw new TypeError("Biweekly schedule anchors must be Fridays.");
+  }
+  return String(
+    value instanceof Date ? value.toISOString() : value,
+  ).slice(0, 10);
 }
 
 export function nextScheduleDueOn(schedule, afterOn) {
@@ -121,12 +130,18 @@ export function buildPlanningSnapshot({
   const plannedGoals = normalizedGoals.map((goal) => {
     const brokerageBackedMinor =
       effectiveBrokerage.get(goal.id) ?? goal.brokerage_earmarked_minor;
-    const fundedMinor = goal.cash_earmarked_minor + brokerageBackedMinor;
+    const spentMinor =
+      goal.cash_spent_minor + goal.brokerage_spent_minor;
+    const fundedMinor =
+      spentMinor + goal.cash_earmarked_minor + brokerageBackedMinor;
     return {
       ...goal,
       cash_earmarked: money(goal.cash_earmarked_minor, currency),
       brokerage_earmarked: money(goal.brokerage_earmarked_minor, currency),
       brokerage_backed: money(brokerageBackedMinor, currency),
+      cash_spent: money(goal.cash_spent_minor, currency),
+      brokerage_spent: money(goal.brokerage_spent_minor, currency),
+      spent: money(spentMinor, currency),
       funded: money(fundedMinor, currency),
       shortfall: money(
         Math.max(0, goal.target_amount_minor - fundedMinor),
@@ -141,6 +156,7 @@ export function buildPlanningSnapshot({
             ),
       brokerage_under_backed:
         brokerageBackedMinor < goal.brokerage_earmarked_minor,
+      ...goalSpendMetrics(goal, currency),
     };
   });
   const brokerageBackedTotal = plannedGoals.reduce(
@@ -195,6 +211,149 @@ export function buildPlanningSnapshot({
   };
 }
 
+export function buildArchivedGoalSnapshot(
+  goal,
+  { currency = "USD" } = {},
+) {
+  const normalized = normalizeGoal(goal);
+  const {
+    allocations: _activeAllocations,
+    cash_earmarked_minor: _cashEarmarkedMinor,
+    brokerage_earmarked_minor: _brokerageEarmarkedMinor,
+    ...archivedBase
+  } = normalized;
+  const spentMinor =
+    normalized.cash_spent_minor +
+    normalized.brokerage_spent_minor;
+  const recordedCashMinor = normalized.cash_recorded_minor;
+  const recordedBrokerageMinor =
+    normalized.brokerage_recorded_minor;
+  const recordedFundingMinor =
+    recordedCashMinor + recordedBrokerageMinor;
+  const unusedCashMinor = normalized.cash_earmarked_minor;
+  const unusedBrokerageMinor =
+    normalized.brokerage_earmarked_minor;
+  const unusedFundingMinor =
+    unusedCashMinor + unusedBrokerageMinor;
+  return {
+    ...archivedBase,
+    allocations: [],
+    cash_earmarked_minor: 0,
+    brokerage_earmarked_minor: 0,
+    purpose: normalized.purpose ?? DEFAULT_GOAL_PURPOSE,
+    status: "archived",
+    archived: true,
+    archive_outcome: normalized.archive_outcome ?? "completed",
+    currency,
+    cash_earmarked: money(0, currency),
+    brokerage_earmarked: money(0, currency),
+    brokerage_backed: money(0, currency),
+    recorded_cash_funding: money(recordedCashMinor, currency),
+    recorded_brokerage_funding: money(
+      recordedBrokerageMinor,
+      currency,
+    ),
+    recorded_funding: money(recordedFundingMinor, currency),
+    unused_cash_funding: money(unusedCashMinor, currency),
+    unused_brokerage_funding: money(
+      unusedBrokerageMinor,
+      currency,
+    ),
+    unused_funding: money(unusedFundingMinor, currency),
+    cash_spent: money(normalized.cash_spent_minor, currency),
+    brokerage_spent: money(
+      normalized.brokerage_spent_minor,
+      currency,
+    ),
+    spent: money(spentMinor, currency),
+    funded: money(recordedFundingMinor, currency),
+    shortfall: money(
+      Math.max(
+        0,
+        normalized.target_amount_minor - recordedFundingMinor,
+      ),
+      currency,
+    ),
+    progress_basis_points:
+      normalized.target_amount_minor === 0
+        ? 0
+        : Math.min(
+            10_000,
+            ratioBasisPoints(
+              recordedFundingMinor,
+              normalized.target_amount_minor,
+            ),
+          ),
+    brokerage_under_backed: false,
+    ...goalSpendMetrics(normalized, currency),
+  };
+}
+
+export function buildGoalHistoryInsights(
+  goals,
+  { currency = "USD", minimumEvidence = 3 } = {},
+) {
+  const evidenceFloor = Math.max(
+    3,
+    Number.isSafeInteger(minimumEvidence) ? minimumEvidence : 3,
+  );
+  const completed = goals
+    .filter(
+      (goal) =>
+        goal.status === "archived" &&
+        (goal.archive_outcome ?? "completed") === "completed",
+    )
+    .map((goal) => {
+      const snapshot = buildArchivedGoalSnapshot(goal, { currency });
+      return {
+        goal: snapshot,
+        actualVarianceBasisPoints: ratioBasisPoints(
+          snapshot.actual.amount_minor -
+            snapshot.planned.amount_minor,
+          snapshot.planned.amount_minor,
+        ),
+      };
+    })
+    .filter((entry) => entry.goal.actual.amount_minor > 0);
+  const byPurpose = new Map();
+  for (const entry of completed) {
+    const purpose =
+      entry.goal.purpose ?? DEFAULT_GOAL_PURPOSE;
+    if (purpose === DEFAULT_GOAL_PURPOSE) continue;
+    const entries = byPurpose.get(purpose) ?? [];
+    entries.push(entry);
+    byPurpose.set(purpose, entries);
+  }
+  return [...byPurpose.entries()]
+    .filter(([, entries]) => entries.length >= evidenceFloor)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([purpose, entries]) => {
+      const ordered = [...entries].sort((left, right) => {
+        const variance =
+          left.actualVarianceBasisPoints -
+          right.actualVarianceBasisPoints;
+        return (
+          variance ||
+          left.goal.id.localeCompare(right.goal.id)
+        );
+      });
+      return {
+        kind: "purpose_actual_variance",
+        purpose,
+        completed_goal_count: ordered.length,
+        median_actual_variance_basis_points: medianInteger(
+          ordered.map(
+            (entry) => entry.actualVarianceBasisPoints,
+          ),
+        ),
+        evidence_goal_ids_truncated: false,
+        evidence_goal_ids: ordered
+          .map((entry) => entry.goal.id)
+          .sort((left, right) => left.localeCompare(right)),
+      };
+    });
+}
+
 export function buildBudgetStatus({
   monthOn,
   budgetLines = [],
@@ -240,15 +399,22 @@ export function buildBudgetStatus({
       Number(line.amount_minor),
     ]),
   );
+  const versionByCategory = new Map(
+    budgetLines.map((line) => [
+      line.category,
+      Number(line.version ?? 0),
+    ]),
+  );
   const categories = [...new Set([
     ...planByCategory.keys(),
     ...actualByCategory.keys(),
-  ])].sort((left, right) => left.localeCompare(right));
+  ])].sort(compareBudgetCategories);
   const lines = categories.map((category) => {
     const planned = planByCategory.get(category) ?? 0;
     const actual = actualByCategory.get(category) ?? 0;
     return {
       category,
+      version: versionByCategory.get(category) ?? 0,
       planned: money(planned, currency),
       actual: money(actual, currency),
       remaining: money(planned - actual, currency),
@@ -284,6 +450,19 @@ export function buildBudgetStatus({
   };
 }
 
+export function compareBudgetCategories(left, right) {
+  const leftLabel = String(left);
+  const rightLabel = String(right);
+  const leftIsOther = leftLabel.trim().toLowerCase() === "other";
+  const rightIsOther = rightLabel.trim().toLowerCase() === "other";
+  if (leftIsOther !== rightIsOther) return leftIsOther ? 1 : -1;
+  return (
+    leftLabel.localeCompare(rightLabel, "en-US", {
+      sensitivity: "base",
+    }) || leftLabel.localeCompare(rightLabel, "en-US")
+  );
+}
+
 export function expandTransactionsWithSplits(transactions, splits) {
   const byTransaction = new Map();
   for (const split of splits) {
@@ -293,7 +472,7 @@ export function expandTransactionsWithSplits(transactions, splits) {
   }
   return transactions.flatMap((transaction) => {
     const lines = byTransaction.get(transaction.id);
-    if (!lines?.length) return [transaction];
+    if (!validSplitSet(transaction, lines)) return [transaction];
     return lines.map((line) => ({
       ...transaction,
       id: `${transaction.id}:${line.id ?? line.line_index}`,
@@ -303,6 +482,30 @@ export function expandTransactionsWithSplits(transactions, splits) {
       split_parent_id: transaction.id,
     }));
   });
+}
+
+function validSplitSet(transaction, lines) {
+  if (!Array.isArray(lines) || lines.length < 2) return false;
+  const parentAmount = Number(transaction.amount_minor);
+  if (!Number.isSafeInteger(parentAmount) || parentAmount === 0) {
+    return false;
+  }
+  let total = 0;
+  for (const line of lines) {
+    const amount = Number(line.amount_minor);
+    if (
+      !Number.isSafeInteger(amount) ||
+      amount === 0 ||
+      Math.sign(amount) !== Math.sign(parentAmount) ||
+      typeof line.category !== "string" ||
+      !line.category.trim()
+    ) {
+      return false;
+    }
+    total += amount;
+    if (!Number.isSafeInteger(total)) return false;
+  }
+  return total === parentAmount;
 }
 
 export function modelPlanningScenario({
@@ -348,6 +551,7 @@ export function modelPlanningScenario({
     ),
   );
   const shockedFunded =
+    (selectedGoal?.spent?.amount_minor ?? 0) +
     (selectedGoal?.cash_earmarked.amount_minor ?? 0) +
     shockedSelectedBrokerage;
   const target = selectedGoal?.target_amount_minor ?? 0;
@@ -414,12 +618,127 @@ function normalizeGoal(goal) {
       return [entry.source, Number(entry.amount_minor)];
     }),
   );
+  const spending = Object.fromEntries(
+    (goal.spending ?? []).map((entry) => {
+      if (!SUPPORTED_SOURCES.has(entry.source)) {
+        throw new TypeError("Unsupported goal spending source.");
+      }
+      return [entry.source, Number(entry.amount_minor)];
+    }),
+  );
+  const hasRecordedAllocations = Array.isArray(
+    goal.recorded_allocations,
+  );
+  const recordedAllocation = Object.fromEntries(
+    (goal.recorded_allocations ?? []).map((entry) => {
+      if (!SUPPORTED_SOURCES.has(entry.source)) {
+        throw new TypeError("Unsupported goal allocation source.");
+      }
+      return [entry.source, Number(entry.amount_minor)];
+    }),
+  );
+  if (!hasRecordedAllocations) {
+    for (const source of SUPPORTED_SOURCES) {
+      recordedAllocation[source] =
+        (allocation[source] ?? 0) + (spending[source] ?? 0);
+    }
+  }
+  for (const [label, value] of [
+    ["cash earmark", allocation.cash ?? 0],
+    ["brokerage earmark", allocation.brokerage ?? 0],
+    ["cash spending", spending.cash ?? 0],
+    ["brokerage spending", spending.brokerage ?? 0],
+    ["recorded cash funding", recordedAllocation.cash ?? 0],
+    [
+      "recorded brokerage funding",
+      recordedAllocation.brokerage ?? 0,
+    ],
+  ]) {
+    if (!Number.isSafeInteger(value) || value < 0) {
+      throw new TypeError(`Goal ${label} cannot be negative.`);
+    }
+  }
+  const remainingFunding = remainingGoalFunding({
+    cashRecordedMinor: recordedAllocation.cash ?? 0,
+    brokerageRecordedMinor:
+      recordedAllocation.brokerage ?? 0,
+    cashSpentMinor: spending.cash ?? 0,
+    brokerageSpentMinor: spending.brokerage ?? 0,
+  });
   return {
     ...goal,
     target_amount_minor: Number(goal.target_amount_minor),
-    cash_earmarked_minor: Math.max(0, allocation.cash ?? 0),
-    brokerage_earmarked_minor: Math.max(0, allocation.brokerage ?? 0),
+    cash_earmarked_minor: remainingFunding.cash,
+    brokerage_earmarked_minor: remainingFunding.brokerage,
+    cash_spent_minor: spending.cash ?? 0,
+    brokerage_spent_minor: spending.brokerage ?? 0,
+    cash_recorded_minor: recordedAllocation.cash ?? 0,
+    brokerage_recorded_minor:
+      recordedAllocation.brokerage ?? 0,
+    purpose: goal.purpose ?? DEFAULT_GOAL_PURPOSE,
   };
+}
+
+function goalSpendMetrics(goal, currency) {
+  const spentMinor =
+    goal.cash_spent_minor + goal.brokerage_spent_minor;
+  const targetMinor = goal.target_amount_minor;
+  const unfundedSpendMinor = Math.max(
+    0,
+    spentMinor -
+      goal.cash_recorded_minor -
+      goal.brokerage_recorded_minor,
+  );
+  return {
+    target_amount: money(targetMinor, currency),
+    planned: money(targetMinor, currency),
+    actual: money(spentMinor, currency),
+    plan_remaining: money(
+      Math.max(0, targetMinor - spentMinor),
+      currency,
+    ),
+    over_by: money(Math.max(0, spentMinor - targetMinor), currency),
+    unfunded_spend: money(unfundedSpendMinor, currency),
+    used_basis_points:
+      targetMinor === 0
+        ? null
+        : Math.max(0, ratioBasisPoints(spentMinor, targetMinor)),
+  };
+}
+
+function remainingGoalFunding({
+  cashRecordedMinor,
+  brokerageRecordedMinor,
+  cashSpentMinor,
+  brokerageSpentMinor,
+}) {
+  const cashDirect = Math.max(
+    0,
+    cashRecordedMinor - cashSpentMinor,
+  );
+  const brokerageDirect = Math.max(
+    0,
+    brokerageRecordedMinor - brokerageSpentMinor,
+  );
+  const cashOverrun = Math.max(
+    0,
+    cashSpentMinor - cashRecordedMinor,
+  );
+  const brokerageOverrun = Math.max(
+    0,
+    brokerageSpentMinor - brokerageRecordedMinor,
+  );
+  return {
+    cash: Math.max(0, cashDirect - brokerageOverrun),
+    brokerage: Math.max(0, brokerageDirect - cashOverrun),
+  };
+}
+
+function medianInteger(values) {
+  const ordered = [...values].sort((left, right) => left - right);
+  const middle = Math.floor(ordered.length / 2);
+  if (ordered.length % 2 === 1) return ordered[middle];
+  return Math.round((ordered[middle - 1] + ordered[middle]) / 2);
 }
 
 function allocateProRata(goals, brokerageValue, totalEarmarks) {

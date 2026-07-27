@@ -41,6 +41,13 @@ function mcpMethodNotAllowed(_request, response) {
     });
 }
 
+export function stableAssetCacheOptions(config) {
+  return {
+    immutable: false,
+    maxAge: config.production ? "1h" : 0,
+  };
+}
+
 function viewer(user) {
   if (!user) return null;
   const name = user.name || user.displayName || user.email || "Finance user";
@@ -153,31 +160,31 @@ export function createApp({
 
   app.use(
     "/css",
-    express.static(path.join(applicationRoot, "public/css"), {
-      immutable: config.production,
-      maxAge: config.production ? "1h" : 0,
-    }),
+    express.static(
+      path.join(applicationRoot, "public/css"),
+      stableAssetCacheOptions(config),
+    ),
   );
   app.use(
     "/js",
-    express.static(path.join(applicationRoot, "public/js"), {
-      immutable: config.production,
-      maxAge: config.production ? "1h" : 0,
-    }),
+    express.static(
+      path.join(applicationRoot, "public/js"),
+      stableAssetCacheOptions(config),
+    ),
   );
   app.use(
     "/vendor/phosphor",
     express.static(
       path.join(projectRoot, "node_modules/@phosphor-icons/web/src"),
-      { immutable: true, maxAge: "7d" },
+      stableAssetCacheOptions(config),
     ),
   );
   app.use(
     "/vendor/chart",
-    express.static(path.join(projectRoot, "node_modules/chart.js/dist"), {
-      immutable: true,
-      maxAge: "7d",
-    }),
+    express.static(
+      path.join(projectRoot, "node_modules/chart.js/dist"),
+      stableAssetCacheOptions(config),
+    ),
   );
 
   app.get("/health/live", (_request, response) => {

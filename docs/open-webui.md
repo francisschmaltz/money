@@ -44,14 +44,59 @@ get_safe_to_spend
 list_finance_goals
 get_budget_status
 model_finance_plan
+get_transaction_goal_spending
 create_finance_goal
 update_finance_goal
 allocate_finance_goal
 set_goal_funding_schedule
-archive_finance_goal
+finish_finance_goal
 set_category_budget
 split_transaction
+spend_from_finance_goal
+reverse_goal_spend
 ```
+
+Planning writes use optimistic versions in addition to idempotency keys.
+Pass each budget line's `version` to `set_category_budget` and each
+transaction's `split_version` to `split_transaction`. Use `0` only for a new
+budget category or a transaction whose split version is zero. A stale version
+returns a conflict; retry the same completed request with the same
+idempotency key to replay its original receipt.
+
+Before calling `spend_from_finance_goal` or `reverse_goal_spend`, call
+`get_transaction_goal_spending` for the exact transaction and
+`list_finance_goals` for the exact goal. Pass their current values as
+`expected_transaction_version` (from `goal_spend_version`) and
+`expected_goal_version`. Reversals also use the returned goal-spend record
+`id` as `goal_spend_id`; never guess it from the merchant or amount.
+These writes only change virtual earmarks and transaction attribution. They do
+not move cash, pay a card, sell brokerage assets, or place a trade.
+
+Goal spending may exceed the selected source's remaining earmark or the goal
+target. Usage may exceed 100%, but `plan_remaining` stops at zero and
+`over_by` reports the positive overage. A source overrun consumes the goal's
+other funding before it becomes `unfunded_spend`; it never creates a negative
+earmark or fake Safe to Spend. Reverse the exact goal-spend record to correct
+an attribution.
+
+Create goals with a stable `purpose`:
+`vacation`, `home`, `vehicle`, `education`, `emergency`, `event`, `purchase`,
+or `other`. Finish one with `finish_finance_goal` and an `outcome` of
+`completed` or `cancelled`. Finishing freezes the plan, pauses schedules,
+removes leftover earmarks from active planning, and preserves the goal,
+funding history, and transaction links. Query it later with
+`list_finance_goals({status:"archived"})` and follow `next_cursor` while
+`has_more` is true. Purpose insights use completed
+goals with attributed actual spending only and appear only when enough
+comparable history exists. The catch-all `other` purpose is never treated as a
+meaningful spending pattern. Finished cards report active earmarks as zero;
+`recorded_funding` and `unused_funding` preserve what was funded and released.
+
+Explicit goal attribution is durable evidence. A later cleanup or category
+rule does not silently rewrite it; reverse the exact goal-spend record when the
+attribution itself is wrong. Provider corrections to amount, status, currency,
+or exclusion still invalidate affected goal spending and reactivate a finished
+goal for review.
 
 Attach **`server:mcp:money`** to the Open WebUI model used by compatible clients.
 Depending on the Open WebUI call-output path, tool names may arrive as either
@@ -61,8 +106,8 @@ accepts both.
 After changing tool names or schemas:
 
 1. Verify/refresh the `money` external tool connection.
-2. Confirm the read credential discovers 14 tools and the planning credential
-   discovers all 21.
+2. Confirm the read credential discovers 15 tools and the planning credential
+   discovers all 24.
 3. Start a fresh chat. Existing chats may retain stale tool metadata.
 4. Call every card kind before declaring the deploy done.
 
@@ -118,7 +163,7 @@ Use `include` for the complete portfolio, `exclude` for the app's **Trading**
 view (taxable/personal brokerage accounts), and `only` for retirement
 accounts.
 
-Credit-score calls accept `1m`, `1y`, or `all` and default to `1y`:
+Credit-score calls accept `1w`, `1m`, `1y`, or `all` and default to `1y`:
 
 ```json
 {"name":"get_credit_score_summary","arguments":{"period":"1y"}}

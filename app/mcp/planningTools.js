@@ -21,6 +21,7 @@ const READ_METHODS = Object.freeze({
   list_finance_goals: "listFinanceGoals",
   get_budget_status: "getBudgetStatus",
   model_finance_plan: "modelFinancePlan",
+  get_transaction_goal_spending: "getTransactionGoalSpending",
 });
 
 const WRITE_METHODS = Object.freeze({
@@ -28,9 +29,11 @@ const WRITE_METHODS = Object.freeze({
   update_finance_goal: "updateFinanceGoal",
   allocate_finance_goal: "allocateFinanceGoal",
   set_goal_funding_schedule: "setGoalFundingSchedule",
-  archive_finance_goal: "archiveFinanceGoal",
+  finish_finance_goal: "finishFinanceGoal",
   set_category_budget: "setCategoryBudget",
   split_transaction: "splitTransaction",
+  spend_from_finance_goal: "spendFromFinanceGoal",
+  reverse_goal_spend: "reverseGoalSpend",
 });
 
 const DEFINITIONS = Object.freeze({
@@ -42,22 +45,27 @@ const DEFINITIONS = Object.freeze({
   list_finance_goals: {
     title: "List finance goals",
     description:
-      "List shared-household goals, cash and taxable-brokerage earmarks, effective brokerage backing after market changes, progress, schedules, and shortfalls. Brokerage earmarks are virtual and never imply a trade or transfer.",
+      "List a bounded page of shared-household goals, funding, attributed actual spending, non-negative remaining plan, positive overage, schedules, and shortfalls. Use status archived or all for finished history, purpose to narrow comparisons, and next_cursor to continue. Purpose insights use the full history independently of the returned page. Brokerage earmarks are virtual and never imply a trade or transfer.",
   },
   get_budget_status: {
     title: "Get monthly budget status",
     description:
-      "Compare posted category spending against the independent plan for one calendar month. Refunds reduce spending; transfers and card payments stay excluded; budgets never alter Safe to Spend and never roll over.",
+      "Compare one calendar month's posted category spending against the standing monthly plan. Planned amounts persist until edited; actuals restart each month. Refunds reduce spending, transfers and card payments stay excluded, and budgets never alter Safe to Spend.",
   },
   model_finance_plan: {
     title: "Model finance plan",
     description:
       "Run a deterministic goal-funding and brokerage-change scenario using explicit editable assumptions. This is arithmetic, not investment, tax, or suitability advice.",
   },
+  get_transaction_goal_spending: {
+    title: "Get transaction goal spending",
+    description:
+      "Get one transaction's active goal-spending links, unassigned amount, goal versions, and goal_spend_version. Read this immediately before spending from a goal or reversing goal spending; never guess either optimistic version.",
+  },
   create_finance_goal: {
     title: "Create finance goal",
     description:
-      "Create a shared-household USD goal. This changes the family plan but does not move money. Confirm the name, target, and optional date with the user before calling.",
+      "Create a shared-household USD goal with a stable purpose for later plan-versus-actual insights. This changes the family plan but does not move money. Confirm the name, purpose, target, and optional date before calling.",
   },
   update_finance_goal: {
     title: "Update finance goal",
@@ -74,20 +82,30 @@ const DEFINITIONS = Object.freeze({
     description:
       "Create or edit automatic virtual goal attribution monthly or every other Friday. Monthly days 1–31 clamp to month end. The Friday cadence requires an explicit Friday anchor.",
   },
-  archive_finance_goal: {
-    title: "Archive finance goal",
+  finish_finance_goal: {
+    title: "Finish finance goal",
     description:
-      "Archive a zero-earmark goal using its optimistic version and pause its active schedules. Release allocations first.",
+      "Finish an active goal as completed or cancelled using its optimistic version. This freezes the plan, preserves attributed transactions and funding history, removes leftover earmarks from active planning, and pauses schedules. A completed goal may be under, exactly on, or over its target.",
   },
   set_category_budget: {
     title: "Set category budget",
     description:
-      "Set one category for one selected month, or explicitly set a separate future-month default. Budgets are scoreboards and never reserve cash or roll over.",
+      "Set a category in the current standing monthly plan using the version returned by get_budget_status (0 for a new category). The amount persists until edited and never reserves cash or alters Safe to Spend.",
   },
   split_transaction: {
     title: "Split transaction",
     description:
-      "Replace or clear category splits for one posted transaction. Lines must preserve the source sign and sum exactly to the source amount. Provider transaction data remains untouched.",
+      "Replace or clear category splits using the split_version returned by list_transactions (0 when never split). Lines must preserve the source sign and sum exactly to the source amount. Provider transaction data remains untouched.",
+  },
+  spend_from_finance_goal: {
+    title: "Spend from finance goal",
+    description:
+      "Attribute part of a posted USD outflow to an active finance goal. Spending may exceed its remaining earmark or target; usage can exceed 100%, the remaining plan never becomes negative, and the positive overage is reported as over_by. A source overrun consumes the goal's other funding before it becomes unfunded, so finishing an overused goal cannot create fake Safe to Spend. This is virtual attribution, not a payment, transfer, brokerage sale, or trade. Confirm the transaction, goal, source, and amount, then pass exact current versions.",
+  },
+  reverse_goal_spend: {
+    title: "Reverse goal spending",
+    description:
+      "Reverse one transaction-to-goal spending link while preserving audit history. The reversal reduces actual spending and restores only unused recorded funding; it cannot manufacture an earmark after overspending. Confirm the exact record, then pass current goal and transaction versions.",
   },
 });
 
@@ -110,9 +128,6 @@ function writeServiceResult(result) {
     data: {
       change: planningCardValue(result?.changed ?? {}),
       safe_to_spend: result?.safe_to_spend ?? null,
-      goals: planningCardValue(
-        Array.isArray(result?.goals) ? result.goals : [],
-      ),
       audit_event_id: result?.audit_event_id ?? null,
     },
     data_as_of: result?.data_as_of,
@@ -288,7 +303,7 @@ export function registerPlanningTools(
         outputSchema: FINANCE_TOOL_OUTPUT_SCHEMAS[toolName],
         annotations: {
           readOnlyHint: false,
-          destructiveHint: toolName === "archive_finance_goal",
+          destructiveHint: toolName === "finish_finance_goal",
           idempotentHint: true,
           openWorldHint: false,
         },

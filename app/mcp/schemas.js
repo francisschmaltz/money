@@ -64,6 +64,20 @@ const querySchema = z
   .refine((value) => !/[\u0000-\u001f\u007f]/.test(value));
 
 const categorySchema = z.string().trim().min(1).max(100);
+const financeGoalPurposeSchema = z.enum([
+  "vacation",
+  "home",
+  "vehicle",
+  "education",
+  "emergency",
+  "event",
+  "purchase",
+  "other",
+]);
+const financeGoalArchiveOutcomeSchema = z.enum([
+  "completed",
+  "cancelled",
+]);
 
 const safeMinorUnitsSchema = z
   .number()
@@ -258,7 +272,7 @@ export const FINANCE_TOOL_INPUT_SCHEMAS = Object.freeze({
 
   get_credit_score_summary: z
     .object({
-      period: z.enum(["1m", "1y", "all"]).default("1y"),
+      period: z.enum(["1w", "1m", "1y", "all"]).default("1y"),
     })
     .strict(),
 
@@ -266,7 +280,16 @@ export const FINANCE_TOOL_INPUT_SCHEMAS = Object.freeze({
 
   list_finance_goals: z
     .object({
-      include_archived: z.boolean().default(false),
+      status: z.enum(["active", "archived", "all"]).optional(),
+      purpose: financeGoalPurposeSchema.optional(),
+      limit: boundedLimit(8, 8),
+      cursor: cursorSchema.optional(),
+    })
+    .strict(),
+
+  get_transaction_goal_spending: z
+    .object({
+      transaction_id: opaqueIdSchema,
     })
     .strict(),
 
@@ -297,6 +320,7 @@ export const FINANCE_TOOL_INPUT_SCHEMAS = Object.freeze({
   create_finance_goal: z
     .object({
       name: z.string().trim().min(1).max(120),
+      purpose: financeGoalPurposeSchema.default("other"),
       target_amount_minor: positiveMinorUnitsSchema,
       target_on: isoDateSchema.nullable().optional(),
       idempotency_key: idempotencyKeySchema,
@@ -308,6 +332,7 @@ export const FINANCE_TOOL_INPUT_SCHEMAS = Object.freeze({
       goal_id: opaqueIdSchema,
       expected_version: z.number().int().min(1),
       name: z.string().trim().min(1).max(120).optional(),
+      purpose: financeGoalPurposeSchema.optional(),
       target_amount_minor: positiveMinorUnitsSchema.optional(),
       target_on: isoDateSchema.nullable().optional(),
       idempotency_key: idempotencyKeySchema,
@@ -316,6 +341,7 @@ export const FINANCE_TOOL_INPUT_SCHEMAS = Object.freeze({
     .refine(
       (value) =>
         value.name !== undefined ||
+        value.purpose !== undefined ||
         value.target_amount_minor !== undefined ||
         Object.hasOwn(value, "target_on"),
       "At least one goal field must change.",
@@ -364,12 +390,24 @@ export const FINANCE_TOOL_INPUT_SCHEMAS = Object.freeze({
           path: ["anchor_on"],
         });
       }
+      if (
+        value.cadence === "biweekly_friday" &&
+        value.anchor_on != null &&
+        new Date(`${value.anchor_on}T00:00:00.000Z`).getUTCDay() !== 5
+      ) {
+        context.addIssue({
+          code: "custom",
+          message: "anchor_on must be a Friday.",
+          path: ["anchor_on"],
+        });
+      }
     }),
 
-  archive_finance_goal: z
+  finish_finance_goal: z
     .object({
       goal_id: opaqueIdSchema,
       expected_version: z.number().int().min(1),
+      outcome: financeGoalArchiveOutcomeSchema.default("completed"),
       idempotency_key: idempotencyKeySchema,
     })
     .strict(),
@@ -378,9 +416,7 @@ export const FINANCE_TOOL_INPUT_SCHEMAS = Object.freeze({
     .object({
       category: categorySchema,
       amount_minor: nonnegativeMinorUnitsSchema,
-      scope: z.enum(["month", "future_default"]).default("month"),
-      month_on: isoDateSchema.optional(),
-      effective_month_on: isoDateSchema.optional(),
+      expected_version: z.number().int().min(0),
       idempotency_key: idempotencyKeySchema,
     })
     .strict(),
@@ -388,6 +424,7 @@ export const FINANCE_TOOL_INPUT_SCHEMAS = Object.freeze({
   split_transaction: z
     .object({
       transaction_id: opaqueIdSchema,
+      expected_version: z.number().int().min(0),
       lines: z
         .array(
           z
@@ -402,6 +439,28 @@ export const FINANCE_TOOL_INPUT_SCHEMAS = Object.freeze({
             .strict(),
         )
         .max(50),
+      idempotency_key: idempotencyKeySchema,
+    })
+    .strict(),
+
+  spend_from_finance_goal: z
+    .object({
+      transaction_id: opaqueIdSchema,
+      goal_id: opaqueIdSchema,
+      source: z.enum(["cash", "brokerage"]),
+      amount_minor: positiveMinorUnitsSchema,
+      expected_goal_version: z.number().int().min(1),
+      expected_transaction_version: z.number().int().min(0),
+      idempotency_key: idempotencyKeySchema,
+    })
+    .strict(),
+
+  reverse_goal_spend: z
+    .object({
+      transaction_id: opaqueIdSchema,
+      goal_spend_id: opaqueIdSchema,
+      expected_goal_version: z.number().int().min(1),
+      expected_transaction_version: z.number().int().min(0),
       idempotency_key: idempotencyKeySchema,
     })
     .strict(),

@@ -46,6 +46,22 @@ test("transaction category options always expose one canonical fee category", ()
   );
 });
 
+test("transaction category options keep Other last", () => {
+  assert.deepEqual(
+    transactionCategoryOptions([
+      "Other",
+      "Utilities",
+      "Dining",
+    ]).map((entry) => entry.label),
+    [
+      "Dining",
+      FEES_INTEREST_CATEGORY,
+      "Utilities",
+      "Other",
+    ],
+  );
+});
+
 test("fee category migration preserves detailed provider categories", async () => {
   const migration = await readFile(
     new URL("../migrations/004_fees_interest_category.sql", import.meta.url),

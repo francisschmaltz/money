@@ -92,6 +92,18 @@ test("balance groups infer deterministically and explicit overrides win", () => 
     }),
     "excluded",
   );
+  for (const balanceGroup of ["cash", "taxable_investment"]) {
+    assert.equal(
+      inferBalanceGroup({
+        type: "investment",
+        subtype: "ira",
+        balance_group: balanceGroup,
+        balance_group_override: balanceGroup,
+      }),
+      "retirement",
+      balanceGroup,
+    );
+  }
 });
 
 test("account group updates are workspace scoped, clearable, and refresh search", async () => {

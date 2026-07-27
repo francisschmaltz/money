@@ -35,7 +35,8 @@ Redis, GraphQL, or frontend framework hiding under the couch.
 - Duo OIDC login. Every allowlisted user sees the same workspace; only admins
   may connect institutions or change shared finance data. Each member may
   manage only their own manually tracked credit-score sources.
-- Fourteen read tools plus seven audited planning-write MCP tools at `POST /mcp`. Read and `plan:write` credentials are separate.
+- Fifteen read tools plus nine audited planning-write MCP tools at `POST /mcp`.
+  Read and `plan:write` credentials are separate.
 - Optional LM Studio narratives generated only from precomputed findings.
   Balances, metrics, MCP data, and detector decisions never come from the model.
 
@@ -183,6 +184,40 @@ the distinct `MCP_PLAN_WRITE_TOKEN` also discovers audited planning writes.
 The Open WebUI connection ID is **`money`** and the model tool attachment ID is
 **`server:mcp:money`**. See [Open WebUI setup](docs/open-webui.md) for
 configuration, discovery, curl, and SDK smoke tests.
+
+### Tools
+
+The read credential discovers the fifteen read tools. The `plan:write`
+credential discovers those same tools plus all nine writes.
+
+<!-- mcp-tool-table:start -->
+| Access | Area | Tool | Capability |
+| --- | --- | --- | --- |
+| `read` | Finance | `get_finance_overview` | Current net worth, assets, liabilities, cash, spending, and cash-flow headline. |
+| `read` | Finance | `get_finance_insights` | Deterministic weekly spending, investment, and subscription findings. |
+| `read` | Finance | `list_accounts` | Paginated bank, credit, loan, and investment accounts with balances and sync freshness. |
+| `read` | Finance | `list_transactions` | Paginated ledger search by date, text, account, category, status, and amount. |
+| `read` | Finance | `get_spending_summary` | Spending totals, comparisons, series, and category, merchant, or account breakdowns. |
+| `read` | Finance | `get_cash_flow` | Posted income, spending, net cash flow, and interval buckets. |
+| `read` | Finance | `list_recurring_payments` | Detected subscriptions and bills with cadence, normalized cost, confidence, and estimated dates. |
+| `read` | Finance | `get_net_worth_history` | Historical asset, liability, and net-worth snapshots. |
+| `read` | Finance | `get_portfolio_summary` | Holdings, allocation, value history, cash flows, and supported performance evidence. |
+| `read` | Finance | `get_credit_score_summary` | Manually tracked scores, freshness, household average, and history; not an underwriting score. |
+| `read` | Planning | `get_safe_to_spend` | Liquid cash minus positive card balances and cash-backed goal earmarks. |
+| `read` | Planning | `list_finance_goals` | Active or finished goals, funding, schedules, attributed spending, remaining amounts, and shortfalls. |
+| `read` | Planning | `get_budget_status` | One month's posted category spending against the standing monthly budget. |
+| `read` | Planning | `model_finance_plan` | Deterministic goal-funding and brokerage-change scenario arithmetic. |
+| `read` | Planning | `get_transaction_goal_spending` | A transaction's goal-spending links, unassigned amount, and current write versions. |
+| `plan:write` | Planning | `create_finance_goal` | Create a household goal with a purpose, target, and optional date. |
+| `plan:write` | Planning | `update_finance_goal` | Change goal details or target using optimistic version control. |
+| `plan:write` | Planning | `allocate_finance_goal` | Add or release a virtual cash or brokerage earmark without moving money. |
+| `plan:write` | Planning | `set_goal_funding_schedule` | Create or edit monthly or alternate-Friday virtual funding. |
+| `plan:write` | Planning | `finish_finance_goal` | Complete or cancel a goal while preserving its frozen plan and history. |
+| `plan:write` | Planning | `set_category_budget` | Create or update a persistent monthly category budget. |
+| `plan:write` | Planning | `split_transaction` | Replace or clear category splits without changing provider data. |
+| `plan:write` | Planning | `spend_from_finance_goal` | Attribute a posted outflow to a goal without making a payment, transfer, sale, or trade. |
+| `plan:write` | Planning | `reverse_goal_spend` | Reverse one goal-spending attribution while retaining audit history. |
+<!-- mcp-tool-table:end -->
 
 Each successful tool call returns:
 

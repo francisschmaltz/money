@@ -1,0 +1,245 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import { createDemoPlanningService } from "../app/services/demoPlanningService.js";
+
+test("demo planning keeps finished vacation actuals and purpose insights", async () => {
+  const service = createDemoPlanningService();
+  const active = await service.listFinanceGoals();
+  const all = await service.listFinanceGoals({
+    status: "all",
+  });
+
+  assert.equal(
+    active.data.goals.some((goal) => goal.status === "archived"),
+    false,
+  );
+  assert.deepEqual(active.data.history_insights, []);
+  assert.deepEqual(active.data.page_info, {
+    returned_count: 2,
+    total_count: 2,
+    has_more: false,
+    next_cursor: null,
+  });
+  const summer = all.data.goals.find(
+    (goal) => goal.id === "goal_summer_vacation",
+  );
+  assert.equal(summer.purpose, "vacation");
+  assert.equal(summer.archive_outcome, "completed");
+  assert.equal(summer.planned.amount_minor, 300_000);
+  assert.equal(summer.actual.amount_minor, 330_000);
+  assert.equal(summer.plan_remaining.amount_minor, 0);
+  assert.equal(summer.over_by.amount_minor, 30_000);
+  assert.equal(summer.used_basis_points, 11_000);
+  assert.deepEqual(all.data.history_insights, [
+    {
+      kind: "purpose_actual_variance",
+      purpose: "vacation",
+      completed_goal_count: 3,
+      median_actual_variance_basis_points: 1_000,
+      evidence_goal_ids_truncated: false,
+      evidence_goal_ids: [
+        "goal_beach_getaway",
+        "goal_family_road_trip",
+        "goal_summer_vacation",
+      ],
+    },
+  ]);
+
+  const overview = await service.getPlanningOverview();
+  assert.equal(overview.archivedGoals.length, 3);
+  assert.deepEqual(
+    overview.historyInsights,
+    all.data.history_insights,
+  );
+});
+
+test("demo goal reads validate and scope history pagination", async () => {
+  const service = createDemoPlanningService();
+  const vacation = await service.listFinanceGoals({
+    status: "archived",
+    purpose: "vacation",
+    limit: 2,
+  });
+  assert.equal(vacation.data.goals.length, 2);
+  assert.equal(vacation.data.page_info.total_count, 3);
+  assert.match(vacation.data.page_info.next_cursor, /^goal\./);
+  assert.deepEqual(
+    vacation.data.history_insights.map(
+      (insight) => insight.purpose,
+    ),
+    ["vacation"],
+  );
+  const next = await service.listFinanceGoals({
+    limit: 2,
+    cursor: vacation.data.page_info.next_cursor,
+  });
+  assert.equal(next.data.goals.length, 1);
+  assert.equal(next.data.page_info.next_cursor, null);
+
+  for (const input of [
+    { status: "finished" },
+    { purpose: "retirement" },
+    { limit: 0 },
+    { limit: 9 },
+    { cursor: "" },
+    { cursor: null },
+    { cursor: "goal:-1" },
+    {
+      cursor: vacation.data.page_info.next_cursor,
+      status: "active",
+    },
+    {
+      cursor: vacation.data.page_info.next_cursor,
+      purpose: "home",
+    },
+  ]) {
+    await assert.rejects(
+      service.listFinanceGoals(input),
+      (error) =>
+        error.statusCode === 400 &&
+        error.code === "invalid_request",
+    );
+  }
+});
+
+test("demo goal overspending and undo never manufacture earmarks", async () => {
+  const service = createDemoPlanningService();
+  const created = await service.createFinanceGoal({
+    name: "Unfunded vacation",
+    purpose: "vacation",
+    target_amount_minor: 10_000,
+  });
+  const goalId = created.changed.goal.id;
+
+  const spent = await service.spendFromFinanceGoal({
+    transaction_id: "txn_whole_foods",
+    goal_id: goalId,
+    source: "cash",
+    amount_minor: 13_842,
+    expected_goal_version: 1,
+    expected_transaction_version: 0,
+  });
+  const afterSpend = await service.listFinanceGoals();
+  const overPlan = afterSpend.data.goals.find(
+    (goal) => goal.id === goalId,
+  );
+  assert.equal(overPlan.cash_earmarked.amount_minor, 0);
+  assert.equal(overPlan.actual.amount_minor, 13_842);
+  assert.equal(overPlan.plan_remaining.amount_minor, 0);
+  assert.equal(overPlan.over_by.amount_minor, 3_842);
+  assert.equal(overPlan.used_basis_points, 13_842);
+  assert.equal(overPlan.unfunded_spend.amount_minor, 13_842);
+
+  await service.reverseGoalSpend({
+    transaction_id: "txn_whole_foods",
+    goal_spend_id: spent.changed.goal_spends[0].id,
+    expected_goal_version: 2,
+    expected_transaction_version: 1,
+  });
+  const afterUndo = await service.listFinanceGoals();
+  const restored = afterUndo.data.goals.find(
+    (goal) => goal.id === goalId,
+  );
+  assert.equal(restored.cash_earmarked.amount_minor, 0);
+  assert.equal(restored.actual.amount_minor, 0);
+  assert.equal(restored.unfunded_spend.amount_minor, 0);
+});
+
+test("demo source overruns consume the other funding source", async () => {
+  const overService = createDemoPlanningService();
+  const overCreated = await overService.createFinanceGoal({
+    name: "Cross-source vacation",
+    purpose: "vacation",
+    target_amount_minor: 10_000,
+  });
+  await overService.allocateFinanceGoal({
+    goal_id: overCreated.changed.goal.id,
+    source: "cash",
+    amount_minor: 10_000,
+    expected_version: 1,
+  });
+  await overService.spendFromFinanceGoal({
+    transaction_id: "txn_whole_foods",
+    goal_id: overCreated.changed.goal.id,
+    source: "brokerage",
+    amount_minor: 13_842,
+    expected_goal_version: 2,
+    expected_transaction_version: 0,
+  });
+  const beforeFinish = await overService.getSafeToSpend();
+  const overGoals = await overService.listFinanceGoals();
+  const overGoal = overGoals.data.goals.find(
+    (goal) => goal.id === overCreated.changed.goal.id,
+  );
+  assert.equal(overGoal.cash_earmarked.amount_minor, 0);
+  assert.equal(overGoal.brokerage_earmarked.amount_minor, 0);
+  assert.equal(overGoal.unfunded_spend.amount_minor, 3_842);
+  const finished = await overService.finishFinanceGoal({
+    goal_id: overGoal.id,
+    expected_version: 3,
+  });
+  assert.equal(
+    finished.safe_to_spend.amount_minor,
+    beforeFinish.data.safe_to_spend.amount_minor,
+  );
+
+  const partialService = createDemoPlanningService();
+  const partialCreated = await partialService.createFinanceGoal({
+    name: "Partially used mixed funding",
+    purpose: "vacation",
+    target_amount_minor: 10_000,
+  });
+  await partialService.allocateFinanceGoal({
+    goal_id: partialCreated.changed.goal.id,
+    source: "cash",
+    amount_minor: 5_000,
+    expected_version: 1,
+  });
+  await partialService.allocateFinanceGoal({
+    goal_id: partialCreated.changed.goal.id,
+    source: "brokerage",
+    amount_minor: 5_000,
+    expected_version: 2,
+  });
+  await partialService.spendFromFinanceGoal({
+    transaction_id: "txn_whole_foods",
+    goal_id: partialCreated.changed.goal.id,
+    source: "brokerage",
+    amount_minor: 8_000,
+    expected_goal_version: 3,
+    expected_transaction_version: 0,
+  });
+  const partialGoals = await partialService.listFinanceGoals();
+  const partialGoal = partialGoals.data.goals.find(
+    (goal) => goal.id === partialCreated.changed.goal.id,
+  );
+  assert.equal(partialGoal.cash_earmarked.amount_minor, 2_000);
+  assert.equal(partialGoal.brokerage_earmarked.amount_minor, 0);
+});
+
+test("demo finished goals keep outcome and cannot be rewritten", async () => {
+  const service = createDemoPlanningService();
+  const finished = await service.finishFinanceGoal({
+    goal_id: "goal_down_payment",
+    expected_version: 1,
+    outcome: "cancelled",
+  });
+  assert.equal(finished.changed.goal.archive_outcome, "cancelled");
+  assert.deepEqual(finished.changed.goal.allocations, []);
+  assert.equal(
+    finished.changed.goal.recorded_allocations.find(
+      (entry) => entry.source === "cash",
+    ).amount_minor,
+    500_000,
+  );
+
+  await assert.rejects(
+    service.updateFinanceGoal({
+      goal_id: "goal_down_payment",
+      expected_version: 2,
+      purpose: "other",
+    }),
+    /Archived goals cannot be edited/,
+  );
+});

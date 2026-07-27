@@ -31,7 +31,7 @@ test("credit page defaults to one month and shows weighted totals", async () => 
   const html = await renderCredit();
 
   assert.match(html, /href="\/credit" aria-current="page"/);
-  assert.match(html, /aria-label="Credit utilization timeframe"/);
+  assert.match(html, /aria-label="Credit page timeframe"/);
   assert.match(
     html,
     /href="\/credit\?period=1m" aria-current="true">1M<\/a>/,
@@ -54,7 +54,25 @@ test("credit page defaults to one month and shows weighted totals", async () => 
       html.indexOf("Total utilization"),
   );
   assert.match(html, /planning metric only, not a lender or underwriting score/);
-  assert.doesNotMatch(html, /data-chart="credit-score"/);
+  assert.match(html, /data-chart="credit-score"/);
+  assert.match(html, /data-series="[^"]*Francis/);
+  assert.match(html, /data-series="[^"]*Household member/);
+  assert.match(html, /data-series="[^"]*Household average/);
+  assert.equal(
+    (html.match(/class="period-select period-select--credit"/g) || [])
+      .length,
+    1,
+  );
+  assert.ok(
+    html.indexOf('class="credit-page-toolbar"') <
+      html.indexOf('class="credit-overview-grid"'),
+  );
+  assert.match(html, /class="credit-overview-grid"/);
+  assert.match(
+    html,
+    /class="credit-overview-grid"[\s\S]*class="card credit-score-card"[\s\S]*class="card credit-hero"/,
+  );
+  assert.doesNotMatch(html, /score_period=/);
   assert.match(html, /data-credit-score-dialog-open/);
   assert.match(html, /<dialog class="credit-score-dialog"/);
   assert.match(html, /Manage my scores/);
@@ -121,6 +139,14 @@ test("credit timeframe switcher selects the requested history", async () => {
   const html = await renderCredit({
     query: { period: "all" },
     creditData: demo.creditHistories.all,
+    creditScoreData: {
+      ...demo.creditScoreData,
+      period: {
+        ...demo.creditScoreData.period,
+        name: "all",
+        label: "All history",
+      },
+    },
   });
 
   assert.match(

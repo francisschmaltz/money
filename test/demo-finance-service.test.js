@@ -94,6 +94,18 @@ test("demo account overrides update totals and portfolio scopes", async () => {
   assert.equal(amount(restored.data.total_value), 6_342_941);
 });
 
+test("demo transactions expose the optimistic split version", async () => {
+  const service = createDemoFinanceService();
+  const ledger = await service.listTransactions({ status: "posted" });
+
+  assert.ok(ledger.data.transactions.length > 0);
+  assert.ok(
+    ledger.data.transactions.every(
+      (transaction) => transaction.split_version === 0,
+    ),
+  );
+});
+
 test("demo manual-asset mutations immediately update account and overview data", async () => {
   const service = createDemoFinanceService();
   const created = await service.createManualAsset({

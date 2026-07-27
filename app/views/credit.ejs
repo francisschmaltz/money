@@ -100,10 +100,44 @@
     const trackedPeople = trackedScores.people || [];
     const trackedHistory = trackedScores.history || [];
     const trackedWarnings = trackedScores.warnings || [];
-    const selectedScorePeriod =
-      ["1m", "1y", "all"].includes(trackedScores.period?.name)
-        ? trackedScores.period.name
-        : "1y";
+    const scoreChartLabels = trackedHistory.map((point) =>
+      new Intl.DateTimeFormat("en-US", {
+        month: "short",
+        ...(selectedCreditPeriod === "1w" ||
+        selectedCreditPeriod === "1m"
+          ? { day: "numeric" }
+          : { year: "numeric" }),
+        timeZone: "UTC",
+      }).format(new Date(`${point.date}T00:00:00Z`)),
+    );
+    const scoreColors = ["#438bd7", "#8a5ac2", "#d27a36", "#2764ae"];
+    const scoreChartSeries = [
+      ...trackedPeople
+        .map((person, personIndex) => ({
+          label: person.person_name,
+          color: scoreColors[personIndex % scoreColors.length],
+          border_width: 2.5,
+          values: trackedHistory.map(
+            (point) =>
+              (point.person_scores || []).find(
+                (score) => score.person_id === person.person_id,
+              )?.average_score ?? null,
+          ),
+        }))
+        .filter((series) =>
+          series.values.some((value) => Number.isInteger(value)),
+        ),
+      {
+        label: "Household average",
+        color: "#249342",
+        border_width: 2.5,
+        border_dash: [7, 5],
+        values: trackedHistory.map((point) => point.average_score),
+      },
+    ];
+    const hasScoreChartData = scoreChartSeries.some((series) =>
+      series.values.some((value) => Number.isInteger(value)),
+    );
     const currentScorePerson =
       trackedPeople.find((person) => person.can_manage) || null;
     const currentScoreSources = currentScorePerson?.sources || [];
@@ -145,13 +179,22 @@
     <%- include("partials/page-heading", {
       eyebrow: freshness,
       pageTitle,
-      pageDescription,
       actionLabel: "Manage cards",
       actionHref: "/accounts",
       actionIcon: "ph-credit-card"
     }) %>
 
-    <section class="card credit-score-card" aria-labelledby="tracked-credit-score-heading">
+    <div class="credit-page-toolbar">
+      <nav class="period-select period-select--credit" aria-label="Credit page timeframe">
+        <% [["1w", "1W"], ["1m", "1M"], ["1y", "1Y"], ["all", "All"]].forEach(([value, label]) => { %>
+          <a href="/credit?period=<%= value %>" aria-current="<%= selectedCreditPeriod === value ? 'true' : 'false' %>"><%= label %></a>
+        <% }) %>
+      </nav>
+    </div>
+
+    <div class="credit-overview-grid">
+      <div class="credit-overview-grid__score">
+        <section class="card credit-score-card" aria-labelledby="tracked-credit-score-heading">
       <div class="credit-score-card__heading">
         <div>
           <p class="card-kicker">Tracked household average</p>
@@ -176,11 +219,6 @@
               Manage my scores
             </button>
           <% } %>
-          <nav class="period-select period-select--credit" aria-label="Tracked credit score timeframe">
-            <% [["1m", "1M"], ["1y", "1Y"], ["all", "All"]].forEach(([value, label]) => { %>
-              <a href="/credit?period=<%= selectedCreditPeriod %>&score_period=<%= value %>" aria-current="<%= selectedScorePeriod === value ? 'true' : 'false' %>"><%= label %></a>
-            <% }) %>
-          </nav>
         </div>
       </div>
 
@@ -207,6 +245,33 @@
         </div>
       <% } %>
 
+      <% if (hasScoreChartData) { %>
+        <div class="chart-frame chart-frame--credit-score">
+          <canvas
+            data-chart="credit-score"
+            data-labels="<%= JSON.stringify(scoreChartLabels) %>"
+            data-series="<%= JSON.stringify(scoreChartSeries) %>"
+            aria-label="Tracked credit scores over <%= trackedScores.period.label.toLowerCase() %>"
+            aria-describedby="credit-score-chart-description"
+            role="img"
+          ></canvas>
+        </div>
+        <p id="credit-score-chart-description" class="sr-only">
+          The chart compares each person's tracked score average with the household average; current values are listed below.
+        </p>
+        <div class="credit-legend credit-score-legend" aria-hidden="true">
+          <% scoreChartSeries.forEach((series) => { %>
+            <span>
+              <i
+                class="<%= series.border_dash ? 'credit-legend__line--average' : '' %>"
+                style="--credit-series-color: <%= series.color %>"
+              ></i>
+              <%= series.label %>
+            </span>
+          <% }) %>
+        </div>
+      <% } %>
+
       <div class="credit-score-people">
         <% trackedPeople.forEach((person) => { %>
           <section class="credit-score-person" aria-labelledby="credit-score-person-<%= encodeURIComponent(person.person_id) %>">
@@ -223,7 +288,7 @@
           </section>
         <% }) %>
       </div>
-    </section>
+        </section>
 
     <% if (currentScorePerson) { %>
       <dialog class="credit-score-dialog" data-credit-score-dialog aria-labelledby="credit-score-dialog-title">
@@ -376,6 +441,7 @@
         </div>
       </dialog>
     <% } %>
+      </div>
 
     <section class="card credit-hero" aria-labelledby="credit-utilization-heading">
       <div class="card-heading">
@@ -402,11 +468,6 @@
             <p class="trend">History begins with the first snapshot that includes a reported limit.</p>
           <% } %>
         </div>
-        <nav class="period-select period-select--credit" aria-label="Credit utilization timeframe">
-          <% [["1w", "1W"], ["1m", "1M"], ["1y", "1Y"], ["all", "All"]].forEach(([value, label]) => { %>
-            <a href="/credit?period=<%= value %><%= selectedScorePeriod === '1y' ? '' : `&score_period=${selectedScorePeriod}` %>" aria-current="<%= selectedCreditPeriod === value ? 'true' : 'false' %>"><%= label %></a>
-          <% }) %>
-        </nav>
       </div>
 
       <% if (creditHistory.length) { %>
@@ -472,6 +533,7 @@
         </div>
       <% } %>
     </section>
+    </div>
 
     <section class="card credit-cards-card" aria-labelledby="credit-cards-heading">
       <div class="card-heading">

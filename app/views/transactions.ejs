@@ -5,7 +5,6 @@
     <%- include("partials/page-heading", {
       eyebrow: freshness,
       pageTitle,
-      pageDescription,
       actionLabel: "Search",
       actionHref: "/search",
       actionIcon: "ph-magnifying-glass"
@@ -53,8 +52,14 @@
               Clean up name, category &amp; tags <i class="ph ph-arrow-up-right" aria-hidden="true"></i>
             </a>
           <% } %>
-          <% if (selectedTransaction.status !== "pending") {
-            const absoluteMinor = Math.abs(selectedTransaction.amount.amount_minor);
+          <% if (
+            selectedTransaction.status !== "pending" &&
+            selectedTransaction.amount.currency === "USD"
+          ) {
+            const providerAmount =
+              selectedTransaction.providerAmount ??
+              selectedTransaction.amount;
+            const absoluteMinor = Math.abs(providerAmount.amount_minor);
             const firstHalf = Math.floor(absoluteMinor / 2);
             const secondHalf = absoluteMinor - firstHalf;
             const splitRows =
@@ -74,13 +79,14 @@
               <form
                 data-plan-form
                 data-transaction-split
-                data-source-amount="<%= selectedTransaction.amount.amount_minor %>"
+                data-source-amount="<%= providerAmount.amount_minor %>"
                 data-endpoint="/api/v1/transactions/<%= encodeURIComponent(selectedTransaction.id) %>/splits"
                 data-method="PUT"
               >
+                <input type="hidden" name="expected_version" value="<%= typeof selectedTransactionSplitVersion === 'number' ? selectedTransactionSplitVersion : selectedTransaction.splitVersion %>">
                 <% splitRows.forEach(([amount, category], index) => { %>
                   <div data-split-line>
-                    <label>Category <select data-split-category><% categories.forEach((option) => { %><option value="<%= option.label %>" <%= option.label === category ? "selected" : "" %>><%= option.label %></option><% }) %></select></label>
+                    <label>Category <select data-split-category><% if (!categories.some((option) => option.label === category)) { %><option value="<%= category %>" selected><%= category %></option><% } %><% categories.forEach((option) => { %><option value="<%= option.label %>" <%= option.label === category ? "selected" : "" %>><%= option.label %></option><% }) %></select></label>
                     <label>Amount <span class="money-input"><span>$</span><input data-split-amount inputmode="decimal" value="<%= (amount / 100).toFixed(2) %>" aria-label="Split <%= index + 1 %> amount"></span></label>
                   </div>
                 <% }) %>
@@ -90,6 +96,114 @@
                   <span class="form-status" data-plan-status aria-live="polite"></span>
                 </div>
               </form>
+            </details>
+          <% } else if (selectedTransaction.status !== "pending") { %>
+            <p class="card-note">Transaction splits currently support USD only.</p>
+          <% } %>
+          <%
+            const goalSpending =
+              typeof selectedTransactionGoalSpending !== "undefined"
+                ? selectedTransactionGoalSpending
+                : null;
+            const goalSpends = goalSpending?.goal_spends ?? [];
+            const canAddGoalSpend =
+              goalSpending?.eligible === true &&
+              selectedTransaction.status === "posted" &&
+              selectedTransaction.amount.currency === "USD" &&
+              (selectedTransaction.providerAmount ?? selectedTransaction.amount).amount_minor < 0;
+          %>
+          <% if (goalSpending && (goalSpends.length || canAddGoalSpend)) {
+            const activeGoals =
+              typeof selectedTransactionGoals !== "undefined"
+                ? selectedTransactionGoals.filter(
+                    (goal) => goal.status === "active",
+                  )
+                : [];
+            const sourceAmountMinor = Math.abs(
+              (selectedTransaction.providerAmount ?? selectedTransaction.amount).amount_minor,
+            );
+            const assignedAmountMinor = goalSpends.reduce(
+              (sum, spend) => sum + Math.abs(Number(spend.amount_minor) || 0),
+              0,
+            );
+            const unassignedAmountMinor = Math.max(
+              0,
+              sourceAmountMinor - assignedAmountMinor,
+            );
+            const goalSpendVersion =
+              goalSpending?.goal_spend_version ??
+              selectedTransaction.goalSpendVersion ??
+              0;
+          %>
+            <details class="transaction-goal-editor">
+              <summary>Spend from goal</summary>
+              <% if (goalSpends.length) { %>
+                <ul class="transaction-goal-spends" aria-label="Goal spending assigned to this transaction">
+                  <% goalSpends.forEach((spend) => { %>
+                    <li>
+                      <span>
+                        <strong><%= spend.goal_name %></strong>
+                        <small><%= spend.source === "brokerage" ? "Brokerage" : "Cash" %> · <%= formatMoney({ amount_minor: Math.abs(spend.amount_minor), currency: "USD" }) %></small>
+                      </span>
+                      <form
+                        data-plan-form
+                        data-endpoint="/api/v1/transactions/<%= encodeURIComponent(selectedTransaction.id) %>/goal-spends/<%= encodeURIComponent(spend.id) %>"
+                        data-method="DELETE"
+                      >
+                        <input type="hidden" name="expected_goal_version" value="<%= spend.goal_version %>">
+                        <input type="hidden" name="expected_transaction_version" value="<%= goalSpendVersion %>">
+                        <button class="button button--ghost" type="submit" aria-label="Undo <%= formatMoney({ amount_minor: Math.abs(spend.amount_minor), currency: 'USD' }) %> spent from <%= spend.goal_name %>">Undo</button>
+                        <span class="form-status" data-plan-status aria-live="polite"></span>
+                      </form>
+                    </li>
+                  <% }) %>
+                </ul>
+              <% } %>
+
+              <% if (!canAddGoalSpend) { %>
+                <p class="card-note"><%= goalSpending.ineligible_reason || "This transaction cannot take new goal spending, but its existing history can still be undone." %></p>
+              <% } else if (unassignedAmountMinor > 0 && activeGoals.length) { %>
+                <form
+                  class="transaction-goal-spend-form"
+                  data-plan-form
+                  data-goal-spend-form
+                  data-endpoint="/api/v1/transactions/<%= encodeURIComponent(selectedTransaction.id) %>/goal-spends"
+                  data-method="POST"
+                >
+                  <label>Goal
+                    <select name="goal_id" data-goal-spend-select required>
+                      <option value="">Choose a goal</option>
+                      <% activeGoals.forEach((goal) => { %>
+                        <option
+                          value="<%= goal.id %>"
+                          data-goal-version="<%= goal.version %>"
+                          data-cash-earmarked="<%= goal.cash_earmarked?.amount_minor ?? 0 %>"
+                          data-brokerage-earmarked="<%= goal.brokerage_earmarked?.amount_minor ?? 0 %>"
+                        ><%= goal.name %></option>
+                      <% }) %>
+                    </select>
+                  </label>
+                  <input type="hidden" name="expected_goal_version" data-goal-spend-version value="">
+                  <input type="hidden" name="expected_transaction_version" value="<%= goalSpendVersion %>">
+                  <label>From
+                    <select name="source" data-goal-spend-source required>
+                      <option value="cash" data-source-label="Cash">Cash · overspend allowed</option>
+                      <option value="brokerage" data-source-label="Brokerage">Brokerage · overspend allowed</option>
+                    </select>
+                  </label>
+                  <label>Amount
+                    <span class="money-input"><span>$</span><input data-money-minor="amount_minor" inputmode="decimal" min="0.01" value="<%= (unassignedAmountMinor / 100).toFixed(2) %>" required></span>
+                  </label>
+                  <div class="selected-detail__actions">
+                    <button class="button button--secondary" type="submit">Use goal</button>
+                    <span class="form-status" data-plan-status aria-live="polite"></span>
+                  </div>
+                </form>
+              <% } else if (unassignedAmountMinor === 0) { %>
+                <p class="card-note">This transaction is fully assigned to goals.</p>
+              <% } else { %>
+                <p class="card-note">Create an active goal before assigning this purchase.</p>
+              <% } %>
             </details>
           <% } %>
         </div>
@@ -115,18 +229,15 @@
       <dl class="spending-detail-metrics" aria-label="Spending totals">
         <div>
           <dt>Prior period</dt>
-          <dd><%= formatMoney(spendingDetails.previousTotal) %></dd>
-          <small><%= spendingDetails.previousPeriodLabel %></small>
+          <dd><%= formatMoney(spendingDetails.previousTotal) %><small><%= spendingDetails.previousPeriodLabel %></small></dd>
         </div>
         <div>
           <dt>Posted purchases</dt>
-          <dd><%= spendingDetails.transactionCount %></dd>
-          <small>Pending activity is excluded</small>
+          <dd><%= spendingDetails.transactionCount %><small>Pending activity is excluded</small></dd>
         </div>
         <div>
           <dt>Average purchase</dt>
-          <dd><%= formatMoney(spendingDetails.averageTransaction) %></dd>
-          <small>Across included transactions</small>
+          <dd><%= formatMoney(spendingDetails.averageTransaction) %><small>Across included transactions</small></dd>
         </div>
       </dl>
 

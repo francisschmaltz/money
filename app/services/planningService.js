@@ -1,9 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 
 import { formatMinorMoney } from "../currency.js";
-import { shiftDateOnly } from "./analytics.js";
+import { money, shiftDateOnly } from "./analytics.js";
 import {
+  buildArchivedGoalSnapshot,
   buildBudgetStatus,
+  buildGoalHistoryInsights,
   buildPlanningSnapshot,
   modelPlanningScenario,
   monthStart,
@@ -13,14 +15,29 @@ import {
 
 const DEFAULT_WORKSPACE_ID = "shared";
 const DEFAULT_CURRENCY = "USD";
+const GOAL_PURPOSES = Object.freeze([
+  "vacation",
+  "home",
+  "vehicle",
+  "education",
+  "emergency",
+  "event",
+  "purchase",
+  "other",
+]);
+const GOAL_ARCHIVE_OUTCOMES = Object.freeze([
+  "completed",
+  "cancelled",
+]);
 const IDEMPOTENT_WRITE_METHODS = Object.freeze({
   create_finance_goal: "createFinanceGoal",
   update_finance_goal: "updateFinanceGoal",
   allocate_finance_goal: "allocateFinanceGoal",
+  spend_from_finance_goal: "spendFromFinanceGoal",
+  reverse_goal_spend: "reverseGoalSpend",
   set_goal_funding_schedule: "setGoalFundingSchedule",
-  archive_finance_goal: "archiveFinanceGoal",
+  finish_finance_goal: "finishFinanceGoal",
   set_category_budget: "setCategoryBudget",
-  copy_budget_month: "copyBudgetMonth",
   split_transaction: "splitTransaction",
 });
 
@@ -66,35 +83,86 @@ export class PlanningService {
     });
   }
 
-  async listFinanceGoals({ include_archived = false } = {}) {
+  async listFinanceGoals(input = {}) {
+    const cursor = parseGoalCursor(input.cursor);
+    const hasStatus =
+      Object.hasOwn(input, "status") && input.status !== undefined;
+    const hasPurpose =
+      Object.hasOwn(input, "purpose") && input.purpose !== undefined;
+    const suppliedStatus = hasStatus
+      ? enumValue(
+          input.status,
+          ["active", "archived", "all"],
+          "status",
+        )
+      : null;
+    const suppliedPurpose = hasPurpose
+      ? enumValue(input.purpose, GOAL_PURPOSES, "purpose")
+      : null;
+    if (
+      cursor &&
+      ((hasStatus && suppliedStatus !== cursor.status) ||
+        (hasPurpose && suppliedPurpose !== cursor.purpose))
+    ) {
+      throw badRequest(
+        "cursor does not match the requested goal filters.",
+      );
+    }
+    const status = cursor?.status ?? suppliedStatus ?? "active";
+    const purpose = cursor?.purpose ?? suppliedPurpose;
+    const limit =
+      input.limit === undefined
+        ? 8
+        : boundedInteger(input.limit, 1, 8, "limit");
+    const offset = cursor?.offset ?? 0;
     const state = await this.#planningState({
-      includeArchived: Boolean(include_archived),
+      includeArchived: status !== "active",
     });
+    const catalog = this.#goalCatalog(state);
+    const filtered = catalog.goals.filter(
+      (goal) =>
+        (status === "all" || goal.status === status) &&
+        (purpose == null || goal.purpose === purpose),
+    );
+    const page = filtered.slice(offset, offset + limit);
+    const nextOffset = offset + page.length;
+    const hasMore = nextOffset < filtered.length;
+    const scopedHistoryInsights =
+      status === "active"
+        ? []
+        : catalog.historyInsights.filter(
+            (insight) =>
+              purpose == null || insight.purpose === purpose,
+          );
     return result({
       data: {
         currency: this.#currency,
-        goals: include_archived
-          ? state.snapshot.goals.concat(
-              state.goals
-                .filter((goal) => goal.status === "archived")
-                .map((goal) => ({
-                  ...goal,
-                  archived: true,
-                })),
-            )
-          : state.snapshot.goals,
+        goals: page,
         brokerage_backing_basis_points:
           state.snapshot.brokerage_backing_basis_points,
         taxable_brokerage_value:
           state.snapshot.taxable_brokerage_value,
+        history_insights: boundedGoalHistoryInsights(
+          scopedHistoryInsights,
+        ),
+        page_info: {
+          returned_count: page.length,
+          total_count: filtered.length,
+          has_more: hasMore,
+          next_cursor: hasMore
+            ? encodeGoalCursor({
+                offset: nextOffset,
+                status,
+                purpose,
+              })
+            : null,
+        },
       },
       freshness: state.freshness,
       title: "Finance goals",
-      subtitle: `${state.snapshot.active_goal_count} active`,
+      subtitle: `${filtered.length} matching`,
       path: "/plan#goals",
-      summary: `${state.snapshot.active_goal_count} active household goal${
-        state.snapshot.active_goal_count === 1 ? "" : "s"
-      } hold ${formatMoney(state.snapshot.cash_goal_earmarks)} in cash earmarks and ${formatMoney(state.snapshot.brokerage_goal_backed_value)} in currently backed brokerage value.`,
+      summary: `${page.length} of ${filtered.length} matching household goals returned.`,
     });
   }
 
@@ -103,27 +171,34 @@ export class PlanningService {
       this.#workspaceId,
     );
     const month = monthStart(
-      month_on ?? workspaceDate(this.#now(), timeZone),
+      month_on == null
+        ? workspaceDate(this.#now(), timeZone)
+        : requiredDate(month_on, "month_on"),
     );
     const currentMonth = monthStart(
       workspaceDate(this.#now(), timeZone),
     );
-    if (
-      month <= currentMonth &&
-      typeof this.#repository.ensureBudgetMonthSnapshot === "function"
-    ) {
-      await this.#repository.ensureBudgetMonthSnapshot(
-        this.#workspaceId,
-        month,
-      );
-    }
     const endOn = nextMonth(month);
-    const [budgetLines, transactions, splits, freshness] =
+    const [
+      budgetLines,
+      budgetVersions,
+      transactions,
+      splits,
+      freshness,
+    ] =
       await Promise.all([
         this.#repository.listResolvedBudgetLines(
           this.#workspaceId,
           month,
+          null,
+          { includeExact: month < currentMonth },
         ),
+        typeof this.#repository.listBudgetCategoryVersions ===
+        "function"
+          ? this.#repository.listBudgetCategoryVersions(
+              this.#workspaceId,
+            )
+          : [],
         this.#financeRepository.getTransactionsForPeriod(
           this.#workspaceId,
           { startOn: month, endOn },
@@ -141,20 +216,32 @@ export class PlanningService {
       splits,
       currency: this.#currency,
     });
+    const versionByCategory = new Map(
+      budgetVersions.map((entry) => [
+        entry.category,
+        Number(entry.version),
+      ]),
+    );
+    for (const line of data.lines) {
+      line.version =
+        versionByCategory.get(line.category) ?? line.version ?? 0;
+    }
     data.has_exact_month_lines = budgetLines.some(
       (line) => line.exact_month,
     );
+    data.standing_effective_month_on =
+      month > currentMonth ? month : currentMonth;
     data.source = data.has_exact_month_lines
       ? "month"
       : budgetLines.length
-        ? "future_default"
+        ? "standing"
         : "empty";
     return result({
       data,
       freshness,
       title: "Monthly budget",
       subtitle: formatMonth(month),
-      path: `/plan?month=${month}`,
+      path: "/plan#budget",
       summary: `${formatMoney(data.actual_total)} spent against ${formatMoney(data.planned_total)} planned for ${formatMonth(month)}; ${data.over_budget_category_count} categor${
         data.over_budget_category_count === 1 ? "y is" : "ies are"
       } over budget.`,
@@ -163,17 +250,54 @@ export class PlanningService {
 
   async modelFinancePlan(input = {}) {
     const state = await this.#planningState();
+    const goalId = optionalId(input.goal_id);
+    if (
+      goalId &&
+      !state.snapshot.goals.some((goal) => goal.id === goalId)
+    ) {
+      throw notFound("Goal not found.");
+    }
+    const selectedGoal =
+      state.snapshot.goals.find((goal) => goal.id === goalId) ??
+      (goalId == null ? state.snapshot.goals[0] : null);
+    const activeSchedules = (selectedGoal?.schedules ?? []).filter(
+      (schedule) => schedule.status === "active",
+    );
+    const scheduledMonthlyMinor = activeSchedules
+      .filter((schedule) => schedule.cadence === "monthly")
+      .reduce(
+        (sum, schedule) => sum + Number(schedule.amount_minor),
+        0,
+      );
+    const scheduledBiweeklyMinor = activeSchedules
+      .filter(
+        (schedule) => schedule.cadence === "biweekly_friday",
+      )
+      .reduce(
+        (sum, schedule) => sum + Number(schedule.amount_minor),
+        0,
+      );
+    const additionalMonthlyMinor = nonnegativeMinor(
+      input.monthly_contribution_minor ?? 0,
+      "monthly_contribution_minor",
+    );
+    const additionalBiweeklyMinor = nonnegativeMinor(
+      input.biweekly_contribution_minor ?? 0,
+      "biweekly_contribution_minor",
+    );
+    const modeledMonthlyMinor = nonnegativeMinor(
+      scheduledMonthlyMinor + additionalMonthlyMinor,
+      "scheduled plus monthly_contribution_minor",
+    );
+    const modeledBiweeklyMinor = nonnegativeMinor(
+      scheduledBiweeklyMinor + additionalBiweeklyMinor,
+      "scheduled plus biweekly_contribution_minor",
+    );
     const scenario = modelPlanningScenario({
       snapshot: state.snapshot,
-      goalId: optionalId(input.goal_id),
-      monthlyContributionMinor: nonnegativeMinor(
-        input.monthly_contribution_minor ?? 0,
-        "monthly_contribution_minor",
-      ),
-      biweeklyContributionMinor: nonnegativeMinor(
-        input.biweekly_contribution_minor ?? 0,
-        "biweekly_contribution_minor",
-      ),
+      goalId,
+      monthlyContributionMinor: modeledMonthlyMinor,
+      biweeklyContributionMinor: modeledBiweeklyMinor,
       oneTimeContributionMinor: nonnegativeMinor(
         input.one_time_contribution_minor ?? 0,
         "one_time_contribution_minor",
@@ -186,12 +310,33 @@ export class PlanningService {
       ),
       asOf: this.#now(),
     });
+    scenario.scheduled_monthly_contribution = money(
+      scheduledMonthlyMinor,
+      this.#currency,
+    );
+    scenario.scheduled_biweekly_contribution = money(
+      scheduledBiweeklyMinor,
+      this.#currency,
+    );
+    scenario.additional_monthly_contribution = money(
+      additionalMonthlyMinor,
+      this.#currency,
+    );
+    scenario.additional_biweekly_contribution = money(
+      additionalBiweeklyMinor,
+      this.#currency,
+    );
+    if (activeSchedules.length > 0) {
+      scenario.assumptions.unshift(
+        "Active goal funding schedules continue alongside scenario contributions.",
+      );
+    }
     return result({
       data: scenario,
       freshness: state.freshness,
       title: "Finance plan scenario",
       subtitle: scenario.goal_name ?? "Household",
-      path: "/plan#scenario",
+      path: "/plan#goals",
       summary:
         scenario.months_to_target == null
           ? "The selected contributions do not reach the goal because no recurring contribution was supplied."
@@ -204,22 +349,124 @@ export class PlanningService {
       transaction_id,
       "transaction_id",
     );
-    const lines = await this.#repository.listTransactionSplits(
-      this.#workspaceId,
-      { transactionIds: [transactionId] },
+    const [transaction, lines] = await Promise.all([
+      this.#financeRepository.getTransaction(
+        this.#workspaceId,
+        transactionId,
+      ),
+      this.#repository.listTransactionSplits(
+        this.#workspaceId,
+        { transactionIds: [transactionId] },
+      ),
+    ]);
+    if (!transaction) throw notFound("Transaction not found.");
+    return {
+      transaction_id: transactionId,
+      split_version: Number(transaction.split_version ?? 0),
+      lines,
+    };
+  }
+
+  async getTransactionGoalSpending({ transaction_id } = {}) {
+    const transactionId = requiredId(
+      transaction_id,
+      "transaction_id",
     );
-    return { transaction_id: transactionId, lines };
+    const [transaction, goalSpending, goals, freshness] =
+      await Promise.all([
+        this.#financeRepository.getTransaction(
+          this.#workspaceId,
+          transactionId,
+        ),
+        this.#repository.getTransactionGoalSpending(
+          this.#workspaceId,
+          transactionId,
+        ),
+        this.#repository.listGoals(this.#workspaceId, {
+          includeArchived: true,
+        }),
+        this.#financeRepository.getDataFreshness(this.#workspaceId),
+      ]);
+    if (!transaction || !goalSpending) {
+      throw notFound("Transaction not found.");
+    }
+    const goalById = new Map(
+      goals.map((goal) => [goal.id, goal]),
+    );
+    const goalSpends = (goalSpending.goal_spends ?? []).map(
+      (spend) => {
+        const goal = goalById.get(spend.goal_id);
+        return {
+          ...spend,
+          goal_name: goal?.name ?? spend.goal_name ?? "Archived goal",
+          goal_version:
+            goal?.version ?? Number(spend.goal_version ?? 0),
+        };
+      },
+    );
+    const assignedMinor = goalSpends.reduce(
+      (sum, spend) => sum + Number(spend.amount_minor),
+      0,
+    );
+    const providerAmountMinor = Number(
+      transaction.provider_amount_minor ?? transaction.amount_minor,
+    );
+    const eligible =
+      transaction.pending === false &&
+      transaction.currency_code === this.#currency &&
+      providerAmountMinor < 0 &&
+      transaction.excluded_from_spending !== true;
+    const data = {
+      transaction_id: transactionId,
+      goal_spend_version: Number(
+        goalSpending.goal_spend_version ??
+          transaction.goal_spend_version ??
+          0,
+      ),
+      goal_spends: goalSpends,
+      assigned: money(assignedMinor, this.#currency),
+      remaining: money(
+        Math.max(0, Math.abs(providerAmountMinor) - assignedMinor),
+        this.#currency,
+      ),
+      eligible,
+      ineligible_reason: eligible
+        ? null
+        : goalSpendIneligibleReason(transaction, providerAmountMinor),
+    };
+    return result({
+      data,
+      freshness,
+      title: "Transaction goal spending",
+      subtitle: `${goalSpends.length} goal allocation${
+        goalSpends.length === 1 ? "" : "s"
+      }`,
+      path: `/transactions?transaction=${encodeURIComponent(transactionId)}`,
+      summary: goalSpends.length
+        ? `${formatMoney(data.assigned)} of this transaction is spent from finance goals.`
+        : "This transaction is not currently spent from a finance goal.",
+    });
   }
 
   async getPlanningOverview({ month_on = null } = {}) {
-    const [safe, budget, scheduleRuns, auditEvents] = await Promise.all([
+    const [
+      safe,
+      budget,
+      goalState,
+      scheduleRuns,
+      auditEvents,
+    ] = await Promise.all([
       this.getSafeToSpend(),
       this.getBudgetStatus({ month_on }),
+      this.#planningState({ includeArchived: true }),
       this.#repository.listGoalScheduleRuns(this.#workspaceId, {
         limit: 20,
       }),
       this.#repository.listAuditEvents(this.#workspaceId, { limit: 30 }),
     ]);
+    const previousBudget = await this.getBudgetStatus({
+      month_on: previousMonth(budget.data.month_on),
+    });
     const scheduleAlerts = scheduleRuns
       .filter((run) => run.status === "skipped_brokerage_capacity")
       .map((run) => ({
@@ -237,10 +484,14 @@ export class PlanningService {
         category: line.category,
         message: `${line.category} is ${formatMoney(line.over)} over its ${formatMonth(budget.data.month_on)} plan.`,
       }));
+    const goalCatalog = this.#goalCatalog(goalState);
     return {
       safeToSpend: safe.data,
       goals: safe.data.goals,
+      archivedGoals: goalCatalog.archivedGoals,
+      historyInsights: goalCatalog.historyInsights,
       budget: budget.data,
+      previousBudget: previousBudget.data,
       scheduleRuns,
       auditEvents,
       alerts: [
@@ -268,6 +519,11 @@ export class PlanningService {
         target_amount_minor: targetAmountMinor,
         currency_code: "USD",
         target_on: targetOn,
+        purpose: enumValue(
+          input.purpose ?? "other",
+          GOAL_PURPOSES,
+          "purpose",
+        ),
         audit_event_id: `audit_${randomUUID()}`,
       },
       actor,
@@ -295,6 +551,13 @@ export class PlanningService {
     if (Object.hasOwn(input, "target_on")) {
       changes.target_on = optionalDate(input.target_on);
     }
+    if (Object.hasOwn(input, "purpose")) {
+      changes.purpose = enumValue(
+        input.purpose,
+        GOAL_PURPOSES,
+        "purpose",
+      );
+    }
     if (Object.keys(changes).length === 0) {
       throw badRequest("At least one goal field must change.");
     }
@@ -303,13 +566,16 @@ export class PlanningService {
       goalId,
     );
     if (!current) throw notFound("Goal not found.");
-    const earmarked = totalEarmarked(current);
+    if (current.status !== "active") {
+      throw conflict("Archived goals cannot be edited.");
+    }
+    const recorded = totalRecordedFunding(current);
     if (
       changes.target_amount_minor != null &&
-      changes.target_amount_minor < earmarked
+      changes.target_amount_minor < recorded
     ) {
       throw conflict(
-        "Release goal allocations before lowering the target below the earmarked amount.",
+        "The target cannot be lower than the amount already funded or spent.",
       );
     }
     const updated = await this.#repository.updateGoal(
@@ -347,53 +613,317 @@ export class PlanningService {
       160,
       "idempotency_key",
     );
-    const current = await this.#repository.getGoal(
-      this.#workspaceId,
-      goalId,
-    );
-    if (!current) throw notFound("Goal not found.");
-    if (current.status !== "active") {
-      throw conflict("Archived goals cannot receive allocations.");
-    }
-    const currentSource = sourceEarmarked(current, source);
     const delta = direction === "allocate" ? amount : -amount;
-    if (currentSource + delta < 0) {
-      throw conflict("The release exceeds the goal's earmarked amount.");
+    const applyAllocation = async (client = null) => {
+      const current = await this.#repository.getGoal(
+        this.#workspaceId,
+        goalId,
+      );
+      if (!current) throw notFound("Goal not found.");
+      if (current.status !== "active") {
+        throw conflict("Archived goals cannot receive allocations.");
+      }
+      const currentSource = sourceEarmarked(current, source);
+      if (currentSource + delta < 0) {
+        throw conflict("The release exceeds the goal's earmarked amount.");
+      }
+      if (
+        totalRecordedFunding(current) + delta >
+        current.target_amount_minor
+      ) {
+        throw conflict("The allocation would exceed the goal target.");
+      }
+      if (source === "brokerage" && delta > 0) {
+        const available = await this.#brokerageAvailability(client);
+        if (delta > available) {
+          throw conflict(
+            "The allocation exceeds currently unallocated taxable brokerage value.",
+          );
+        }
+      }
+      const changed = await this.#repository.addGoalAllocation(
+        this.#workspaceId,
+        {
+          id: `allocation_${randomUUID()}`,
+          goalId,
+          source,
+          amountDeltaMinor: delta,
+          idempotencyKey,
+          expectedVersion,
+          auditEventId: `audit_${randomUUID()}`,
+        },
+        actor,
+      );
+      assertMutation(changed);
+      return this.#changeResult(
+        direction === "allocate"
+          ? "Goal allocation added"
+          : "Goal allocation released",
+        changed,
+      );
+    };
+
+    if (
+      typeof this.#repository.withWorkspacePlanningLock === "function"
+    ) {
+      return this.#repository.withWorkspacePlanningLock(
+        this.#workspaceId,
+        applyAllocation,
+      );
     }
-    if (totalEarmarked(current) + delta > current.target_amount_minor) {
-      throw conflict("The allocation would exceed the goal target.");
-    }
-    if (source === "brokerage" && delta > 0) {
-      const state = await this.#planningState();
-      const available =
-        state.snapshot.taxable_brokerage_value.amount_minor -
-        state.snapshot.brokerage_goal_earmarks.amount_minor;
-      if (delta > available) {
+    return applyAllocation();
+  }
+
+  async spendFromFinanceGoal(input = {}, actorInput = null) {
+    const actor = normalizeActor(actorInput);
+    const transactionId = requiredId(
+      input.transaction_id,
+      "transaction_id",
+    );
+    const goalId = requiredId(input.goal_id, "goal_id");
+    const source = enumValue(
+      input.source,
+      ["cash", "brokerage"],
+      "source",
+    );
+    const amount = positiveMinor(input.amount_minor, "amount_minor");
+    const expectedGoalVersion = positiveInteger(
+      input.expected_goal_version,
+      "expected_goal_version",
+    );
+    const expectedTransactionVersion = nonnegativeMinor(
+      input.expected_transaction_version,
+      "expected_transaction_version",
+    );
+    const visibleTransaction =
+      await this.#financeRepository.getTransaction(
+        this.#workspaceId,
+        transactionId,
+      );
+    assertGoalSpendEligible(visibleTransaction);
+
+    const apply = async (client = null) => {
+      const [current, goals] = await Promise.all([
+        this.#repository.getTransactionGoalSpending(
+          this.#workspaceId,
+          transactionId,
+          client,
+        ),
+        this.#repository.listGoals(
+          this.#workspaceId,
+          { includeArchived: true },
+          client,
+        ),
+      ]);
+      if (!current) throw notFound("Transaction not found.");
+      const goalsById = new Map(
+        goals.map((entry) => [entry.id, entry]),
+      );
+      const goal = goalsById.get(goalId);
+      if (!goal) throw notFound("Goal not found.");
+      if (goal.status !== "active") {
+        throw conflict("Archived goals cannot fund transactions.");
+      }
+      if (goal.version !== expectedGoalVersion) {
+        const error = conflict(
+          "The goal changed; refresh and try again.",
+        );
+        error.current = goal;
+        throw error;
+      }
+      const transactionVersion = Number(
+        current.goal_spend_version ??
+          current.transaction?.goal_spend_version ??
+          0,
+      );
+      if (transactionVersion !== expectedTransactionVersion) {
+        const error = conflict(
+          "The transaction goal allocations changed; refresh and try again.",
+        );
+        error.current = current;
+        throw error;
+      }
+      assertGoalSpendEligible(current.transaction);
+      const currentLines = current.goal_spends ?? [];
+      const assignedMinor = currentLines.reduce(
+        (sum, line) => sum + Number(line.amount_minor),
+        0,
+      );
+      if (
+        assignedMinor + amount >
+        Math.abs(Number(current.transaction.amount_minor))
+      ) {
         throw conflict(
-          "The allocation exceeds currently unallocated taxable brokerage value.",
+          "Goal spending cannot exceed the transaction amount.",
         );
       }
+      const matchingIndex = currentLines.findIndex(
+        (line) =>
+          line.goal_id === goalId && line.source === source,
+      );
+      const lines = currentLines.map(goalSpendReplacementLine);
+      if (matchingIndex >= 0) {
+        lines[matchingIndex] = {
+          ...lines[matchingIndex],
+          id: `goal_spend_${randomUUID()}`,
+          amount_minor:
+            Number(lines[matchingIndex].amount_minor) + amount,
+        };
+      } else {
+        lines.push({
+          id: `goal_spend_${randomUUID()}`,
+          line_index: lines.length,
+          goal_id: goalId,
+          source,
+          amount_minor: amount,
+        });
+      }
+      const changed =
+        await this.#repository.replaceTransactionGoalSpending(
+          this.#workspaceId,
+          transactionId,
+          lines.map((line, lineIndex) => ({
+            ...line,
+            line_index: lineIndex,
+          })),
+          expectedTransactionVersion,
+          Object.fromEntries(
+            [
+              ...new Set(
+                lines.map((line) => line.goal_id).concat(
+                  currentLines.map((line) => line.goal_id),
+                ),
+              ),
+            ].map((affectedGoalId) => [
+              affectedGoalId,
+              affectedGoalId === goalId
+                ? expectedGoalVersion
+                : goalsById.get(affectedGoalId)?.version,
+            ]),
+          ),
+          actor,
+          `audit_${randomUUID()}`,
+        );
+      assertGoalSpendMutation(changed);
+      return this.#changeResult("Spent from goal", changed);
+    };
+
+    if (
+      typeof this.#repository.withWorkspacePlanningLock === "function"
+    ) {
+      return this.#repository.withWorkspacePlanningLock(
+        this.#workspaceId,
+        apply,
+      );
     }
-    const changed = await this.#repository.addGoalAllocation(
-      this.#workspaceId,
-      {
-        id: `allocation_${randomUUID()}`,
-        goalId,
-        source,
-        amountDeltaMinor: delta,
-        idempotencyKey,
-        expectedVersion,
-        auditEventId: `audit_${randomUUID()}`,
-      },
-      actor,
+    return apply();
+  }
+
+  async reverseGoalSpend(input = {}, actorInput = null) {
+    const actor = normalizeActor(actorInput);
+    const transactionId = requiredId(
+      input.transaction_id,
+      "transaction_id",
     );
-    assertMutation(changed);
-    return this.#changeResult(
-      direction === "allocate"
-        ? "Goal allocation added"
-        : "Goal allocation released",
-      changed,
+    const goalSpendId = requiredId(
+      input.goal_spend_id,
+      "goal_spend_id",
     );
+    const expectedGoalVersion = positiveInteger(
+      input.expected_goal_version,
+      "expected_goal_version",
+    );
+    const expectedTransactionVersion = nonnegativeMinor(
+      input.expected_transaction_version,
+      "expected_transaction_version",
+    );
+
+    const apply = async (client = null) => {
+      const current =
+        await this.#repository.getTransactionGoalSpending(
+          this.#workspaceId,
+          transactionId,
+          client,
+        );
+      if (!current) throw notFound("Transaction not found.");
+      const removed = (current.goal_spends ?? []).find(
+        (line) => line.id === goalSpendId,
+      );
+      if (!removed) {
+        throw notFound("Goal spend not found.");
+      }
+      const goals = await this.#repository.listGoals(
+        this.#workspaceId,
+        { includeArchived: true },
+        client,
+      );
+      const goalsById = new Map(
+        goals.map((entry) => [entry.id, entry]),
+      );
+      const goal = goalsById.get(removed.goal_id);
+      if (!goal) throw notFound("Goal not found.");
+      if (goal.version !== expectedGoalVersion) {
+        const error = conflict(
+          "The goal changed; refresh and try again.",
+        );
+        error.current = goal;
+        throw error;
+      }
+      const transactionVersion = Number(
+        current.goal_spend_version ??
+          current.transaction?.goal_spend_version ??
+          0,
+      );
+      if (transactionVersion !== expectedTransactionVersion) {
+        const error = conflict(
+          "The transaction goal allocations changed; refresh and try again.",
+        );
+        error.current = current;
+        throw error;
+      }
+      const lines = (current.goal_spends ?? [])
+        .filter((line) => line.id !== goalSpendId)
+        .map(goalSpendReplacementLine)
+        .map((line, lineIndex) => ({
+          ...line,
+          line_index: lineIndex,
+        }));
+      const changed =
+        await this.#repository.replaceTransactionGoalSpending(
+          this.#workspaceId,
+          transactionId,
+          lines,
+          expectedTransactionVersion,
+          Object.fromEntries(
+            [
+              ...new Set(
+                (current.goal_spends ?? []).map(
+                  (line) => line.goal_id,
+                ),
+              ),
+            ].map((affectedGoalId) => [
+              affectedGoalId,
+              affectedGoalId === goal.id
+                ? expectedGoalVersion
+                : goalsById.get(affectedGoalId)?.version,
+            ]),
+          ),
+          actor,
+          `audit_${randomUUID()}`,
+        );
+      assertGoalSpendMutation(changed);
+      return this.#changeResult("Goal spend reversed", changed);
+    };
+
+    if (
+      typeof this.#repository.withWorkspacePlanningLock === "function"
+    ) {
+      return this.#repository.withWorkspacePlanningLock(
+        this.#workspaceId,
+        apply,
+      );
+    }
+    return apply();
   }
 
   async setGoalFundingSchedule(input = {}, actorInput = null) {
@@ -424,8 +954,15 @@ export class PlanningService {
       cadence === "biweekly_friday"
         ? requiredDate(input.anchor_on, "anchor_on")
         : null;
+    if (
+      anchorOn &&
+      new Date(`${anchorOn}T00:00:00.000Z`).getUTCDay() !== 5
+    ) {
+      throw badRequest("anchor_on must be a Friday.");
+    }
+    const suppliedScheduleId = Boolean(input.schedule_id);
     const schedule = {
-      id: input.schedule_id
+      id: suppliedScheduleId
         ? requiredId(input.schedule_id, "schedule_id")
         : `schedule_${randomUUID()}`,
       goal_id: goalId,
@@ -448,131 +985,79 @@ export class PlanningService {
       schedule,
       shiftDateOnly(today, -1),
     );
-    const expectedVersion = input.schedule_id
+    const expectedVersion = suppliedScheduleId
       ? positiveInteger(input.expected_version, "expected_version")
-      : null;
+      : input.expected_version == null
+        ? null
+        : positiveInteger(input.expected_version, "expected_version");
     const changed = await this.#repository.upsertGoalSchedule(
       this.#workspaceId,
       schedule,
       expectedVersion,
       actor,
       `audit_${randomUUID()}`,
+      { matchExistingGoal: !suppliedScheduleId },
     );
     assertMutation(changed);
     return this.#changeResult("Goal schedule saved", changed);
   }
 
-  async archiveFinanceGoal(input = {}, actorInput = null) {
+  async finishFinanceGoal(input = {}, actorInput = null) {
     const actor = normalizeActor(actorInput);
     const goalId = requiredId(input.goal_id, "goal_id");
     const expectedVersion = positiveInteger(
       input.expected_version,
       "expected_version",
     );
-    const current = await this.#repository.getGoal(
-      this.#workspaceId,
-      goalId,
+    const outcome = enumValue(
+      input.outcome ?? "completed",
+      GOAL_ARCHIVE_OUTCOMES,
+      "outcome",
     );
-    if (!current) throw notFound("Goal not found.");
-    if (totalEarmarked(current) !== 0) {
-      throw conflict(
-        "Release cash and brokerage earmarks before archiving the goal.",
-      );
-    }
     const changed = await this.#repository.archiveGoal(
       this.#workspaceId,
       goalId,
       expectedVersion,
       actor,
-      { auditEventId: `audit_${randomUUID()}` },
+      {
+        auditEventId: `audit_${randomUUID()}`,
+        outcome,
+      },
     );
     assertMutation(changed);
-    return this.#changeResult("Goal archived", changed);
+    return this.#changeResult("Goal finished", changed);
   }
 
   async setCategoryBudget(input = {}, actorInput = null) {
     const actor = normalizeActor(actorInput);
+    const expectedVersion = nonnegativeMinor(
+      input.expected_version,
+      "expected_version",
+    );
     const timeZone = await this.#repository.getWorkspaceTimezone(
       this.#workspaceId,
     );
     const currentMonth = monthStart(
       workspaceDate(this.#now(), timeZone),
     );
-    const scope = enumValue(
-      input.scope ?? "month",
-      ["month", "future_default"],
-      "scope",
-    );
-    const monthOn = monthStart(input.month_on ?? currentMonth);
-    const effectiveMonthOn =
-      scope === "future_default"
-        ? monthStart(
-            input.effective_month_on ??
-              (monthOn > currentMonth
-                ? monthOn
-                : nextMonth(currentMonth)),
-          )
-        : null;
-    if (
-      scope === "future_default" &&
-      effectiveMonthOn < nextMonth(currentMonth)
-    ) {
-      throw badRequest(
-        "Future budget defaults must begin next month or later.",
-      );
-    }
-    if (
-      scope === "month" &&
-      typeof this.#repository.ensureBudgetMonthSnapshot === "function"
-    ) {
-      await this.#repository.ensureBudgetMonthSnapshot(
-        this.#workspaceId,
-        monthOn,
-        actor.id,
-      );
-    }
     const changed = await this.#repository.setBudgetLine(
       this.#workspaceId,
       {
-        monthOn,
-        effectiveMonthOn,
+        monthOn: currentMonth,
+        effectiveMonthOn: currentMonth,
         category: requiredText(input.category, 100, "category"),
         amountMinor: nonnegativeMinor(
           input.amount_minor,
           "amount_minor",
         ),
-        scope,
+        scope: "standing",
+        expectedVersion,
         auditEventId: `audit_${randomUUID()}`,
       },
       actor,
     );
+    assertMutation(changed);
     return this.#changeResult("Budget saved", changed);
-  }
-
-  async copyBudgetMonth(input = {}, actorInput = null) {
-    const actor = normalizeActor(actorInput);
-    const targetMonth = monthStart(input.month_on);
-    const sourceMonth = monthStart(
-      input.source_month_on ?? previousMonth(targetMonth),
-    );
-    if (sourceMonth >= targetMonth) {
-      throw badRequest("source_month_on must be earlier than month_on.");
-    }
-    const sourceLines = await this.#repository.listResolvedBudgetLines(
-      this.#workspaceId,
-      sourceMonth,
-    );
-    const changed = await this.#repository.replaceBudgetMonth(
-      this.#workspaceId,
-      {
-        monthOn: targetMonth,
-        copiedFromMonthOn: sourceMonth,
-        lines: sourceLines,
-        auditEventId: `audit_${randomUUID()}`,
-      },
-      actor,
-    );
-    return this.#changeResult("Budget copied", changed);
   }
 
   async splitTransaction(input = {}, actorInput = null) {
@@ -580,6 +1065,10 @@ export class PlanningService {
     const transactionId = requiredId(
       input.transaction_id,
       "transaction_id",
+    );
+    const expectedVersion = nonnegativeMinor(
+      input.expected_version,
+      "expected_version",
     );
     const transaction = await this.#financeRepository.getTransaction(
       this.#workspaceId,
@@ -600,9 +1089,11 @@ export class PlanningService {
         this.#workspaceId,
         transactionId,
         [],
+        expectedVersion,
         actor,
         `audit_${randomUUID()}`,
       );
+      assertMutation(changed);
       return this.#changeResult("Transaction split cleared", changed);
     }
     if (input.lines.length === 1) {
@@ -637,9 +1128,11 @@ export class PlanningService {
       this.#workspaceId,
       transactionId,
       lines,
+      expectedVersion,
       actor,
       `audit_${randomUUID()}`,
     );
+    assertMutation(changed);
     return this.#changeResult(
       lines.length ? "Transaction split saved" : "Transaction split cleared",
       changed,
@@ -662,6 +1155,28 @@ export class PlanningService {
     const requestHash = createHash("sha256")
       .update(JSON.stringify(input))
       .digest("hex");
+    if (typeof this.#repository.executePlanWrite === "function") {
+      const outcome = await this.#repository.executePlanWrite(
+        this.#workspaceId,
+        {
+          actor,
+          operation,
+          idempotencyKey,
+          requestHash,
+        },
+        () => this[method](input, actor),
+      );
+      if (outcome.replay || outcome.executed) return outcome.response;
+      if (outcome.mismatch) {
+        throw conflict(
+          "That idempotency key was already used for a different request.",
+        );
+      }
+      throw conflict(
+        "A request with that idempotency key is still in progress.",
+      );
+    }
+
     const claim = await this.#repository.claimPlanWrite(
       this.#workspaceId,
       {
@@ -710,7 +1225,9 @@ export class PlanningService {
       this.#workspaceId,
     );
     const throughOn =
-      through_on ?? workspaceDate(this.#now(), timeZone);
+      through_on == null
+        ? workspaceDate(this.#now(), timeZone)
+        : requiredDate(through_on, "through_on");
     const initial = await this.#repository.listDueGoalSchedules(
       this.#workspaceId,
       throughOn,
@@ -722,89 +1239,153 @@ export class PlanningService {
       for (let count = 0; count < 100; count += 1) {
         const dueOn = schedule.next_run_on;
         if (!dueOn || dueOn > throughOn) break;
-        const current = await this.#repository.getGoal(
-          this.#workspaceId,
-          schedule.goal_id,
-        );
-        let status;
-        let allocationEventId = null;
-        let detail = {};
-        let pauseSchedule = false;
-        if (!current || current.status !== "active") {
-          status = "skipped_inactive_goal";
-          pauseSchedule = true;
-        } else {
-          const remaining = Math.max(
-            0,
-            current.target_amount_minor - totalEarmarked(current),
-          );
-          if (remaining === 0) {
-            status = "skipped_goal_complete";
-            pauseSchedule = true;
-          } else {
-            const amount = Math.min(schedule.amount_minor, remaining);
-            if (schedule.source === "brokerage") {
-              const state = await this.#planningState();
-              const available =
-                state.snapshot.taxable_brokerage_value.amount_minor -
-                state.snapshot.brokerage_goal_earmarks.amount_minor;
-              if (amount > available) {
-                status = "skipped_brokerage_capacity";
-                detail = {
-                  requested_amount_minor: amount,
-                  available_amount_minor: Math.max(0, available),
-                };
-              }
-            }
-            if (!status) {
-              const allocation =
-                await this.#repository.addGoalAllocation(
-                  this.#workspaceId,
-                  {
-                    id: `allocation_${randomUUID()}`,
-                    goalId: current.id,
-                    source: schedule.source,
-                    amountDeltaMinor: amount,
-                    idempotencyKey: `schedule:${schedule.id}:${dueOn}`,
-                    expectedVersion: current.version,
-                    auditEventId: `audit_${randomUUID()}`,
-                  },
-                  actor,
-                );
-              assertMutation(allocation);
-              allocationEventId = allocation.event?.id ?? null;
-              status = "applied";
-              detail = { amount_minor: amount };
-              pauseSchedule = amount === remaining;
-            }
-          }
-        }
-        const nextRunOn = nextScheduleDueOn(schedule, dueOn);
-        const finished =
-          await this.#repository.finishGoalScheduleRun(
-            this.#workspaceId,
-            schedule,
-            {
-              runId: `schedule_run_${randomUUID()}`,
-              dueOn,
-              status,
-              allocationEventId,
-              detail,
-              nextRunOn,
-              pauseSchedule,
-            },
-          );
+        const finished = await this.#processGoalScheduleOccurrence({
+          candidate: schedule,
+          dueOn,
+          throughOn,
+          actor,
+        });
+        if (finished.ignored) break;
         runs.push({
           schedule_id: schedule.id,
           due_on: dueOn,
-          status,
+          status: finished.status,
           replayed: Boolean(finished.replayed),
         });
-        if (pauseSchedule) break;
-        schedule = { ...schedule, next_run_on: nextRunOn };
+        if (finished.paused || finished.replayed) break;
+        schedule = finished.schedule;
       }
     }
     return { processed: runs.length, runs };
+  }
+
+  async #processGoalScheduleOccurrence({
+    candidate,
+    dueOn,
+    throughOn,
+    actor,
+  }) {
+    const apply = async (client = null) => {
+      let schedule = candidate;
+      if (
+        typeof this.#repository.lockGoalScheduleForRun === "function"
+      ) {
+        const locked = await this.#repository.lockGoalScheduleForRun(
+          this.#workspaceId,
+          {
+            scheduleId: candidate.id,
+            dueOn,
+            throughOn,
+            expectedVersion: candidate.version,
+          },
+        );
+        if (locked.replayed) {
+          return {
+            ignored: true,
+            replayed: true,
+            status: locked.status,
+          };
+        }
+        if (locked.missing || locked.stale) {
+          return { ignored: true, replayed: false };
+        }
+        schedule = locked.schedule;
+      }
+
+      const current = await this.#repository.getGoal(
+        this.#workspaceId,
+        schedule.goal_id,
+      );
+      let status;
+      let allocationEventId = null;
+      let detail = {};
+      let pauseSchedule = false;
+      if (!current || current.status !== "active") {
+        status = "skipped_inactive_goal";
+        pauseSchedule = true;
+      } else {
+        const remaining = Math.max(
+          0,
+          current.target_amount_minor - totalRecordedFunding(current),
+        );
+        if (remaining === 0) {
+          status = "skipped_goal_complete";
+          pauseSchedule = true;
+        } else {
+          const amount = Math.min(schedule.amount_minor, remaining);
+          if (schedule.source === "brokerage") {
+            const available = await this.#brokerageAvailability(client);
+            if (amount > available) {
+              status = "skipped_brokerage_capacity";
+              detail = {
+                requested_amount_minor: amount,
+                available_amount_minor: available,
+              };
+            }
+          }
+          if (!status) {
+            const allocation =
+              await this.#repository.addGoalAllocation(
+                this.#workspaceId,
+                {
+                  id: `allocation_${randomUUID()}`,
+                  goalId: current.id,
+                  source: schedule.source,
+                  amountDeltaMinor: amount,
+                  idempotencyKey: `schedule:${schedule.id}:${dueOn}`,
+                  expectedVersion: current.version,
+                  auditEventId: `audit_${randomUUID()}`,
+                },
+                actor,
+              );
+            assertMutation(allocation);
+            allocationEventId = allocation.event?.id ?? null;
+            status = "applied";
+            detail = { amount_minor: amount };
+            pauseSchedule = amount === remaining;
+          }
+        }
+      }
+      const nextRunOn = nextScheduleDueOn(schedule, dueOn);
+      const finished =
+        await this.#repository.finishGoalScheduleRun(
+          this.#workspaceId,
+          schedule,
+          {
+            runId: `schedule_run_${randomUUID()}`,
+            dueOn,
+            status,
+            allocationEventId,
+            detail,
+            nextRunOn,
+            pauseSchedule,
+            actorId: actor.id,
+          },
+        );
+      return {
+        ignored: false,
+        replayed: Boolean(finished.replayed),
+        status,
+        paused: pauseSchedule,
+        schedule:
+          finished.schedule ?? {
+            ...schedule,
+            next_run_on: nextRunOn,
+            status: pauseSchedule ? "paused" : schedule.status,
+            version: schedule.version + 1,
+          },
+      };
+    };
+
+    if (
+      typeof this.#repository.withWorkspacePlanningLock === "function"
+    ) {
+      return this.#repository.withWorkspacePlanningLock(
+        this.#workspaceId,
+        apply,
+      );
+    }
+    return apply();
   }
 
   async #planningState({ includeArchived = false } = {}) {
@@ -836,13 +1417,54 @@ export class PlanningService {
     };
   }
 
+  #goalCatalog(state) {
+    const activeGoals = [...state.snapshot.goals].sort((left, right) =>
+      left.id.localeCompare(right.id),
+    );
+    const archivedRecords = state.goals.filter(
+      (goal) => goal.status === "archived",
+    );
+    const archivedGoals = archivedRecords
+      .map((goal) =>
+        buildArchivedGoalSnapshot(goal, {
+          currency: this.#currency,
+        }),
+      )
+      .sort(compareArchivedGoals);
+    return {
+      goals: activeGoals.concat(archivedGoals),
+      archivedGoals,
+      historyInsights: buildGoalHistoryInsights(archivedRecords, {
+        currency: this.#currency,
+      }),
+    };
+  }
+
+  async #brokerageAvailability(client = null) {
+    const accounts = await this.#financeRepository.listAccounts(
+      this.#workspaceId,
+      {},
+      client ?? undefined,
+    );
+    const goals = await this.#repository.listGoals(this.#workspaceId);
+    const snapshot = buildPlanningSnapshot({
+      accounts,
+      goals,
+      currency: this.#currency,
+    });
+    return Math.max(
+      0,
+      snapshot.taxable_brokerage_value.amount_minor -
+        snapshot.brokerage_goal_earmarks.amount_minor,
+    );
+  }
+
   async #changeResult(title, changed) {
     const state = await this.#planningState({ includeArchived: true });
     return {
       title,
-      changed,
+      changed: compactPlanChange(changed),
       safe_to_spend: state.snapshot.safe_to_spend,
-      goals: state.snapshot.goals,
       audit_event_id: changed.audit_event_id ?? null,
       data_as_of: state.freshness.data_as_of,
       source: {
@@ -851,6 +1473,106 @@ export class PlanningService {
       },
     };
   }
+}
+
+function compactPlanChange(changed) {
+  if (Array.isArray(changed?.splits)) {
+    const nextVersion = Number(changed.split_version ?? 0);
+    return {
+      before: splitChangeSummary(
+        changed.before,
+        Math.max(0, nextVersion - 1),
+      ),
+      after: splitChangeSummary(changed.after, nextVersion),
+      split_version: nextVersion,
+      audit_event_id: changed.audit_event_id ?? null,
+    };
+  }
+  if (Array.isArray(changed?.goal_spends)) {
+    const before = Array.isArray(changed.before)
+      ? changed.before
+      : [];
+    const after = changed.goal_spends;
+    const beforeByKey = new Map(
+      before.map((line) => [goalSpendReceiptKey(line), line]),
+    );
+    const afterByKey = new Map(
+      after.map((line) => [goalSpendReceiptKey(line), line]),
+    );
+    return {
+      before: goalSpendChangeSummary(before),
+      after: goalSpendChangeSummary(after),
+      goal_spends: after
+        .filter((line) => {
+          const previous = beforeByKey.get(
+            goalSpendReceiptKey(line),
+          );
+          return (
+            !previous ||
+            Number(previous.amount_minor) !==
+              Number(line.amount_minor)
+          );
+        })
+        .map(compactGoalSpend),
+      reversed_goal_spend_ids: before
+        .filter((line) => {
+          const next = afterByKey.get(goalSpendReceiptKey(line));
+          return (
+            !next ||
+            Number(next.amount_minor) !== Number(line.amount_minor)
+          );
+        })
+        .map((line) => line.id),
+      goal_spend_version: Number(
+        changed.goal_spend_version ?? 0,
+      ),
+      goals: (changed.goals ?? []).map((goal) => ({
+        id: goal.id,
+        status: goal.status,
+        version: Number(goal.version),
+      })),
+      audit_event_id: changed.audit_event_id ?? null,
+    };
+  }
+  return changed;
+}
+
+function splitChangeSummary(lines, fallbackVersion) {
+  const values = Array.isArray(lines) ? lines : [];
+  return {
+    line_count: values.length,
+    total_amount_minor: values.reduce(
+      (sum, line) => sum + Number(line.amount_minor ?? 0),
+      0,
+    ),
+    split_version: Number(
+      values[0]?.split_version ?? fallbackVersion,
+    ),
+  };
+}
+
+function goalSpendReceiptKey(line) {
+  return `${line.goal_id}:${line.source}`;
+}
+
+function compactGoalSpend(line) {
+  return {
+    id: line.id,
+    goal_id: line.goal_id,
+    source: line.source,
+    amount_minor: Number(line.amount_minor),
+  };
+}
+
+function goalSpendChangeSummary(lines) {
+  const values = Array.isArray(lines) ? lines : [];
+  return {
+    line_count: values.length,
+    total_amount_minor: values.reduce(
+      (sum, line) => sum + Number(line.amount_minor ?? 0),
+      0,
+    ),
+  };
 }
 
 export function createPlanningService(options) {
@@ -905,6 +1627,56 @@ function assertMutation(value) {
   }
 }
 
+function assertGoalSpendMutation(value) {
+  assertMutation(value);
+  if (value.validation) {
+    const error =
+      value.code === "not_found"
+        ? notFound(value.message ?? "Planning record not found.")
+        : value.code === "invalid_request"
+          ? badRequest(value.message ?? "Goal spending is invalid.")
+          : conflict(
+              value.message ??
+                "The goal spending allocation is no longer valid.",
+            );
+    error.current = value.current;
+    throw error;
+  }
+}
+
+function assertGoalSpendEligible(transaction) {
+  if (!transaction) throw notFound("Transaction not found.");
+  const amount = Number(transaction.amount_minor);
+  const reason = goalSpendIneligibleReason(transaction, amount);
+  if (reason) throw conflict(reason);
+}
+
+function goalSpendIneligibleReason(transaction, amountMinor) {
+  if (transaction?.pending !== false) {
+    return "Pending transactions cannot be spent from a goal.";
+  }
+  if (transaction.currency_code !== "USD") {
+    return "Only USD transactions can be spent from a goal.";
+  }
+  if (!Number.isSafeInteger(amountMinor) || amountMinor >= 0) {
+    return "Only posted outflows can be spent from a goal.";
+  }
+  if (transaction.excluded_from_spending === true) {
+    return "Transfers and excluded transactions cannot be spent from a goal.";
+  }
+  return null;
+}
+
+function goalSpendReplacementLine(line) {
+  return {
+    id: `goal_spend_${randomUUID()}`,
+    line_index: Number(line.line_index),
+    goal_id: line.goal_id,
+    source: line.source,
+    amount_minor: Number(line.amount_minor),
+  };
+}
+
 function sourceEarmarked(goal, source) {
   return Number(
     goal.allocations?.find((entry) => entry.source === source)
@@ -917,6 +1689,102 @@ function totalEarmarked(goal) {
     (sum, entry) => sum + Number(entry.amount_minor),
     0,
   );
+}
+
+function totalSpent(goal) {
+  return (goal.spending ?? []).reduce(
+    (sum, entry) => sum + Number(entry.amount_minor),
+    0,
+  );
+}
+
+function totalRecordedFunding(goal) {
+  const recorded = goal.recorded_allocations;
+  if (Array.isArray(recorded)) {
+    return recorded.reduce(
+      (sum, entry) => sum + Number(entry.amount_minor),
+      0,
+    );
+  }
+  return totalEarmarked(goal) + totalSpent(goal);
+}
+
+function parseGoalCursor(value) {
+  if (value === undefined) return null;
+  if (
+    typeof value !== "string" ||
+    value.length > 512 ||
+    !/^goal\.[A-Za-z0-9_-]+$/.test(value)
+  ) {
+    throw badRequest("cursor is invalid.");
+  }
+  const encoded = value.slice("goal.".length);
+  let decoded;
+  let parsed;
+  try {
+    decoded = Buffer.from(encoded, "base64url").toString("utf8");
+    if (Buffer.from(decoded, "utf8").toString("base64url") !== encoded) {
+      throw new TypeError("Non-canonical cursor.");
+    }
+    parsed = JSON.parse(decoded);
+  } catch {
+    throw badRequest("cursor is invalid.");
+  }
+  if (
+    parsed == null ||
+    Array.isArray(parsed) ||
+    typeof parsed !== "object" ||
+    Object.keys(parsed).sort().join(",") !==
+      "offset,purpose,status,v" ||
+    parsed.v !== 1 ||
+    !Number.isSafeInteger(parsed.offset) ||
+    parsed.offset < 0 ||
+    !["active", "archived", "all"].includes(parsed.status) ||
+    !(
+      parsed.purpose === null ||
+      GOAL_PURPOSES.includes(parsed.purpose)
+    )
+  ) {
+    throw badRequest("cursor is invalid.");
+  }
+  return {
+    offset: parsed.offset,
+    status: parsed.status,
+    purpose: parsed.purpose,
+  };
+}
+
+function encodeGoalCursor({ offset, status, purpose }) {
+  return `goal.${Buffer.from(
+    JSON.stringify({
+      v: 1,
+      offset,
+      status,
+      purpose: purpose ?? null,
+    }),
+    "utf8",
+  ).toString("base64url")}`;
+}
+
+function compareArchivedGoals(left, right) {
+  const leftArchivedAt = String(left.archived_at ?? "");
+  const rightArchivedAt = String(right.archived_at ?? "");
+  return (
+    rightArchivedAt.localeCompare(leftArchivedAt) ||
+    left.id.localeCompare(right.id)
+  );
+}
+
+function boundedGoalHistoryInsights(insights) {
+  return insights.map((insight) => {
+    const evidenceGoalIds = insight.evidence_goal_ids.slice(0, 8);
+    return {
+      ...insight,
+      evidence_goal_ids_truncated:
+        insight.evidence_goal_ids.length > evidenceGoalIds.length,
+      evidence_goal_ids: evidenceGoalIds,
+    };
+  });
 }
 
 function requiredText(value, maximum, name) {
@@ -997,7 +1865,7 @@ function optionalDate(value) {
 }
 
 function requiredDate(value, name) {
-  const normalized = String(value ?? "").slice(0, 10);
+  const normalized = String(value ?? "");
   const date = new Date(`${normalized}T00:00:00.000Z`);
   if (
     !/^\d{4}-\d{2}-\d{2}$/.test(normalized) ||

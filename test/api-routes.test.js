@@ -15,6 +15,191 @@ function apiApp(financeService) {
   return app;
 }
 
+function planningApiApp(planningService) {
+  const app = express();
+  app.use(express.json());
+  app.use(
+    createApiRouter({
+      financeService: {},
+      planningService,
+    }),
+  );
+  return app;
+}
+
+test("a fresh budget can create its first current standing category from the browser route", async () => {
+  const calls = [];
+  const app = planningApiApp({
+    executeIdempotentWrite(operation, input, actor) {
+      calls.push({ operation, input, actor });
+      return { saved: true };
+    },
+  });
+
+  await request(app)
+    .post("/api/v1/plan/budget")
+    .send({
+      category: "Childcare",
+      amount_minor: 120_000,
+      expected_version: 0,
+      idempotency_key: "budget-childcare-2026-08",
+    })
+    .expect(200, { saved: true });
+
+  assert.deepEqual(calls, [
+    {
+      operation: "set_category_budget",
+      input: {
+        category: "Childcare",
+        amount_minor: 120_000,
+        expected_version: 0,
+        idempotency_key: "budget-childcare-2026-08",
+      },
+      actor: undefined,
+    },
+  ]);
+});
+
+test("transaction goal-spending routes read, spend, and reverse with path-bound IDs", async () => {
+  const calls = [];
+  const middlewareCalls = [];
+  const actor = {
+    id: "member-1",
+    email: "member@example.com",
+  };
+  const app = express();
+  app.use(express.json());
+  app.use((request, _response, next) => {
+    request.user = actor;
+    next();
+  });
+  app.use(
+    createApiRouter({
+      requireCsrf(request, _response, next) {
+        middlewareCalls.push(request.method);
+        next();
+      },
+      financeService: {},
+      planningService: {
+        getTransactionGoalSpending(input) {
+          calls.push(["read", input]);
+          return {
+            data: {
+              transaction_id: input.transaction_id,
+              goal_spend_version: 2,
+              goal_spends: [],
+            },
+          };
+        },
+        executeIdempotentWrite(operation, input, routeActor) {
+          calls.push([operation, input, routeActor]);
+          return {
+            title:
+              operation === "spend_from_finance_goal"
+                ? "Goal spending recorded"
+                : "Goal spending reversed",
+          };
+        },
+      },
+    }),
+  );
+
+  await request(app)
+    .get("/api/v1/transactions/txn-1/goal-spends")
+    .expect(200)
+    .expect(({ body }) => {
+      assert.equal(body.data.transaction_id, "txn-1");
+      assert.equal(body.data.goal_spend_version, 2);
+    });
+
+  await request(app)
+    .post("/api/v1/transactions/txn-1/goal-spends")
+    .send({
+      transaction_id: "spoofed-transaction",
+      goal_id: "goal-1",
+      source: "cash",
+      amount_minor: 12_500,
+      expected_goal_version: 3,
+      expected_transaction_version: 2,
+      idempotency_key: "goal-spend-txn-1-v2",
+    })
+    .expect(201, { title: "Goal spending recorded" });
+
+  await request(app)
+    .delete(
+      "/api/v1/transactions/txn-1/goal-spends/goal-spend-1",
+    )
+    .send({
+      transaction_id: "spoofed-transaction",
+      goal_spend_id: "spoofed-spend",
+      expected_goal_version: 4,
+      expected_transaction_version: 3,
+      idempotency_key: "goal-spend-reverse-txn-1-v3",
+    })
+    .expect(200, { title: "Goal spending reversed" });
+
+  assert.deepEqual(middlewareCalls, ["POST", "DELETE"]);
+  assert.deepEqual(calls, [
+    ["read", { transaction_id: "txn-1" }],
+    [
+      "spend_from_finance_goal",
+      {
+        transaction_id: "txn-1",
+        goal_id: "goal-1",
+        source: "cash",
+        amount_minor: 12_500,
+        expected_goal_version: 3,
+        expected_transaction_version: 2,
+        idempotency_key: "goal-spend-txn-1-v2",
+      },
+      actor,
+    ],
+    [
+      "reverse_goal_spend",
+      {
+        transaction_id: "txn-1",
+        goal_spend_id: "goal-spend-1",
+        expected_goal_version: 4,
+        expected_transaction_version: 3,
+        idempotency_key: "goal-spend-reverse-txn-1-v3",
+      },
+      actor,
+    ],
+  ]);
+});
+
+test("transaction goal-spending writes require idempotency keys", async () => {
+  let called = false;
+  const app = planningApiApp({
+    executeIdempotentWrite() {
+      called = true;
+      return { saved: true };
+    },
+  });
+
+  await request(app)
+    .post("/api/v1/transactions/txn-1/goal-spends")
+    .send({
+      goal_id: "goal-1",
+      source: "cash",
+      amount_minor: 12_500,
+      expected_goal_version: 3,
+      expected_transaction_version: 2,
+    })
+    .expect(400);
+  await request(app)
+    .delete(
+      "/api/v1/transactions/txn-1/goal-spends/goal-spend-1",
+    )
+    .send({
+      expected_goal_version: 4,
+      expected_transaction_version: 3,
+    })
+    .expect(400);
+
+  assert.equal(called, false);
+});
+
 test("finance REST routes pass account and portfolio filters through", async () => {
   const calls = [];
   const app = apiApp({

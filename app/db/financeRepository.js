@@ -209,11 +209,28 @@ function normalizeNonnegativeMinor(value) {
 }
 
 function inferBalanceGroup(account) {
+  const type = normalizeSearchText(account.type).replaceAll(" ", "_");
+  const subtype = normalizeSearchText(account.subtype).replaceAll(" ", "_");
+  const requestedGroup =
+    BALANCE_GROUPS.has(account.balance_group_override)
+      ? account.balance_group_override
+      : BALANCE_GROUPS.has(account.balance_group)
+        ? account.balance_group
+        : null;
+  if (
+    (RETIREMENT_SUBTYPES.has(subtype) ||
+      account.balance_group === "retirement") &&
+    ["cash", "taxable_investment"].includes(requestedGroup)
+  ) {
+    return "retirement";
+  }
   if (BALANCE_GROUPS.has(account.balance_group_override)) {
     return account.balance_group_override;
   }
-  const type = normalizeSearchText(account.type).replaceAll(" ", "_");
-  const subtype = normalizeSearchText(account.subtype).replaceAll(" ", "_");
+  if (BALANCE_GROUPS.has(account.balance_group)) {
+    return account.balance_group;
+  }
+  if (RETIREMENT_SUBTYPES.has(subtype)) return "retirement";
   if (type === "credit" || subtype === "credit_card") return "credit_card";
   if (type === "loan") return "loan";
   if (account.is_liability) return "other_liability";
@@ -1911,8 +1928,9 @@ export class PgFinanceRepository {
   async listAccounts(
     workspaceId = DEFAULT_WORKSPACE_ID,
     { includeInactive = false } = {},
+    client = this.#pool,
   ) {
-    const result = await this.#pool.query(
+    const result = await client.query(
       `
         SELECT
           a.*,
@@ -2692,6 +2710,28 @@ export class PgFinanceRepository {
     return this.getManualAssetValuations(workspaceId, assetId, options);
   }
 
+  async listTransactionSplits(
+    workspaceId = DEFAULT_WORKSPACE_ID,
+    { transactionIds = null, startOn = null, endOn = null } = {},
+  ) {
+    const result = await this.#pool.query(
+      `
+        SELECT split.*, transaction.split_version
+        FROM transaction_splits split
+        JOIN transactions transaction
+          ON transaction.workspace_id = split.workspace_id
+         AND transaction.id = split.transaction_id
+        WHERE split.workspace_id = $1
+          AND ($2::text[] IS NULL OR split.transaction_id = ANY($2))
+          AND ($3::date IS NULL OR transaction.posted_on >= $3)
+          AND ($4::date IS NULL OR transaction.posted_on < $4)
+        ORDER BY split.transaction_id, split.line_index
+      `,
+      [workspaceId, transactionIds, startOn, endOn],
+    );
+    return result.rows.map(mapTransactionSplit);
+  }
+
   async listTransactions(
     workspaceId = DEFAULT_WORKSPACE_ID,
     {
@@ -2733,6 +2773,9 @@ export class PgFinanceRepository {
             original_transaction.category_primary,
             t.category_primary
           ) AS effective_category_primary,
+          category_split.category AS split_category,
+          category_split.amount_minor AS split_category_amount_minor,
+          category_split.line_count AS split_category_line_count,
           COALESCE(
             transaction_override.category_detailed,
             merchant_override.category_detailed,
@@ -2861,22 +2904,42 @@ export class PgFinanceRepository {
          AND original_merchant_override.transaction_id IS NULL
          AND original_merchant_override.normalized_merchant =
              original_transaction.normalized_merchant
+        LEFT JOIN LATERAL (
+          SELECT
+            split_filter.category,
+            SUM(split_filter.amount_minor)::bigint AS amount_minor,
+            COUNT(*)::integer AS line_count
+          FROM transaction_splits split_filter
+          WHERE split_filter.workspace_id = t.workspace_id
+            AND split_filter.transaction_id = t.id
+            AND split_filter.category = $5
+          GROUP BY split_filter.category
+        ) category_split ON true
         WHERE t.workspace_id = $1
           AND ($2::date IS NULL OR t.posted_on >= $2)
           AND ($3::date IS NULL OR t.posted_on < $3)
           AND ($4::text IS NULL OR t.account_id = $4)
           AND (
             $5::text IS NULL
-            OR COALESCE(
-              transaction_override.category_primary,
-              cleanup_rule.category_primary,
-              merchant_override.category_primary,
-              original_override.category_primary,
-              original_cleanup_rule.category_primary,
-              original_merchant_override.category_primary,
-              original_transaction.category_primary,
-              t.category_primary
-            ) = $5
+            OR (
+              COALESCE(
+                transaction_override.category_primary,
+                cleanup_rule.category_primary,
+                merchant_override.category_primary,
+                original_override.category_primary,
+                original_cleanup_rule.category_primary,
+                original_merchant_override.category_primary,
+                original_transaction.category_primary,
+                t.category_primary
+              ) = $5
+              AND NOT EXISTS (
+                SELECT 1
+                FROM transaction_splits split_override
+                WHERE split_override.workspace_id = t.workspace_id
+                  AND split_override.transaction_id = t.id
+              )
+            )
+            OR category_split.category IS NOT NULL
           )
           AND ($6::boolean OR t.pending = false)
           AND (
@@ -2884,8 +2947,18 @@ export class PgFinanceRepository {
             OR ($11 = 'pending' AND t.pending = true)
             OR ($11 = 'posted' AND t.pending = false)
           )
-          AND ($12::bigint IS NULL OR abs(t.amount_minor) >= $12)
-          AND ($13::bigint IS NULL OR abs(t.amount_minor) <= $13)
+          AND (
+            $12::bigint IS NULL
+            OR abs(
+              COALESCE(category_split.amount_minor, t.amount_minor)
+            ) >= $12
+          )
+          AND (
+            $13::bigint IS NULL
+            OR abs(
+              COALESCE(category_split.amount_minor, t.amount_minor)
+            ) <= $13
+          )
           AND (
             $14::boolean = false
             OR (a.active = true AND i.status <> 'removed')
@@ -2909,8 +2982,19 @@ export class PgFinanceRepository {
                    original_transaction.category_primary,
                    t.category_primary
                  )
-               )
+                 )
                ILIKE '%' || $7 || '%'
+            OR EXISTS (
+              SELECT 1
+              FROM transaction_splits split_search
+              WHERE split_search.workspace_id = t.workspace_id
+                AND split_search.transaction_id = t.id
+                AND split_search.category ILIKE '%' || $7 || '%'
+                AND (
+                  $5::text IS NULL
+                  OR split_search.category = $5
+                )
+            )
           )
           AND (
             $8::date IS NULL
@@ -3907,19 +3991,20 @@ export class PgFinanceRepository {
   ) {
     const result = await this.#pool.query(
       `
-        SELECT DISTINCT
-          COALESCE(
-            transaction_override.category_primary,
-            cleanup_rule.category_primary,
-            merchant_override.category_primary,
-            original_transaction_override.category_primary,
-            original_cleanup_rule.category_primary,
-            original_merchant_override.category_primary,
-            original_transaction.category_primary,
-            t.category_primary
-          ) AS category
-        FROM transactions t
-        LEFT JOIN LATERAL (
+        WITH base_categories AS (
+          SELECT DISTINCT
+            COALESCE(
+              transaction_override.category_primary,
+              cleanup_rule.category_primary,
+              merchant_override.category_primary,
+              original_transaction_override.category_primary,
+              original_cleanup_rule.category_primary,
+              original_merchant_override.category_primary,
+              original_transaction.category_primary,
+              t.category_primary
+            ) AS category
+          FROM transactions t
+          LEFT JOIN LATERAL (
           SELECT rule.*
           FROM transaction_cleanup_rules rule
           WHERE rule.workspace_id = t.workspace_id
@@ -3939,11 +4024,11 @@ export class PgFinanceRepository {
             rule.updated_at DESC,
             rule.id
           LIMIT 1
-        ) cleanup_rule ON true
-        LEFT JOIN transactions original_transaction
+          ) cleanup_rule ON true
+          LEFT JOIN transactions original_transaction
           ON original_transaction.id = t.original_transaction_id
          AND original_transaction.workspace_id = t.workspace_id
-        LEFT JOIN LATERAL (
+          LEFT JOIN LATERAL (
           SELECT rule.*
           FROM transaction_cleanup_rules rule
           WHERE original_transaction.id IS NOT NULL
@@ -3966,36 +4051,55 @@ export class PgFinanceRepository {
             rule.updated_at DESC,
             rule.id
           LIMIT 1
-        ) original_cleanup_rule ON true
-        LEFT JOIN categorization_overrides transaction_override
+          ) original_cleanup_rule ON true
+          LEFT JOIN categorization_overrides transaction_override
           ON transaction_override.workspace_id = t.workspace_id
          AND transaction_override.transaction_id = t.id
-        LEFT JOIN categorization_overrides merchant_override
+          LEFT JOIN categorization_overrides merchant_override
           ON merchant_override.workspace_id = t.workspace_id
          AND merchant_override.transaction_id IS NULL
          AND merchant_override.normalized_merchant = t.normalized_merchant
-        LEFT JOIN categorization_overrides original_transaction_override
+          LEFT JOIN categorization_overrides original_transaction_override
           ON original_transaction_override.workspace_id =
               original_transaction.workspace_id
          AND original_transaction_override.transaction_id =
              original_transaction.id
-        LEFT JOIN categorization_overrides original_merchant_override
+          LEFT JOIN categorization_overrides original_merchant_override
           ON original_merchant_override.workspace_id =
               original_transaction.workspace_id
          AND original_merchant_override.transaction_id IS NULL
          AND original_merchant_override.normalized_merchant =
              original_transaction.normalized_merchant
-        WHERE t.workspace_id = $1
-          AND COALESCE(
-            transaction_override.category_primary,
-            cleanup_rule.category_primary,
-            merchant_override.category_primary,
-            original_transaction_override.category_primary,
-            original_cleanup_rule.category_primary,
-            original_merchant_override.category_primary,
-            original_transaction.category_primary,
-            t.category_primary
-          ) IS NOT NULL
+          WHERE t.workspace_id = $1
+            AND NOT EXISTS (
+              SELECT 1
+              FROM transaction_splits split_override
+              WHERE split_override.workspace_id = t.workspace_id
+                AND split_override.transaction_id = t.id
+            )
+            AND COALESCE(
+              transaction_override.category_primary,
+              cleanup_rule.category_primary,
+              merchant_override.category_primary,
+              original_transaction_override.category_primary,
+              original_cleanup_rule.category_primary,
+              original_merchant_override.category_primary,
+              original_transaction.category_primary,
+              t.category_primary
+            ) IS NOT NULL
+        ),
+        categories AS (
+          SELECT category FROM base_categories
+          UNION
+          SELECT split.category
+          FROM transaction_splits split
+          JOIN transactions transaction
+            ON transaction.workspace_id = split.workspace_id
+           AND transaction.id = split.transaction_id
+          WHERE split.workspace_id = $1
+        )
+        SELECT category
+        FROM categories
         ORDER BY category
         LIMIT $2
       `,
@@ -5054,52 +5158,75 @@ export class PgFinanceRepository {
     if (!normalized) return [];
     const result = await this.#pool.query(
       `
-        SELECT
-          entity_type, entity_id, title, subtitle, metadata,
-          CASE
-            WHEN normalized_text = $2 THEN 4
-            WHEN normalized_text LIKE $2 || '%' THEN 3
-            WHEN search_vector @@ plainto_tsquery('simple', $2) THEN 2
-            WHEN entity_type = 'transaction'
-              AND EXISTS (
-                SELECT 1
-                FROM transaction_splits split
-                WHERE split.workspace_id = search_documents.workspace_id
-                  AND split.transaction_id = search_documents.entity_id
-                  AND lower(regexp_replace(
-                    split.category,
-                    '[^[:alnum:]]+',
-                    ' ',
-                    'g'
-                  )) LIKE '%' || $2 || '%'
-              )
-              THEN 2
-            ELSE 1
-          END AS match_tier,
-          similarity(normalized_text, $2) AS similarity_score
-        FROM search_documents
-        WHERE workspace_id = $1
-          AND ($3::text[] IS NULL OR entity_type = ANY($3))
-          AND (
-            normalized_text LIKE $2 || '%'
-            OR search_vector @@ plainto_tsquery('simple', $2)
-            OR similarity(normalized_text, $2) >= 0.2
-            OR (
-              entity_type = 'transaction'
-              AND EXISTS (
-                SELECT 1
-                FROM transaction_splits split
-                WHERE split.workspace_id = search_documents.workspace_id
-                  AND split.transaction_id = search_documents.entity_id
-                  AND lower(regexp_replace(
-                    split.category,
-                    '[^[:alnum:]]+',
-                    ' ',
-                    'g'
-                  )) LIKE '%' || $2 || '%'
+        WITH search_settings AS MATERIALIZED (
+          SELECT set_config(
+            'pg_trgm.similarity_threshold',
+            '0.2',
+            true
+          ) AS similarity_threshold
+        ),
+        split_matches AS (
+          SELECT DISTINCT split.transaction_id
+          FROM transaction_splits split
+          WHERE split.workspace_id = $1
+            AND lower(regexp_replace(
+              split.category,
+              '[^[:alnum:]]+',
+              ' ',
+              'g'
+            )) LIKE '%' || $2 || '%'
+        ),
+        candidates AS (
+          SELECT
+            entity_type, entity_id, title, subtitle, metadata,
+            CASE
+              WHEN normalized_text = $2 THEN 4
+              WHEN normalized_text LIKE $2 || '%' THEN 3
+              WHEN search_vector @@ plainto_tsquery('simple', $2) THEN 2
+              ELSE 1
+            END AS match_tier,
+            similarity(normalized_text, $2) AS similarity_score
+          FROM search_documents
+          WHERE workspace_id = $1
+            AND ($3::text[] IS NULL OR entity_type = ANY($3))
+            AND (
+              normalized_text LIKE $2 || '%'
+              OR search_vector @@ plainto_tsquery('simple', $2)
+              OR normalized_text % (
+                SELECT $2
+                FROM search_settings
+                WHERE similarity_threshold = '0.2'
               )
             )
-          )
+
+          UNION ALL
+
+          SELECT
+            document.entity_type,
+            document.entity_id,
+            document.title,
+            document.subtitle,
+            document.metadata,
+            2 AS match_tier,
+            similarity(document.normalized_text, $2) AS similarity_score
+          FROM split_matches split
+          JOIN search_documents document
+            ON document.workspace_id = $1
+           AND document.entity_type = 'transaction'
+           AND document.entity_id = split.transaction_id
+          WHERE ($3::text[] IS NULL OR document.entity_type = ANY($3))
+            AND NOT (
+              document.normalized_text LIKE $2 || '%'
+              OR document.search_vector @@ plainto_tsquery('simple', $2)
+              OR document.normalized_text % (
+                SELECT $2
+                FROM search_settings
+                WHERE similarity_threshold = '0.2'
+              )
+            )
+        )
+        SELECT entity_type, entity_id, title, subtitle, metadata
+        FROM candidates
         ORDER BY match_tier DESC, similarity_score DESC, title
         LIMIT $4
       `,
@@ -5399,6 +5526,8 @@ function mapAccount(row) {
 }
 
 function mapTransaction(row) {
+  const projectedSplitCategory = row.split_category ?? null;
+  const providerAmountMinor = integer(row.amount_minor);
   return {
     id: row.id,
     account_id: row.account_id,
@@ -5417,10 +5546,22 @@ function mapTransaction(row) {
       row.display_name ?? row.merchant_name ?? row.name,
     tags: Array.isArray(row.tags) ? row.tags : [],
     category_primary:
-      row.effective_category_primary ?? row.category_primary ?? null,
+      projectedSplitCategory ??
+      row.effective_category_primary ??
+      row.category_primary ??
+      null,
     category_detailed:
-      row.effective_category_detailed ?? row.category_detailed ?? null,
-    amount_minor: integer(row.amount_minor),
+      projectedSplitCategory == null
+        ? row.effective_category_detailed ?? row.category_detailed ?? null
+        : null,
+    amount_minor:
+      integer(row.split_category_amount_minor) ?? providerAmountMinor,
+    provider_amount_minor: providerAmountMinor,
+    is_split_category_projection: projectedSplitCategory != null,
+    split_category_line_count:
+      projectedSplitCategory == null
+        ? 0
+        : Number(row.split_category_line_count ?? 0),
     currency_code: row.currency_code,
     authorized_at: dateValue(row.authorized_at),
     posted_on: String(row.posted_on),
@@ -5432,6 +5573,23 @@ function mapTransaction(row) {
     is_fixed: row.is_fixed ?? false,
     original_transaction_id: row.original_transaction_id ?? null,
     payment_channel: row.payment_channel,
+    split_version: Number(row.split_version ?? 0),
+    goal_spend_version: Number(row.goal_spend_version ?? 0),
+  };
+}
+
+function mapTransactionSplit(row) {
+  return {
+    id: row.id,
+    transaction_id: row.transaction_id,
+    split_version: Number(row.split_version ?? 0),
+    line_index: Number(row.line_index),
+    category: row.category,
+    amount_minor: integer(row.amount_minor),
+    note: row.note ?? null,
+    created_by: row.created_by ?? null,
+    created_at: dateValue(row.created_at),
+    updated_at: dateValue(row.updated_at),
   };
 }
 

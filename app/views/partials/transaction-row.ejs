@@ -1,4 +1,11 @@
-<a class="transaction-row" href="/transactions?transaction=<%= transaction.id %>">
+<%
+  const transactionDetailQuery = new URLSearchParams();
+  for (const key of ["period", "start", "end", "q", "account", "category", "cursor"]) {
+    if (query?.[key]) transactionDetailQuery.set(key, String(query[key]));
+  }
+  transactionDetailQuery.set("transaction", transaction.id);
+%>
+<a class="transaction-row" href="/transactions?<%= transactionDetailQuery.toString() %>">
   <span class="list-icon" aria-hidden="true"><i class="ph <%= transaction.icon %>"></i></span>
   <span class="transaction-row__main">
     <strong><%= transaction.merchant %></strong>
