@@ -1,0 +1,751 @@
+<%- include("partials/head", { pageTitle }) %>
+<body data-page="settings">
+  <%- include("partials/site-header", { activePath, viewer }) %>
+  <%
+    const hasStoredConnections = typeof connections !== "undefined";
+    const settingsConnections = hasStoredConnections
+      ? connections
+      : [
+          { id: "demo-seacomm", provider: "plaid", institution_name: "Seacomm Federal Credit Union", status: "active", last_synced_at: null },
+          { id: "demo-chase", provider: "plaid", institution_name: "Chase", status: "active", last_synced_at: null },
+          { id: "demo-vanguard", provider: "plaid", institution_name: "Vanguard", status: "active", last_synced_at: null },
+          { id: "demo-fidelity", provider: "plaid", institution_name: "Fidelity", status: "active", last_synced_at: null },
+        ];
+    const appleCardConnection = settingsConnections.find(
+      (connection) => connection.provider === "apple_card"
+    );
+    const configuredRules = typeof rules !== "undefined" ? rules : {};
+    const weeklyRule = configuredRules["weekly.spend_less"] || {};
+    const subscriptionRule = configuredRules["subscriptions.expensive"] || {};
+    const concentrationRule = configuredRules["investments.concentration"] || {};
+    const configuredFixed = typeof fixedCategories !== "undefined"
+      ? fixedCategories
+      : ["Housing", "Utilities"];
+    const availableCategories =
+      typeof observedCategories !== "undefined"
+        ? observedCategories
+        : ["Housing", "Utilities", "Groceries", "Dining", "Travel"];
+    const classificationCategories = [...new Set([
+      ...availableCategories, ...configuredFixed
+    ])];
+    const cleanup =
+      typeof transactionCleanup !== "undefined" && transactionCleanup
+        ? transactionCleanup
+        : { query: "", anchor: null, matches: [], available_tags: [] };
+    const cleanupRows = [
+      ...(cleanup.anchor ? [cleanup.anchor] : []),
+      ...(cleanup.matches || []).filter(
+        (match) => !cleanup.anchor || match.id !== cleanup.anchor.id
+      ),
+    ];
+    const cleanupSource = cleanup.anchor || cleanupRows[0] || null;
+    const cleanupTagOptions = [...new Set([
+      ...(cleanup.available_tags || []),
+      ...(
+        typeof transactionTags !== "undefined"
+          ? transactionTags.map((tag) => typeof tag === "string" ? tag : tag.name)
+          : []
+      ),
+    ].filter(Boolean))].sort((left, right) => left.localeCompare(right));
+    const cleanupCategories = [...new Set([
+      cleanupSource?.category_primary,
+      ...classificationCategories,
+    ].filter(Boolean))];
+    const settingsTransactionRules =
+      typeof transactionRules !== "undefined" &&
+      Array.isArray(transactionRules)
+        ? transactionRules
+        : [];
+    const cleanupRuleMatcherLabel = (rule) =>
+      rule.matcher?.field === "normalized_name"
+        ? "Transaction name"
+        : "Merchant";
+    const cleanupRuleChanges = (rule) => [
+      rule.changes?.display_name
+        ? `Rename to ${rule.changes.display_name}`
+        : null,
+      rule.changes?.category_primary || null,
+      Object.hasOwn(rule.changes || {}, "tags")
+        ? rule.changes.tags.length
+          ? rule.changes.tags.join(" · ")
+          : "Clear tags"
+        : null,
+    ].filter(Boolean);
+    const settingsAccounts =
+      typeof accounts !== "undefined" ? accounts : [];
+    const settingsManualAssets =
+      typeof manualAssets !== "undefined" ? manualAssets : [];
+    const balanceGroups = [
+      ["", "Automatic"],
+      ["cash", "Cash account"],
+      ["taxable_investment", "Personal brokerage"],
+      ["retirement", "Retirement"],
+      ["credit_card", "Credit card"],
+      ["loan", "Loan"],
+      ["other_asset", "Other asset"],
+      ["other_liability", "Other liability"],
+      ["excluded", "Exclude from totals"],
+    ];
+    const assetTypes = [
+      ["vehicle", "Vehicle"],
+      ["real_estate", "Home / real estate"],
+      ["business", "Business"],
+      ["collectible", "Collectible"],
+      ["other", "Other asset"],
+    ];
+    const assetMoney = (asset) =>
+      asset.value || asset.currentValue || asset.current_value;
+    const assetCurrency = (asset) =>
+      asset.currencyCode ||
+      asset.currency_code ||
+      assetMoney(asset)?.currency ||
+      "USD";
+    const assetValuedOn = (asset) =>
+      asset.valuedOn || asset.valued_on || asset.asOf || asset.as_of || "";
+    const minorAsDecimal = (value, currency) => {
+      if (!value || !Number.isSafeInteger(value.amount_minor)) return "";
+      let digits = 2;
+      try {
+        digits = new Intl.NumberFormat("en", {
+          style: "currency",
+          currency,
+        }).resolvedOptions().maximumFractionDigits;
+      } catch {}
+      return (value.amount_minor / (10 ** digits)).toFixed(digits);
+    };
+    const connectionMoney = (amountMinor) =>
+      Number.isSafeInteger(amountMinor)
+        ? new Intl.NumberFormat("en-US", {
+            style: "currency",
+            currency: "USD",
+          }).format(amountMinor / 100)
+        : "Not reported";
+    const connectionDecimal = (amountMinor) =>
+      Number.isSafeInteger(amountMinor)
+        ? (amountMinor / 100).toFixed(2)
+        : "";
+  %>
+  <main class="page-shell page-shell--settings">
+    <%- include("partials/page-heading", {
+      eyebrow: "Administrator",
+      pageTitle,
+      pageDescription,
+      actionLabel: null,
+      actionHref: null,
+      actionIcon: null
+    }) %>
+
+    <nav class="settings-nav" aria-label="Settings sections">
+      <a href="#connections">Connections</a>
+      <a href="#account-groups">Account groups</a>
+      <a href="#manual-assets">Manual assets</a>
+      <a href="#transaction-cleanup">Transaction cleanup</a>
+      <a href="#classifications">Classifications</a>
+      <a href="#insight-rules">Insight rules</a>
+      <a href="#access">Access</a>
+    </nav>
+
+    <section id="connections" class="card settings-card">
+      <div class="settings-card__heading">
+        <div><h2>Connections</h2><p>Connect banks through Plaid or import posted Apple Card transactions.</p></div>
+        <div class="connection-actions">
+          <button class="button button--secondary" type="button" data-plaid-link>
+            <i class="ph ph-link"></i> Connect with Plaid
+          </button>
+          <button class="button button--dark" type="button" data-apple-card-import-open>
+            <i class="ph ph-upload-simple"></i> Import Apple Card CSV
+          </button>
+        </div>
+      </div>
+      <p class="connection-status" role="status" data-connection-status></p>
+      <% settingsConnections.forEach((connection, index) => { %>
+        <% const isAppleCard = connection.provider === "apple_card"; %>
+        <div class="setting-row">
+          <span class="institution-logo"><i class="ph <%= isAppleCard ? 'ph-credit-card' : 'ph-bank' %>"></i></span>
+          <span>
+            <strong><%= connection.institution_name || "Connected institution" %></strong>
+            <% if (isAppleCard) { %>
+              <small>Manual CSV · Posted through <%= connection.imported_through_on || "not yet imported" %></small>
+              <small>
+                Balance <%= connectionMoney(connection.current_balance_minor) %>
+                as of <%= connection.balance_as_of || "not reported" %>
+                · Limit <%= connectionMoney(connection.credit_limit_minor) %>
+              </small>
+              <% if (connection.last_imported_at) { %>
+                <small>
+                  Last import <%= new Date(connection.last_imported_at).toLocaleString() %>
+                  · <%= connection.last_import?.new_row_count || 0 %> new
+                  · <%= connection.last_import?.existing_row_count || 0 %> existing
+                  · <%= connection.last_import?.rejected_row_count || 0 %> rejected
+                  · <%= connection.last_import?.warning_count || 0 %> warnings
+                </small>
+              <% } %>
+            <% } else { %>
+              <small><%= connection.last_synced_at ? `Last synced ${new Date(connection.last_synced_at).toLocaleString()}` : hasStoredConnections ? "Waiting for first sync" : index === 3 ? "Synced yesterday" : "Healthy · Synced recently" %></small>
+            <% } %>
+          </span>
+          <span class="status-pill <%= (connection.status === 'active' && !connection.manual_update_due) || !hasStoredConnections ? 'status-pill--good' : '' %>">
+            <i class="ph <%= connection.manual_update_due ? 'ph-clock-countdown' : connection.status === 'active' || !hasStoredConnections ? 'ph-check-circle' : connection.status === 'reauth_required' ? 'ph-warning-circle' : 'ph-cloud-slash' %>"></i>
+            <%= connection.manual_update_due ? "Manual update due" : connection.status === "reauth_required" ? "Reconnect" : connection.status === "error" ? "Needs attention" : "Connected" %>
+          </span>
+          <% if (hasStoredConnections) { %>
+            <details class="connection-menu">
+              <summary class="button button--secondary">Manage</summary>
+              <div class="connection-menu__panel">
+                <% if (isAppleCard) { %>
+                  <button type="button" data-apple-card-import-open>Import another CSV</button>
+                  <button type="button" data-apple-card-values-open>Update card values</button>
+                <% } else { %>
+                  <button type="button" data-plaid-update="<%= connection.id %>">Reconnect</button>
+                <% } %>
+                <label><input type="checkbox" data-retain-history="<%= connection.id %>"> Retain archived history</label>
+                <button
+                  type="button"
+                  class="danger-action"
+                  <%= isAppleCard ? "data-apple-card-remove" : `data-plaid-remove="${connection.id}"` %>
+                  data-connection-id="<%= connection.id %>"
+                >Remove connection</button>
+              </div>
+            </details>
+          <% } else { %>
+            <a class="button button--secondary" href="/accounts">Manage</a>
+          <% } %>
+        </div>
+      <% }) %>
+      <% if (!settingsConnections.length) { %>
+        <p class="card-note">No finance connections yet.</p>
+      <% } %>
+    </section>
+
+    <dialog class="apple-card-dialog" data-apple-card-import-dialog>
+      <form class="apple-card-form" data-apple-card-import-form>
+        <div class="apple-card-dialog__heading">
+          <div>
+            <span class="eyebrow">Manual connection</span>
+            <h3>Import Apple Card CSV</h3>
+            <p>Only posted transactions are available. The file is parsed in memory and never stored.</p>
+          </div>
+          <button class="icon-button" type="button" aria-label="Close" data-apple-card-dialog-close><i class="ph ph-x"></i></button>
+        </div>
+        <div class="apple-card-steps">
+          <label class="apple-card-step">
+            <span class="apple-card-step__number">1</span>
+            <span><strong>Choose CSV</strong><small>Apple Card USD export, up to 2 MiB and 20,000 rows.</small></span>
+            <input name="file" type="file" accept=".csv,text/csv" required>
+          </label>
+          <div class="apple-card-step">
+            <span class="apple-card-step__number">2</span>
+            <div class="apple-card-values">
+              <strong>Report current card values</strong>
+              <label><span>Current balance</span><input name="balance" type="number" step="0.01" value="<%= connectionDecimal(appleCardConnection?.current_balance_minor) %>" required></label>
+              <label><span>Credit limit</span><input name="credit_limit" type="number" min="0" step="0.01" value="<%= connectionDecimal(appleCardConnection?.credit_limit_minor) %>" required></label>
+              <label><span>Balance as of</span><input name="balance_as_of" type="date" value="<%= appleCardConnection?.balance_as_of || new Date().toISOString().slice(0, 10) %>" required></label>
+              <label><span>Last four <small>optional</small></span><input name="last_four" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" value="<%= appleCardConnection?.mask || '' %>"></label>
+            </div>
+          </div>
+          <section class="apple-card-step apple-card-preview" aria-live="polite">
+            <span class="apple-card-step__number">3</span>
+            <div>
+              <strong>Preview</strong>
+              <p data-apple-card-preview-copy>Choose a file and preview it before anything is written.</p>
+              <dl data-apple-card-preview-results hidden></dl>
+              <ul data-apple-card-preview-warnings hidden></ul>
+            </div>
+          </section>
+        </div>
+        <div class="form-actions">
+          <span class="save-status" role="status" data-apple-card-import-status></span>
+          <button class="button button--secondary" type="submit">Preview import</button>
+          <button class="button button--dark" type="button" data-apple-card-import-confirm disabled>Confirm import</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog class="apple-card-dialog apple-card-dialog--compact" data-apple-card-values-dialog>
+      <form class="apple-card-form" data-apple-card-values-form>
+        <div class="apple-card-dialog__heading">
+          <div><span class="eyebrow">Apple Card</span><h3>Update card values</h3></div>
+          <button class="icon-button" type="button" aria-label="Close" data-apple-card-dialog-close><i class="ph ph-x"></i></button>
+        </div>
+        <div class="apple-card-values">
+          <label><span>Current balance</span><input name="balance" type="number" step="0.01" value="<%= connectionDecimal(appleCardConnection?.current_balance_minor) %>" required></label>
+          <label><span>Credit limit</span><input name="credit_limit" type="number" min="0" step="0.01" value="<%= connectionDecimal(appleCardConnection?.credit_limit_minor) %>" required></label>
+          <label><span>Balance as of</span><input name="balance_as_of" type="date" value="<%= appleCardConnection?.balance_as_of || new Date().toISOString().slice(0, 10) %>" required></label>
+          <label><span>Last four <small>optional</small></span><input name="last_four" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" value="<%= appleCardConnection?.mask || '' %>"></label>
+        </div>
+        <div class="form-actions">
+          <span class="save-status" role="status" data-apple-card-values-status></span>
+          <button class="button button--dark" type="submit">Save values</button>
+        </div>
+      </form>
+    </dialog>
+
+    <section id="account-groups" class="card settings-card">
+      <div class="settings-card__heading">
+        <div>
+          <h2>Account groups</h2>
+          <p>These roles decide which total each account enters. “Automatic” uses the account type from Plaid.</p>
+        </div>
+      </div>
+      <div class="wealth-definition" aria-label="Wealth total definitions">
+        <span><strong>Cash balance</strong><small>Cash + personal brokerage</small></span>
+        <i class="ph ph-arrow-right"></i>
+        <span><strong>Short-term worth</strong><small>Cash balance minus credit-card debt</small></span>
+        <i class="ph ph-arrow-right"></i>
+        <span><strong>Net worth</strong><small>Add retirement and assets; subtract loans</small></span>
+      </div>
+      <% settingsAccounts.forEach((account) => {
+        const effectiveGroup = account.balanceGroup || account.balance_group || "";
+        const groupOverride =
+          account.balanceGroupOverride ?? account.balance_group_override ?? "";
+      %>
+        <form id="account-<%= encodeURIComponent(account.id) %>" class="setting-row account-group-row" data-account-group-form data-account-id="<%= account.id %>">
+          <span class="account-icon account-icon--<%= account.tone || 'neutral' %>"><i class="ph <%= account.icon || 'ph-bank' %>"></i></span>
+          <span>
+            <strong><%= account.name %></strong>
+            <small><%= account.institution %> · <%= account.type %> · currently <%= balanceGroups.find(([value]) => value === effectiveGroup)?.[1] || "unclassified" %></small>
+          </span>
+          <label class="compact-field">
+            <span class="sr-only">Net worth role for <%= account.name %></span>
+            <select name="balance_group">
+              <% balanceGroups.forEach(([value, label]) => { %>
+                <option value="<%= value %>" <%= groupOverride === value ? "selected" : "" %>><%= label %></option>
+              <% }) %>
+            </select>
+          </label>
+          <button class="button button--secondary" type="submit">Save</button>
+          <span class="save-status account-group-row__status" role="status" data-save-status></span>
+        </form>
+      <% }) %>
+      <% if (!settingsAccounts.length) { %>
+        <p class="card-note">Connect an account before assigning its role.</p>
+      <% } %>
+    </section>
+
+    <section id="manual-assets" class="card settings-card">
+      <div class="settings-card__heading">
+        <div>
+          <h2>Manual assets</h2>
+          <p>Add things a bank feed cannot see. Values enter Net Worth only.</p>
+        </div>
+      </div>
+      <form class="manual-asset-form" data-manual-asset-create>
+        <label>
+          <span>Name</span>
+          <input name="name" maxlength="120" placeholder="2024 vehicle" required>
+        </label>
+        <label>
+          <span>Type</span>
+          <select name="asset_type" required>
+            <% assetTypes.forEach(([value, label]) => { %>
+              <option value="<%= value %>"><%= label %></option>
+            <% }) %>
+          </select>
+        </label>
+        <label>
+          <span>Value</span>
+          <div class="money-input">
+            <input name="currency_code" value="USD" maxlength="3" pattern="[A-Za-z]{3}" aria-label="Currency code" required>
+            <input name="value" type="number" min="0" step="0.01" inputmode="decimal" placeholder="0.00" required>
+          </div>
+        </label>
+        <label>
+          <span>As of</span>
+          <input name="valued_on" type="date" value="<%= new Date().toISOString().slice(0, 10) %>" required>
+        </label>
+        <label class="manual-asset-form__description">
+          <span>Note <small>optional</small></span>
+          <input name="description" maxlength="500" placeholder="Source of the current estimate">
+        </label>
+        <div class="form-actions manual-asset-form__actions">
+          <span class="save-status" role="status" data-save-status></span>
+          <button class="button button--dark" type="submit"><i class="ph ph-plus"></i> Add asset</button>
+        </div>
+      </form>
+
+      <div class="manual-asset-list" data-manual-asset-list>
+        <% settingsManualAssets.forEach((asset) => {
+          const type = asset.assetType || asset.asset_type || asset.type || "other";
+          const value = assetMoney(asset);
+          const currency = assetCurrency(asset);
+        %>
+          <details
+            id="asset-<%= encodeURIComponent(asset.id) %>"
+            class="manual-asset-item"
+            data-manual-asset-item="<%= asset.id %>"
+            <%= query?.asset === asset.id ? "open" : "" %>
+          >
+            <summary>
+              <span class="account-icon"><i class="ph <%= type === 'vehicle' ? 'ph-car' : type === 'real_estate' ? 'ph-house-line' : 'ph-cube' %>"></i></span>
+              <span>
+                <strong><%= asset.name %></strong>
+                <small><%= assetTypes.find(([candidate]) => candidate === type)?.[1] || "Other asset" %> · valued <%= assetValuedOn(asset) || "recently" %></small>
+              </span>
+              <strong><%= formatMoney(value) %></strong>
+              <i class="ph ph-caret-down"></i>
+            </summary>
+            <form class="manual-asset-form manual-asset-form--edit" data-manual-asset-edit data-asset-id="<%= asset.id %>">
+              <label><span>Name</span><input name="name" maxlength="120" value="<%= asset.name %>" required></label>
+              <label>
+                <span>Type</span>
+                <select name="asset_type" required>
+                  <% assetTypes.forEach(([candidate, label]) => { %>
+                    <option value="<%= candidate %>" <%= candidate === type ? "selected" : "" %>><%= label %></option>
+                  <% }) %>
+                </select>
+              </label>
+              <label>
+                <span>Value</span>
+                <div class="money-input">
+                  <input name="currency_code" value="<%= currency %>" maxlength="3" pattern="[A-Za-z]{3}" aria-label="Currency code" required>
+                  <input name="value" type="number" min="0" step="0.01" inputmode="decimal" value="<%= minorAsDecimal(value, currency) %>" required>
+                </div>
+              </label>
+              <label><span>As of</span><input name="valued_on" type="date" value="<%= assetValuedOn(asset) %>" required></label>
+              <label class="manual-asset-form__description"><span>Note <small>optional</small></span><input name="description" maxlength="500" value="<%= asset.description || '' %>"></label>
+              <div class="form-actions manual-asset-form__actions">
+                <button class="button button--ghost danger-action" type="button" data-manual-asset-archive="<%= asset.id %>">Archive</button>
+                <span class="save-status" role="status" data-save-status></span>
+                <button class="button button--secondary" type="submit">Save changes</button>
+              </div>
+            </form>
+          </details>
+        <% }) %>
+        <% if (!settingsManualAssets.length) { %>
+          <p class="card-note" data-manual-assets-empty>No manual assets yet.</p>
+        <% } %>
+      </div>
+    </section>
+
+    <section
+      id="transaction-cleanup"
+      class="card settings-card transaction-cleanup"
+      data-transaction-cleanup
+      data-cleanup-source-merchant="<%= cleanupSource?.raw_merchant || '' %>"
+      data-cleanup-source-name="<%= cleanupSource?.raw_name || '' %>"
+    >
+      <div class="settings-card__heading">
+        <div>
+          <h2>Transaction cleanup</h2>
+          <p>Automatically clean exact names, or make a one-time correction to transactions you select.</p>
+        </div>
+      </div>
+
+      <section
+        class="cleanup-rules"
+        data-cleanup-rules
+        data-cleanup-rule-payload="<%= JSON.stringify(settingsTransactionRules) %>"
+        aria-labelledby="cleanup-rules-heading"
+      >
+        <div class="cleanup-rules__heading">
+          <div>
+            <h3 id="cleanup-rules-heading">Automatic cleanup rules</h3>
+            <p>Rules compare normalized names exactly. Similar-looking transactions are never swept in.</p>
+          </div>
+          <button class="button button--secondary" type="button" data-cleanup-rule-new>
+            <i class="ph ph-plus" aria-hidden="true"></i>
+            New rule
+          </button>
+        </div>
+
+        <p class="save-status cleanup-rules__status" role="status" data-cleanup-rule-status></p>
+        <div class="cleanup-rule-list" data-cleanup-rule-list>
+          <% settingsTransactionRules.forEach((rule) => {
+            const changeLabels = cleanupRuleChanges(rule);
+            const matchCount = Number(rule.matched_transaction_count) || 0;
+          %>
+            <article class="cleanup-rule-row <%= rule.enabled ? '' : 'cleanup-rule-row--disabled' %>" data-cleanup-rule="<%= rule.id %>">
+              <span class="cleanup-rule-row__icon"><i class="ph ph-magic-wand" aria-hidden="true"></i></span>
+              <span class="cleanup-rule-row__copy">
+                <strong><%= cleanupRuleMatcherLabel(rule) %> exactly “<%= rule.matcher?.value %>”</strong>
+                <span><i class="ph ph-arrow-right" aria-hidden="true"></i> <%= changeLabels.join(" · ") %></span>
+                <small><%= matchCount %> matching posted transaction<%= matchCount === 1 ? "" : "s" %></small>
+              </span>
+              <span class="cleanup-rule-row__actions">
+                <label class="cleanup-rule-toggle">
+                  <span class="sr-only"><%= rule.enabled ? "Disable" : "Enable" %> rule for <%= rule.matcher?.value %></span>
+                  <input class="switch" type="checkbox" data-cleanup-rule-toggle <%= rule.enabled ? "checked" : "" %>>
+                </label>
+                <button class="button button--ghost" type="button" data-cleanup-rule-edit>Edit</button>
+                <button class="button button--ghost danger-action" type="button" data-cleanup-rule-delete aria-label="Delete rule for <%= rule.matcher?.value %>">
+                  <i class="ph ph-trash" aria-hidden="true"></i>
+                </button>
+              </span>
+            </article>
+          <% }) %>
+        </div>
+        <div class="cleanup-rule-empty" data-cleanup-rule-empty <%= settingsTransactionRules.length ? "hidden" : "" %>>
+          <span class="empty-icon"><i class="ph ph-magic-wand" aria-hidden="true"></i></span>
+          <div>
+            <strong>No automatic rules yet</strong>
+            <p>Create one for a merchant or transaction name you clean up often.</p>
+          </div>
+        </div>
+        <dialog class="cleanup-rule-dialog" data-cleanup-rule-dialog aria-labelledby="cleanup-rule-dialog-title">
+          <form class="cleanup-rule-form" data-cleanup-rule-form>
+            <div class="cleanup-rule-dialog__heading">
+              <div>
+                <p class="eyebrow">Automatic cleanup</p>
+                <h3 id="cleanup-rule-dialog-title" data-cleanup-rule-dialog-title>New rule</h3>
+              </div>
+              <button class="icon-button" type="button" data-cleanup-rule-cancel aria-label="Close rule editor">
+                <i class="ph ph-x" aria-hidden="true"></i>
+              </button>
+            </div>
+            <input type="hidden" name="rule_id" data-cleanup-rule-id>
+
+            <div class="cleanup-rule-form__matcher">
+              <label>
+                <span>Match field</span>
+                <select name="matcher_field" data-cleanup-rule-matcher-field required>
+                  <option value="normalized_merchant">Merchant exactly</option>
+                  <option value="normalized_name">Transaction name exactly</option>
+                </select>
+              </label>
+              <label>
+                <span>Exact name</span>
+                <input name="matcher_value" type="text" maxlength="160" autocomplete="off" data-cleanup-rule-matcher-value required>
+              </label>
+              <small>Capitalization, punctuation, and extra spaces are normalized. The remaining text must match exactly.</small>
+            </div>
+
+            <fieldset>
+              <legend>Changes to apply</legend>
+              <label class="cleanup-edit-field">
+                <span class="cleanup-edit-field__toggle">
+                  <input type="checkbox" data-cleanup-rule-change="display_name">
+                  Rename merchant
+                </span>
+                <input name="display_name" type="text" maxlength="160" placeholder="Clean merchant name" data-cleanup-rule-display-name disabled>
+              </label>
+              <label class="cleanup-edit-field">
+                <span class="cleanup-edit-field__toggle">
+                  <input type="checkbox" data-cleanup-rule-change="category_primary">
+                  Set category
+                </span>
+                <select name="category_primary" data-cleanup-rule-category disabled>
+                  <% cleanupCategories.forEach((label) => { %>
+                    <option value="<%= label %>"><%= label %></option>
+                  <% }) %>
+                </select>
+              </label>
+              <label class="cleanup-edit-field">
+                <span class="cleanup-edit-field__toggle">
+                  <input type="checkbox" data-cleanup-rule-change="tags">
+                  Replace tags
+                </span>
+                <input name="tags" type="text" maxlength="400" placeholder="household, reimbursable" data-cleanup-rule-tags disabled>
+                <small>Comma-separated. Leave empty to clear tags.</small>
+              </label>
+            </fieldset>
+
+            <% if (cleanupTagOptions.length) { %>
+              <div class="cleanup-known-tags" aria-label="Existing tags">
+                <span>Existing tags</span>
+                <% cleanupTagOptions.forEach((tag) => { %>
+                  <button type="button" data-cleanup-rule-tag="<%= tag %>"><%= tag %></button>
+                <% }) %>
+              </div>
+            <% } %>
+
+            <label class="cleanup-rule-form__enabled">
+              <span><strong>Enabled</strong><small>Apply this rule to matching posted transactions.</small></span>
+              <input class="switch" name="enabled" type="checkbox" data-cleanup-rule-enabled checked>
+            </label>
+            <p class="save-status" role="status" data-cleanup-rule-form-status></p>
+            <div class="form-actions">
+              <button class="button button--ghost" type="button" data-cleanup-rule-cancel>Cancel</button>
+              <button class="button button--dark" type="submit" data-cleanup-rule-submit>Save rule</button>
+            </div>
+          </form>
+        </dialog>
+      </section>
+
+      <div class="cleanup-one-time-heading">
+        <h3>One-time cleanup</h3>
+        <p>Fuzzy matching helps find candidates. Only checked rows change.</p>
+      </div>
+
+      <form class="cleanup-search" action="/settings#transaction-cleanup" method="get" data-cleanup-search>
+        <label for="cleanup-query">Merchant or transaction name</label>
+        <div>
+          <i class="ph ph-magnifying-glass" aria-hidden="true"></i>
+          <input
+            id="cleanup-query"
+            name="cleanup_q"
+            type="search"
+            minlength="2"
+            maxlength="120"
+            value="<%= cleanup.query || '' %>"
+            placeholder="Try Whole Foods, Apple Services…"
+            autocomplete="off"
+            data-cleanup-query
+          >
+          <button class="button button--secondary" type="submit">Find matches</button>
+        </div>
+        <span class="save-status" role="status" data-cleanup-search-status></span>
+      </form>
+
+      <div class="cleanup-empty" data-cleanup-empty <%= cleanupRows.length ? "hidden" : "" %>>
+        <span class="empty-icon"><i class="ph ph-receipt"></i></span>
+        <div>
+          <strong>Start with one merchant</strong>
+          <p>Fuzzy matching suggests candidates. Nothing changes until you check rows and apply an edit.</p>
+        </div>
+      </div>
+
+      <div class="cleanup-layout" data-cleanup-workspace <%= cleanupRows.length ? "" : "hidden" %>>
+        <form class="cleanup-editor" data-cleanup-editor>
+          <fieldset>
+            <legend>Edits to apply</legend>
+
+            <label class="cleanup-edit-field">
+              <span class="cleanup-edit-field__toggle">
+                <input type="checkbox" name="apply_display_name" checked data-cleanup-change="display_name">
+                Apply corrected name
+              </span>
+              <input
+                type="text"
+                name="display_name"
+                maxlength="160"
+                value="<%= cleanupSource?.display_name || cleanupSource?.raw_merchant || cleanup.query || '' %>"
+                placeholder="Clean merchant name"
+                data-cleanup-display-name
+              >
+            </label>
+
+            <label class="cleanup-edit-field">
+              <span class="cleanup-edit-field__toggle">
+                <input type="checkbox" name="apply_category" data-cleanup-change="category_primary">
+                Apply category
+              </span>
+              <select name="category_primary" disabled data-cleanup-category>
+                <% cleanupCategories.forEach((label) => { %>
+                  <option value="<%= label %>" <%= label === cleanupSource?.category_primary ? "selected" : "" %>><%= label %></option>
+                <% }) %>
+              </select>
+            </label>
+
+            <label class="cleanup-edit-field">
+              <span class="cleanup-edit-field__toggle">
+                <input type="checkbox" name="apply_tags" data-cleanup-change="tags">
+                Replace tags
+              </span>
+              <input
+                type="text"
+                name="tags"
+                maxlength="400"
+                value="<%= (cleanupSource?.tags || []).join(', ') %>"
+                placeholder="household, reimbursable"
+                disabled
+                data-cleanup-tags
+              >
+              <small>Comma-separated. Leave empty to clear tags.</small>
+            </label>
+          </fieldset>
+
+          <% if (cleanupTagOptions.length) { %>
+            <div class="cleanup-known-tags" aria-label="Existing tags">
+              <span>Existing tags</span>
+              <% cleanupTagOptions.forEach((tag) => { %>
+                <button type="button" data-cleanup-tag="<%= tag %>"><%= tag %></button>
+              <% }) %>
+            </div>
+          <% } %>
+
+          <div class="form-actions">
+            <span class="save-status" role="status" data-cleanup-save-status></span>
+            <button class="button button--secondary" type="button" data-cleanup-save-rule hidden>Save as rule</button>
+            <button class="button button--dark" type="submit" data-cleanup-submit disabled>Apply to selected</button>
+          </div>
+        </form>
+
+        <section class="cleanup-matches" aria-labelledby="cleanup-matches-heading">
+          <div class="cleanup-matches__heading">
+            <div>
+              <h3 id="cleanup-matches-heading">Matching transactions</h3>
+              <p data-cleanup-selected-count>0 selected</p>
+            </div>
+            <div>
+              <button type="button" class="button button--ghost" data-cleanup-select-exact>Select exact</button>
+              <button type="button" class="button button--ghost" data-cleanup-clear>Clear</button>
+            </div>
+          </div>
+          <div class="cleanup-match-list" data-cleanup-match-list>
+            <% cleanupRows.forEach((match) => { const isSource = cleanup.anchor?.id === match.id; %>
+              <label class="cleanup-match-row" data-cleanup-match data-match-reason="<%= isSource ? 'source' : match.match_reason %>">
+                <input
+                  type="checkbox"
+                  value="<%= match.id %>"
+                  data-cleanup-select
+                  <%= isSource || match.preselected ? "checked" : "" %>
+                >
+                <span class="cleanup-match-row__identity">
+                  <strong><%= match.display_name || match.raw_merchant || match.raw_name %></strong>
+                  <small>
+                    <%= match.posted_on %> · <%= match.account_name %> · <%= match.category_primary || "Uncategorized" %>
+                  </small>
+                  <% if (match.raw_merchant && match.raw_merchant !== match.display_name) { %>
+                    <small>Provider: <%= match.raw_merchant %></small>
+                  <% } %>
+                  <% if (match.tags?.length) { %>
+                    <span class="cleanup-match-row__tags"><%= match.tags.join(" · ") %></span>
+                  <% } %>
+                </span>
+                <span class="cleanup-match-row__match">
+                  <strong><%= formatMoney(match.amount) %></strong>
+                  <small>
+                    <%= isSource ? "Selected transaction" : match.match_reason === "exact_merchant" ? "Exact name" : `${Math.round((match.similarity_basis_points || 0) / 100)}% match` %>
+                  </small>
+                </span>
+              </label>
+            <% }) %>
+          </div>
+        </section>
+      </div>
+    </section>
+
+    <section id="classifications" class="card settings-card">
+      <div class="settings-card__heading">
+        <div><h2>Classifications</h2><p>Fixed categories stay out of “spend less” findings.</p></div>
+      </div>
+      <form data-classification-form>
+      <% classificationCategories.forEach((label) => { const checked = configuredFixed.includes(label); %>
+        <label class="setting-row setting-row--toggle">
+          <span class="list-icon"><i class="ph ph-tag"></i></span>
+          <span><strong><%= label %></strong><small><%= checked ? "Fixed obligation" : "Flexible spending" %></small></span>
+          <input type="checkbox" class="switch" name="fixed_category" value="<%= label %>" <%= checked ? "checked" : "" %>>
+        </label>
+      <% }) %>
+        <div class="form-actions">
+          <span class="save-status" role="status" data-save-status></span>
+          <button class="button button--dark" type="submit">Save classifications</button>
+        </div>
+      </form>
+    </section>
+
+    <section id="insight-rules" class="card settings-card">
+      <div class="settings-card__heading">
+        <div><h2>Insight rules</h2><p>Deterministic thresholds. No vibes-based accounting.</p></div>
+      </div>
+      <form class="settings-form" data-save-form>
+        <label><span>Weekly change threshold</span><small>Minimum percentage increase</small><div><input name="weekly_percent" type="number" min="1" max="100" value="<%= (weeklyRule.minimum_change_basis_points ?? 1500) / 100 %>" required><span>%</span></div></label>
+        <label><span>Minimum dollar change</span><small>Ignore insignificant movement</small><div><span>$</span><input name="weekly_dollars" type="number" min="1" value="<%= (weeklyRule.minimum_change_minor ?? 2500) / 100 %>" required></div></label>
+        <label><span>Expensive subscription</span><small>Monthly equivalent threshold</small><div><span>$</span><input name="subscription_dollars" type="number" min="1" value="<%= (subscriptionRule.monthly_threshold_minor ?? 5000) / 100 %>" required></div></label>
+        <label><span>Holding concentration</span><small>Flag a single security above</small><div><input name="concentration_percent" type="number" min="1" max="100" value="<%= (concentrationRule.threshold_basis_points ?? 2500) / 100 %>" required><span>%</span></div></label>
+        <div class="form-actions"><span class="save-status" role="status" data-save-status></span><button class="button button--dark" type="submit">Save rules</button></div>
+      </form>
+    </section>
+
+    <section id="access" class="card settings-card">
+      <div class="settings-card__heading">
+        <div><h2>Access</h2><p>Duo handles sign-in. Everyone sees the same finance workspace.</p></div>
+      </div>
+      <div class="setting-row">
+        <span class="list-icon"><i class="ph ph-user-circle"></i></span>
+        <span><strong><%= viewer.email %></strong><small>Administrator</small></span>
+        <span class="status-pill">Duo OIDC</span>
+      </div>
+    </section>
+  </main>
+  <%- include("partials/footer") %>

@@ -1,0 +1,22 @@
+<%- include("../partials/head", { pageTitle }) %>
+<body class="auth-page" data-page="login">
+  <main class="auth-shell">
+    <section class="auth-card">
+      <a class="brand brand--centered" href="/" aria-label="Money">
+        <span class="brand__mark brand__mark--large"><i class="ph ph-currency-dollar"></i></span>
+        <span>Money</span>
+      </a>
+      <p class="eyebrow">Private finance workspace</p>
+      <h1>Everything money, minus the spreadsheet archaeology.</h1>
+      <p>Sign in securely with Duo to view shared accounts, transactions, investments, and insights.</p>
+      <% if (error) { %>
+        <div class="inline-alert inline-alert--error"><i class="ph ph-warning-circle"></i><span>Sign-in failed. Try again or contact the administrator.</span></div>
+      <% } %>
+      <a class="button button--dark button--full" href="/auth/login">
+        Continue with Duo <i class="ph ph-arrow-right"></i>
+      </a>
+      <small>Access is limited to approved email addresses.</small>
+    </section>
+  </main>
+</body>
+</html>

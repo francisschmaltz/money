@@ -1,0 +1,13 @@
+<div class="page-heading">
+  <div>
+    <p class="eyebrow"><%= eyebrow || "Your finances" %></p>
+    <h1><%= pageTitle %></h1>
+    <% if (pageDescription) { %><p class="page-description"><%= pageDescription %></p><% } %>
+  </div>
+  <% if (typeof actionLabel !== "undefined" && actionLabel) { %>
+    <a class="button button--secondary" href="<%= actionHref || '#' %>">
+      <% if (typeof actionIcon !== "undefined" && actionIcon) { %><i class="ph <%= actionIcon %>" aria-hidden="true"></i><% } %>
+      <%= actionLabel %>
+    </a>
+  <% } %>
+</div>

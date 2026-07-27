@@ -1,0 +1,550 @@
+<%- include("partials/head", { pageTitle }) %>
+<body data-page="credit">
+  <%- include("partials/site-header", { activePath, viewer }) %>
+  <%
+    const creditSummary = creditData?.summary || {};
+    const creditCards = creditData?.cards || [];
+    const creditHistory = creditData?.series || [];
+    const creditPageWarnings =
+      typeof creditWarnings !== "undefined" &&
+      Array.isArray(creditWarnings)
+        ? creditWarnings
+        : Array.isArray(creditData?.warnings)
+          ? creditData.warnings
+          : [];
+    const selectedCreditPeriod =
+      ["1w", "1m", "1y", "all"].includes(creditData?.period?.name)
+        ? creditData.period.name
+        : "1m";
+    const utilizationLabel = (basisPoints, { sign = false } = {}) => {
+      if (!Number.isInteger(basisPoints)) return "—";
+      const prefix =
+        sign && basisPoints > 0
+          ? "+"
+          : sign && basisPoints < 0
+            ? "-"
+            : "";
+      return `${prefix}${(Math.abs(basisPoints) / 100).toFixed(1)}%`;
+    };
+    const currentUtilization =
+      creditSummary.utilization_basis_points;
+    const completeHistoryPoints = creditHistory.filter(
+      (point) => Number.isInteger(point.utilization_basis_points),
+    );
+    const utilizationChange =
+      completeHistoryPoints.length > 1
+        ? completeHistoryPoints.at(-1).utilization_basis_points -
+          completeHistoryPoints[0].utilization_basis_points
+        : null;
+    const utilizationChangeLabel =
+      utilizationChange == null
+        ? null
+        : `${utilizationChange > 0 ? "+" : utilizationChange < 0 ? "-" : ""}${(
+            Math.abs(utilizationChange) / 100
+          ).toFixed(1)}`;
+    const creditChartTimestamps = creditHistory.map(
+      (point) => point.timestamp,
+    );
+    const creditChartLabels = creditChartTimestamps.map((timestamp) =>
+      new Intl.DateTimeFormat("en-US", {
+        month: "short",
+        ...(selectedCreditPeriod === "1w" ||
+        selectedCreditPeriod === "1m"
+          ? { day: "numeric" }
+          : { year: "numeric" }),
+        timeZone: "UTC",
+      }).format(new Date(`${timestamp.slice(0, 10)}T00:00:00Z`)),
+    );
+    const cardColors = [
+      "#438bd7",
+      "#2764ae",
+      "#7f8b96",
+      "#8abde9",
+      "#4f6b58",
+      "#656565",
+    ];
+    const creditChartSeries = [
+      {
+        label: "Total",
+        color: "#249342",
+        border_width: 3,
+        values: creditHistory.map(
+          (point) => point.utilization_basis_points,
+        ),
+      },
+      ...creditCards.map((card, cardIndex) => {
+        const valuesByTimestamp = new Map(
+          (card.series || []).map((point) => [
+            point.timestamp,
+            point.utilization_basis_points,
+          ]),
+        );
+        return {
+          label: card.name,
+          color: cardColors[cardIndex % cardColors.length],
+          border_width: 2,
+          values: creditChartTimestamps.map(
+            (timestamp) => valuesByTimestamp.get(timestamp) ?? null,
+          ),
+        };
+      }),
+    ];
+    const trackedScores = creditScoreData || {
+      period: { name: "1y", label: "Last year" },
+      household: {},
+      people: [],
+      history: [],
+      warnings: [],
+    };
+    const trackedHousehold = trackedScores.household || {};
+    const trackedPeople = trackedScores.people || [];
+    const trackedHistory = trackedScores.history || [];
+    const trackedWarnings = trackedScores.warnings || [];
+    const selectedScorePeriod =
+      ["1m", "1y", "all"].includes(trackedScores.period?.name)
+        ? trackedScores.period.name
+        : "1y";
+    const currentScorePerson =
+      trackedPeople.find((person) => person.can_manage) || null;
+    const currentScoreSources = currentScorePerson?.sources || [];
+    const scoreAsOf =
+      trackedHistory.at(-1)?.date ||
+      new Date(
+        Date.parse(`${trackedScores.period?.end_on || new Date().toISOString().slice(0, 10)}T00:00:00Z`) -
+          86400000,
+      )
+        .toISOString()
+        .slice(0, 10);
+    const scoreLabel = (value, { sign = false } = {}) =>
+      Number.isInteger(value)
+        ? `${sign && value > 0 ? "+" : ""}${value}`
+        : "—";
+    const scoreAgeLabel = (person) => {
+      const observedOn =
+        person.latest_observed_on ||
+        (person.sources || [])
+          .map((source) => source.observed_on)
+          .filter(Boolean)
+          .sort()
+          .at(-1);
+      if (!observedOn) return "no scores yet";
+      const days = Math.max(
+        0,
+        Math.round(
+          (Date.parse(`${scoreAsOf}T00:00:00Z`) -
+            Date.parse(`${observedOn}T00:00:00Z`)) /
+            86400000,
+        ),
+      );
+      if (days === 0) return "updated today";
+      if (days === 1) return "updated yesterday";
+      return `updated ${days} days ago`;
+    };
+  %>
+  <main class="page-shell">
+    <%- include("partials/page-heading", {
+      eyebrow: freshness,
+      pageTitle,
+      pageDescription,
+      actionLabel: "Manage cards",
+      actionHref: "/accounts",
+      actionIcon: "ph-credit-card"
+    }) %>
+
+    <section class="card credit-score-card" aria-labelledby="tracked-credit-score-heading">
+      <div class="credit-score-card__heading">
+        <div>
+          <p class="card-kicker">Tracked household average</p>
+          <div class="credit-score-card__average">
+            <h2 id="tracked-credit-score-heading" class="display-money">
+              <%= scoreLabel(trackedHousehold.average_score) %>
+            </h2>
+            <% if (Number.isInteger(trackedHousehold.change)) { %>
+              <p class="trend <%= trackedHousehold.change >= 0 ? 'trend--positive' : 'trend--negative' %>">
+                <i class="ph <%= trackedHousehold.change >= 0 ? 'ph-arrow-up-right' : 'ph-arrow-down-right' %>" aria-hidden="true"></i>
+                <span><%= scoreLabel(trackedHousehold.change, { sign: true }) %> over <%= trackedScores.period.label.toLowerCase() %></span>
+              </p>
+            <% } else { %>
+              <p class="trend">No period change yet</p>
+            <% } %>
+          </div>
+        </div>
+        <div class="credit-score-card__actions">
+          <% if (currentScorePerson) { %>
+            <button class="button button--secondary" type="button" data-credit-score-dialog-open>
+              <i class="ph ph-pencil-simple" aria-hidden="true"></i>
+              Manage my scores
+            </button>
+          <% } %>
+          <nav class="period-select period-select--credit" aria-label="Tracked credit score timeframe">
+            <% [["1m", "1M"], ["1y", "1Y"], ["all", "All"]].forEach(([value, label]) => { %>
+              <a href="/credit?period=<%= selectedCreditPeriod %>&score_period=<%= value %>" aria-current="<%= selectedScorePeriod === value ? 'true' : 'false' %>"><%= label %></a>
+            <% }) %>
+          </nav>
+        </div>
+      </div>
+
+      <div class="credit-score-card__meta">
+        <p class="credit-score-disclosure">
+          <i class="ph ph-eye" aria-hidden="true"></i>
+          Manually supplied and workspace-visible · planning metric only, not a lender or underwriting score.
+        </p>
+        <div class="credit-score-totals" aria-label="Tracked score coverage">
+          <span><strong><%= trackedHousehold.contributor_count || 0 %>/<%= trackedHousehold.member_count || trackedPeople.length %></strong> people</span>
+          <span><strong><%= trackedHousehold.scored_source_count || 0 %></strong> sources</span>
+          <span class="<%= trackedHousehold.stale_source_count ? 'money-negative' : '' %>"><strong><%= trackedHousehold.stale_source_count || 0 %></strong> stale</span>
+        </div>
+      </div>
+
+      <% if (trackedWarnings.length) { %>
+        <div class="credit-warning-list">
+          <% trackedWarnings.forEach((warning) => { %>
+            <p class="card-note">
+              <i class="ph ph-warning-circle" aria-hidden="true"></i>
+              <%= warning.message || warning %>
+            </p>
+          <% }) %>
+        </div>
+      <% } %>
+
+      <div class="credit-score-people">
+        <% trackedPeople.forEach((person) => { %>
+          <section class="credit-score-person" aria-labelledby="credit-score-person-<%= encodeURIComponent(person.person_id) %>">
+            <div class="credit-score-person__heading">
+              <div>
+                <h3 id="credit-score-person-<%= encodeURIComponent(person.person_id) %>"><%= person.person_name %></h3>
+                <p>
+                  <%= person.scored_source_count %> source<%= person.scored_source_count === 1 ? "" : "s" %> · <%= scoreAgeLabel(person) %>
+                  <% if (person.stale_source_count) { %> · <span class="money-negative"><%= person.stale_source_count %> stale</span><% } %>
+                </p>
+              </div>
+              <strong><%= scoreLabel(person.average_score) %></strong>
+            </div>
+          </section>
+        <% }) %>
+      </div>
+    </section>
+
+    <% if (currentScorePerson) { %>
+      <dialog class="credit-score-dialog" data-credit-score-dialog aria-labelledby="credit-score-dialog-title">
+        <div class="credit-score-dialog__panel">
+          <header class="credit-score-dialog__header">
+            <div>
+              <p class="card-kicker">Manual credit tracking</p>
+              <h2 id="credit-score-dialog-title">Manage my scores</h2>
+            </div>
+            <button class="icon-button" type="button" data-credit-score-dialog-close aria-label="Close score manager">
+              <i class="ph ph-x" aria-hidden="true"></i>
+            </button>
+          </header>
+
+          <div class="credit-score-dialog__body">
+            <p class="credit-score-disclosure">
+              <i class="ph ph-eye" aria-hidden="true"></i>
+              Your entries are visible to everyone in this Money workspace and its MCP.
+            </p>
+
+            <section class="credit-score-add" aria-labelledby="credit-score-add-heading">
+              <div class="credit-score-dialog__section-heading">
+                <h3 id="credit-score-add-heading">Add a score source</h3>
+                <p>Add the source and its first dated score together.</p>
+              </div>
+              <form data-credit-score-source-create>
+                <label>
+                  <span>Preset</span>
+                  <select name="preset">
+                    <% (creditScorePresets || []).forEach((preset) => { %>
+                      <option value="<%= preset.key %>" data-label="<%= preset.label %>" data-bureau="<%= preset.bureau || '' %>" data-model="<%= preset.model || '' %>"><%= preset.label %></option>
+                    <% }) %>
+                  </select>
+                </label>
+                <label>
+                  <span>Label</span>
+                  <input name="label" maxlength="120" required>
+                </label>
+                <label>
+                  <span>Bureau <small>optional</small></span>
+                  <input name="bureau" maxlength="80">
+                </label>
+                <label>
+                  <span>Model <small>optional</small></span>
+                  <input name="model" maxlength="80">
+                </label>
+                <label>
+                  <span>Score</span>
+                  <input name="score" type="number" min="300" max="850" step="1" required>
+                </label>
+                <label>
+                  <span>Observed on</span>
+                  <input name="observed_on" type="date" max="<%= scoreAsOf %>" value="<%= scoreAsOf %>" required>
+                </label>
+                <div class="credit-score-add__actions">
+                  <button class="button" type="submit">Add source</button>
+                  <small data-credit-score-status aria-live="polite"></small>
+                </div>
+              </form>
+            </section>
+
+            <section class="credit-score-dialog__sources" aria-labelledby="credit-score-existing-heading">
+              <div class="credit-score-dialog__section-heading">
+                <h3 id="credit-score-existing-heading">My current sources</h3>
+                <p>Update a score, correct an earlier entry, or edit its source.</p>
+              </div>
+
+              <% currentScoreSources.forEach((source) => { %>
+                <article class="credit-score-dialog__source" data-credit-score-source="<%= source.source_id %>">
+                  <div class="credit-score-source__summary">
+                    <span>
+                      <strong><%= source.label %></strong>
+                      <small><%= [source.bureau, source.model].filter(Boolean).join(" · ") || "Bureau and model not specified" %></small>
+                    </span>
+                    <span>
+                      <strong><%= scoreLabel(source.score) %></strong>
+                      <small class="<%= source.stale ? 'money-negative' : '' %>">
+                        <%= source.observed_on ? `${source.stale ? "Stale · " : ""}${source.observed_on}` : "No score entered" %>
+                      </small>
+                    </span>
+                  </div>
+
+                  <div class="credit-score-source__controls">
+                    <form data-credit-score-observation data-source-id="<%= source.source_id %>">
+                      <label>
+                        <span>Score</span>
+                        <input name="score" type="number" min="300" max="850" step="1" value="<%= source.score || '' %>" required>
+                      </label>
+                      <label>
+                        <span>Observed on</span>
+                        <input name="observed_on" type="date" max="<%= scoreAsOf %>" value="<%= source.observed_on || scoreAsOf %>" required>
+                      </label>
+                      <button class="button button--secondary" type="submit"><%= source.score == null ? "Add score" : "Save score" %></button>
+                      <small data-credit-score-status aria-live="polite"></small>
+                    </form>
+
+                    <% if (source.observations?.length) { %>
+                      <details class="credit-score-observation-history">
+                        <summary>Entry history (<%= source.observations.length %>)</summary>
+                        <ul>
+                          <% source.observations.forEach((observation) => { %>
+                            <li>
+                              <span><%= observation.observed_on %></span>
+                              <strong><%= observation.score %></strong>
+                              <button
+                                class="quiet-link"
+                                type="button"
+                                data-credit-score-correct
+                                data-date="<%= observation.observed_on %>"
+                                data-score="<%= observation.score %>"
+                                aria-label="Correct <%= source.label %> score from <%= observation.observed_on %>"
+                              >Correct</button>
+                            </li>
+                          <% }) %>
+                        </ul>
+                      </details>
+                    <% } %>
+
+                    <details>
+                      <summary>Edit source</summary>
+                      <form data-credit-score-source-edit data-source-id="<%= source.source_id %>">
+                        <label>
+                          <span>Label</span>
+                          <input name="label" maxlength="120" value="<%= source.label %>" required>
+                        </label>
+                        <label>
+                          <span>Bureau</span>
+                          <input name="bureau" maxlength="80" value="<%= source.bureau || '' %>">
+                        </label>
+                        <label>
+                          <span>Model</span>
+                          <input name="model" maxlength="80" value="<%= source.model || '' %>">
+                        </label>
+                        <div>
+                          <button class="button button--secondary" type="submit">Save source</button>
+                          <button class="quiet-link danger-action" type="button" data-credit-score-archive="<%= source.source_id %>" aria-label="Archive <%= source.label %>">Archive</button>
+                        </div>
+                        <small data-credit-score-status aria-live="polite"></small>
+                      </form>
+                    </details>
+                  </div>
+                </article>
+              <% }) %>
+
+              <% if (!currentScoreSources.length) { %>
+                <p class="card-note">You have no score sources yet.</p>
+              <% } %>
+            </section>
+          </div>
+        </div>
+      </dialog>
+    <% } %>
+
+    <section class="card credit-hero" aria-labelledby="credit-utilization-heading">
+      <div class="card-heading">
+        <div>
+          <p class="card-kicker">Total utilization</p>
+          <h2 id="credit-utilization-heading" class="display-money">
+            <%= utilizationLabel(currentUtilization) %>
+          </h2>
+          <p class="metric-description">
+            <% if (creditSummary.missing_limit_card_count) { %>
+              <%= formatMoney(creditSummary.total_balance_owed) %> total balance ·
+              <%= formatMoney(creditSummary.total_credit_limit) %> in reported limits
+            <% } else { %>
+              <%= formatMoney(creditSummary.total_balance_owed) %> used of
+              <%= formatMoney(creditSummary.total_credit_limit) %> total limit
+            <% } %>
+          </p>
+          <% if (utilizationChange != null) { %>
+            <p class="trend <%= utilizationChange <= 0 ? 'trend--positive' : 'trend--negative' %>">
+              <i class="ph <%= utilizationChange <= 0 ? 'ph-arrow-down-right' : 'ph-arrow-up-right' %>" aria-hidden="true"></i>
+              <span><%= utilizationChangeLabel %> percentage points over <%= creditData.period.label.toLowerCase() %></span>
+            </p>
+          <% } else { %>
+            <p class="trend">History begins with the first snapshot that includes a reported limit.</p>
+          <% } %>
+        </div>
+        <nav class="period-select period-select--credit" aria-label="Credit utilization timeframe">
+          <% [["1w", "1W"], ["1m", "1M"], ["1y", "1Y"], ["all", "All"]].forEach(([value, label]) => { %>
+            <a href="/credit?period=<%= value %><%= selectedScorePeriod === '1y' ? '' : `&score_period=${selectedScorePeriod}` %>" aria-current="<%= selectedCreditPeriod === value ? 'true' : 'false' %>"><%= label %></a>
+          <% }) %>
+        </nav>
+      </div>
+
+      <% if (creditHistory.length) { %>
+        <div class="chart-frame chart-frame--credit">
+          <canvas
+            data-chart="credit"
+            data-labels="<%= JSON.stringify(creditChartLabels) %>"
+            data-series="<%= JSON.stringify(creditChartSeries) %>"
+            aria-label="Credit utilization over <%= creditData.period.label.toLowerCase() %>"
+            aria-describedby="credit-chart-description"
+            role="img"
+          ></canvas>
+        </div>
+        <p id="credit-chart-description" class="sr-only">
+          Total credit utilization is <%= utilizationLabel(currentUtilization) %>.
+          The chart compares total utilization with each connected card; the same values are listed below.
+        </p>
+        <div class="credit-legend" aria-hidden="true">
+          <% creditChartSeries.forEach((series) => { %>
+            <span><i style="--credit-series-color: <%= series.color %>"></i><%= series.label %></span>
+          <% }) %>
+        </div>
+      <% } else { %>
+        <div class="credit-empty-chart">
+          <span class="empty-icon"><i class="ph ph-chart-line"></i></span>
+          <p>Utilization history starts after the first daily snapshot.</p>
+        </div>
+      <% } %>
+
+      <div class="split-metrics split-metrics--three credit-totals">
+        <div>
+          <span>Total credit limit</span>
+          <strong><%= formatMoney(creditSummary.total_credit_limit) %></strong>
+        </div>
+        <div>
+          <span>Balance owed</span>
+          <strong><%= formatMoney(creditSummary.total_balance_owed) %></strong>
+        </div>
+        <div>
+          <span>Available credit</span>
+          <strong class="<%= creditSummary.available_credit?.amount_minor < 0 ? 'money-negative' : '' %>"><%= formatMoney(creditSummary.available_credit) %></strong>
+        </div>
+      </div>
+
+      <% if (creditPageWarnings.length) { %>
+        <div class="credit-warning-list">
+          <% creditPageWarnings.forEach((warning) => { %>
+            <p class="card-note">
+              <i class="ph ph-info" aria-hidden="true"></i>
+              <%= typeof warning === "string" ? warning : warning.message %>
+            </p>
+          <% }) %>
+        </div>
+      <% } else if (creditSummary.missing_limit_card_count || creditSummary.missing_balance_card_count || creditSummary.excluded_from_usd_total_count) { %>
+        <div class="credit-warning-list">
+          <p class="card-note">
+            <i class="ph ph-info" aria-hidden="true"></i>
+            Totals are partial:
+            <%= creditSummary.missing_limit_card_count || 0 %> missing limit,
+            <%= creditSummary.missing_balance_card_count || 0 %> missing balance, and
+            <%= creditSummary.excluded_from_usd_total_count || 0 %> non-USD card<%= creditSummary.excluded_from_usd_total_count === 1 ? "" : "s" %> excluded.
+          </p>
+        </div>
+      <% } %>
+    </section>
+
+    <section class="card credit-cards-card" aria-labelledby="credit-cards-heading">
+      <div class="card-heading">
+        <div>
+          <p class="card-kicker"><%= creditSummary.card_count || creditCards.length %> connected</p>
+          <h2 id="credit-cards-heading">Cards</h2>
+        </div>
+        <a class="quiet-link" href="/accounts">View accounts <i class="ph ph-arrow-right"></i></a>
+      </div>
+
+      <div class="credit-card-table" role="table" aria-label="Credit usage by card">
+        <div class="credit-card-row credit-card-row--header" role="row">
+          <span role="columnheader">Card</span>
+          <span role="columnheader">Balance</span>
+          <span role="columnheader">Limit</span>
+          <span role="columnheader">Utilization</span>
+        </div>
+        <% creditCards.forEach((card) => { %>
+          <%
+            const cardUtilization = card.utilization_basis_points;
+            const cardUtilizationPercent =
+              Number.isInteger(cardUtilization)
+                ? cardUtilization / 100
+                : null;
+            const utilizationBarWidth =
+              cardUtilizationPercent == null
+                ? 0
+                : Math.min(100, Math.max(0, cardUtilizationPercent));
+          %>
+          <a class="credit-card-row" role="row" href="/accounts#account-<%= encodeURIComponent(card.id) %>">
+            <span class="credit-card-row__identity" role="cell">
+              <span class="account-icon account-icon--blue"><i class="ph ph-credit-card" aria-hidden="true"></i></span>
+              <span>
+                <strong><%= card.name %></strong>
+                <small><%= card.institution || card.institution_name || "Institution" %> · •••• <%= card.mask || "—" %></small>
+              </span>
+            </span>
+            <span class="credit-card-row__metric" role="cell">
+              <strong><%= formatMoney(card.balance_owed) %></strong>
+              <small>balance owed</small>
+            </span>
+            <span class="credit-card-row__metric" role="cell">
+              <strong><%= formatMoney(card.credit_limit) %></strong>
+              <small><%= card.available_credit ? `${formatMoney(card.available_credit)} available` : "limit unavailable" %></small>
+            </span>
+            <span class="credit-card-row__utilization" role="cell">
+              <span>
+                <strong class="<%= card.over_limit ? 'money-negative' : '' %>"><%= utilizationLabel(cardUtilization) %></strong>
+                <% if (card.over_limit) { %><small>Over limit</small><% } %>
+              </span>
+              <% if (cardUtilizationPercent == null) { %>
+                <span class="credit-utilization-bar" aria-label="Utilization unavailable"></span>
+              <% } else { %>
+                <span
+                  class="credit-utilization-bar <%= card.over_limit ? 'credit-utilization-bar--over' : '' %>"
+                  role="meter"
+                  aria-valuemin="0"
+                  aria-valuemax="100"
+                  aria-valuenow="<%= utilizationBarWidth.toFixed(1) %>"
+                  aria-valuetext="<%= utilizationLabel(cardUtilization) %> utilization<%= card.over_limit ? ', over limit' : '' %>"
+                ><i style="width: <%= utilizationBarWidth %>%"></i></span>
+              <% } %>
+            </span>
+          </a>
+        <% }) %>
+        <% if (!creditCards.length) { %>
+          <div class="credit-empty-state">
+            <span class="empty-icon"><i class="ph ph-credit-card"></i></span>
+            <div><h3>No credit cards connected</h3><p>Connect a supported card to track limits and utilization.</p></div>
+            <a class="button button--secondary" href="/settings#connections">Connect account</a>
+          </div>
+        <% } %>
+      </div>
+    </section>
+  </main>
+  <%- include("partials/footer") %>

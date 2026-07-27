@@ -1,0 +1,21 @@
+<%- include("../partials/head", { pageTitle }) %>
+<body data-page="error">
+  <%- include("../partials/site-header", { activePath: "", viewer }) %>
+  <main class="state-page">
+    <section class="state-card card">
+      <% const code = typeof statusCode !== "undefined" ? statusCode : 503; %>
+      <span class="state-icon"><i class="ph <%= code === 404 ? 'ph-file-dashed' : code === 403 ? 'ph-lock-key' : 'ph-cloud-slash' %>"></i></span>
+      <p class="eyebrow"><%= code === 404 ? "Not found" : code === 403 ? "Access denied" : "Sync interrupted" %></p>
+      <h1><%= code === 404 ? "That page isn’t here." : code === 403 ? "You can’t open this page." : "Some numbers couldn’t be refreshed." %></h1>
+      <p><%= typeof message !== "undefined" && message ? message : "Your last successful data is still safe. Try again; if this keeps happening, reconnect the affected institution." %></p>
+      <div class="state-actions">
+        <a class="button button--dark" href="/">
+          <i class="ph <%= code >= 500 ? 'ph-arrow-clockwise' : 'ph-arrow-left' %>"></i>
+          <%= code >= 500 ? "Try again" : "Back to dashboard" %>
+        </a>
+        <% if (code >= 500) { %><a class="button button--secondary" href="/settings#connections">Check connections</a><% } %>
+      </div>
+      <small>Request ID: <%= requestId %></small>
+    </section>
+  </main>
+  <%- include("../partials/footer") %>

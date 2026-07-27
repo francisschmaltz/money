@@ -1,0 +1,12 @@
+node_modules/
+.env
+.env.*
+!.env.example
+coverage/
+playwright-report/
+test-results/
+design-qa-assets/
+/ios-finance-card/
+.DS_Store
+*.log
+dist/

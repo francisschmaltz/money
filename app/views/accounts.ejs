@@ -1,0 +1,132 @@
+<%- include("partials/head", { pageTitle }) %>
+<body data-page="accounts">
+  <%- include("partials/site-header", { activePath, viewer }) %>
+  <%
+    const nonUsdAccountCount = accounts.filter(
+      (account) => account.balance && account.balance.currency !== "USD",
+    ).length;
+    const accountGroupLabels = {
+      cash: "Cash account",
+      taxable_investment: "Personal brokerage",
+      retirement: "Retirement",
+      credit_card: "Credit card",
+      loan: "Loan",
+      other_asset: "Other asset",
+      other_liability: "Other liability",
+      excluded: "Excluded",
+    };
+    const accountManualAssets =
+      typeof manualAssets !== "undefined" ? manualAssets : [];
+    const manualAssetType = (asset) =>
+      asset.assetType || asset.asset_type || asset.type || "other";
+  %>
+  <main class="page-shell">
+    <%- include("partials/page-heading", {
+      eyebrow: freshness,
+      pageTitle,
+      pageDescription,
+      actionLabel: viewer?.is_admin ? "Connect account" : null,
+      actionHref: "/settings#connections",
+      actionIcon: "ph-plus"
+    }) %>
+
+    <section class="account-totals account-totals--wealth" aria-label="Wealth totals">
+      <article class="card">
+        <span>Cash balance</span>
+        <strong><%= formatMoney(overview.cashBalance) %></strong>
+        <small>Cash + personal brokerage</small>
+      </article>
+      <article class="card">
+        <span>Short-term worth</span>
+        <strong><%= formatMoney(overview.shortTermWorth) %></strong>
+        <small>Cash balance − credit-card debt</small>
+      </article>
+      <article class="card">
+        <span>Net worth</span>
+        <strong><%= formatMoney(overview.netWorth) %></strong>
+        <small>Every included account and manual asset</small>
+      </article>
+    </section>
+    <div class="wealth-breakdown" aria-label="Investment totals">
+      <a href="/portfolio?scope=trading">
+        <span>Trading investments</span>
+        <strong><%= formatMoney(overview.taxableInvestments) %></strong>
+      </a>
+      <a href="/portfolio?scope=retirement">
+        <span>Retirement investments</span>
+        <strong><%= formatMoney(overview.retirementInvestments) %></strong>
+      </a>
+    </div>
+    <% if (nonUsdAccountCount) { %>
+      <p class="card-note"><i class="ph ph-currency-circle-dollar"></i> <%= nonUsdAccountCount %> non-USD account<%= nonUsdAccountCount === 1 ? "" : "s" %> remain visible below and are excluded from totals.</p>
+    <% } %>
+
+    <% [...new Set(accounts.map((account) => account.institution))].forEach((institution) => { %>
+      <section class="card institution-card">
+        <div class="institution-heading">
+          <div class="institution-logo"><i class="ph ph-bank"></i></div>
+          <div><h2><%= institution %></h2><p><%= accounts.filter((account) => account.institution === institution)[0].freshness %></p></div>
+          <% if (viewer?.is_admin) { %>
+            <a class="icon-button" href="/settings#connections" aria-label="Manage <%= institution %> connection"><i class="ph ph-pencil-simple"></i></a>
+          <% } %>
+        </div>
+        <div class="account-list">
+          <% accounts.filter((account) => account.institution === institution).forEach((account) => { %>
+            <div
+              id="account-<%= encodeURIComponent(account.id) %>"
+              class="account-row <%= viewer?.is_admin ? '' : 'account-row--readonly' %>"
+            >
+              <span class="account-icon account-icon--<%= account.tone %>"><i class="ph <%= account.icon %>"></i></span>
+              <span>
+                <strong><%= account.name %></strong>
+                <small><%= account.type %> · •••• <%= account.mask %></small>
+                <em class="balance-group-label"><%= accountGroupLabels[account.balanceGroup] || "Unclassified" %></em>
+              </span>
+              <span><strong><%= formatMoney(account.balance) %></strong><small><%= account.available ? `${formatMoney(account.available)} available` : "Current value" %></small></span>
+              <% if (viewer?.is_admin) { %>
+                <a class="button button--secondary account-row__edit" href="/settings#account-<%= encodeURIComponent(account.id) %>" aria-label="Edit <%= account.name %>">Edit</a>
+              <% } %>
+            </div>
+          <% }) %>
+        </div>
+      </section>
+    <% }) %>
+    <% if (!accounts.length) { %>
+      <section class="card settings-card">
+        <p class="card-note"><i class="ph ph-bank"></i> No accounts are connected yet. Use Settings to connect one.</p>
+      </section>
+    <% } %>
+
+    <section id="manual-assets" class="card institution-card manual-assets-card">
+      <div class="institution-heading">
+        <div class="institution-logo institution-logo--neutral"><i class="ph ph-house-line"></i></div>
+        <div><h2>Manually tracked assets</h2><p>Cars, homes, businesses, and other values Plaid cannot see.</p></div>
+        <% if (viewer?.is_admin) { %>
+          <a class="icon-button" href="/settings#manual-assets" aria-label="Manage manual assets"><i class="ph ph-pencil-simple"></i></a>
+        <% } %>
+      </div>
+      <div class="account-list">
+        <% accountManualAssets.forEach((asset) => { %>
+          <div
+            id="asset-<%= encodeURIComponent(asset.id) %>"
+            class="account-row <%= viewer?.is_admin ? '' : 'account-row--readonly' %>"
+          >
+            <span class="account-icon"><i class="ph <%= manualAssetType(asset) === 'vehicle' ? 'ph-car' : manualAssetType(asset) === 'real_estate' ? 'ph-house-line' : 'ph-cube' %>"></i></span>
+            <span>
+              <strong><%= asset.name %></strong>
+              <small><%= manualAssetType(asset).replaceAll("_", " ") %> · valued <%= asset.valuedOn || asset.asOf || "recently" %></small>
+              <em class="balance-group-label">Other asset</em>
+            </span>
+            <span><strong><%= formatMoney(asset.value) %></strong><small>Manual value</small></span>
+            <% if (viewer?.is_admin) { %>
+              <a class="button button--secondary account-row__edit" href="/settings?asset=<%= encodeURIComponent(asset.id) %>#asset-<%= encodeURIComponent(asset.id) %>" aria-label="Edit <%= asset.name %>">Edit</a>
+            <% } %>
+          </div>
+        <% }) %>
+        <% if (!accountManualAssets.length) { %>
+          <p class="card-note manual-assets-card__empty">No manual assets yet. Add a car, home, or other asset in Settings.</p>
+        <% } %>
+      </div>
+    </section>
+  </main>
+  <%- include("partials/footer") %>

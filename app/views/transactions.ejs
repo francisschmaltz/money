@@ -1,0 +1,198 @@
+<%- include("partials/head", { pageTitle }) %>
+<body data-page="transactions">
+  <%- include("partials/site-header", { activePath, viewer }) %>
+  <main class="page-shell">
+    <%- include("partials/page-heading", {
+      eyebrow: freshness,
+      pageTitle,
+      pageDescription,
+      actionLabel: "Search",
+      actionHref: "/search",
+      actionIcon: "ph-magnifying-glass"
+    }) %>
+
+    <form class="filter-bar" action="/transactions" method="get">
+      <label>
+        <span class="sr-only">Search transactions</span>
+        <i class="ph ph-magnifying-glass"></i>
+        <input type="search" name="q" value="<%= query.q || '' %>" placeholder="Merchant or description">
+      </label>
+      <select name="period" aria-label="Period">
+        <option value="month" <%= !query.start && !query.end && (!query.period || query.period === "month") ? "selected" : "" %>>This month</option>
+        <option value="30" <%= query.period === "30" ? "selected" : "" %>>Last 30 days</option>
+        <option value="90" <%= query.period === "90" ? "selected" : "" %>>Last 90 days</option>
+        <% if (query.start && query.end) { %>
+          <option value="custom" selected>Custom dates</option>
+        <% } %>
+      </select>
+      <% if (query.start && query.end) { %>
+        <input type="hidden" name="start" value="<%= query.start %>">
+        <input type="hidden" name="end" value="<%= query.end %>">
+      <% } %>
+      <select name="category" aria-label="Category">
+        <option value="">All categories</option>
+        <% categories.forEach((category) => { %><option value="<%= category.label %>" <%= query.category === category.label ? "selected" : "" %>><%= category.label %></option><% }) %>
+      </select>
+      <select name="account" aria-label="Account">
+        <option value="">All accounts</option>
+        <% accounts.forEach((account) => { %><option value="<%= account.id %>" <%= query.account === account.id ? "selected" : "" %>><%= account.name %></option><% }) %>
+      </select>
+      <button class="button button--dark" type="submit">Apply</button>
+      <a class="button button--ghost" href="/transactions">Clear</a>
+    </form>
+
+    <% if (typeof selectedTransaction !== "undefined" && selectedTransaction) { %>
+      <section class="card selected-detail" aria-labelledby="selected-transaction-heading">
+        <span class="list-icon"><i class="ph <%= selectedTransaction.icon %>"></i></span>
+        <div>
+          <p class="card-kicker">Selected transaction</p>
+          <h2 id="selected-transaction-heading"><%= selectedTransaction.merchant %></h2>
+          <p><%= selectedTransaction.category %> · <%= selectedTransaction.account %> · <%= selectedTransaction.date %><%= selectedTransaction.status === "pending" ? " · Pending" : "" %><%= selectedTransaction.tags?.length ? ` · ${selectedTransaction.tags.join(" · ")}` : "" %></p>
+          <% if (viewer?.is_admin && selectedTransaction.status !== "pending") { %>
+            <a class="selected-detail__link" href="/settings?transaction=<%= encodeURIComponent(selectedTransaction.id) %>#transaction-cleanup">
+              Clean up name, category &amp; tags <i class="ph ph-arrow-up-right" aria-hidden="true"></i>
+            </a>
+          <% } %>
+        </div>
+        <strong><%= formatMoney(selectedTransaction.amount) %></strong>
+        <a class="icon-button" href="/transactions" aria-label="Close transaction details"><i class="ph ph-x"></i></a>
+      </section>
+    <% } %>
+
+    <section class="card spending-detail-card" aria-labelledby="transaction-spending-heading">
+      <div class="card-heading">
+        <div>
+          <p class="card-kicker"><%= spendingDetails.periodLabel %></p>
+          <h2 id="transaction-spending-heading">Spending detail</h2>
+        </div>
+        <div class="card-total">
+          <strong><%= formatMoney(spendingDetails.total) %></strong>
+          <span class="trend <%= spendingDetails.trendDirection === 'up' ? 'trend--negative' : spendingDetails.trendDirection === 'down' ? 'trend--positive' : '' %>">
+            <%= spendingDetails.trendLabel %>
+          </span>
+        </div>
+      </div>
+
+      <dl class="spending-detail-metrics" aria-label="Spending totals">
+        <div>
+          <dt>Prior period</dt>
+          <dd><%= formatMoney(spendingDetails.previousTotal) %></dd>
+          <small><%= spendingDetails.previousPeriodLabel %></small>
+        </div>
+        <div>
+          <dt>Posted purchases</dt>
+          <dd><%= spendingDetails.transactionCount %></dd>
+          <small>Pending activity is excluded</small>
+        </div>
+        <div>
+          <dt>Average purchase</dt>
+          <dd><%= formatMoney(spendingDetails.averageTransaction) %></dd>
+          <small>Across included transactions</small>
+        </div>
+      </dl>
+
+      <% if (spendingDetails.categories.length) { %>
+        <div class="spending-chart-wrap spending-chart-wrap--detail">
+          <canvas
+            data-chart="spending"
+            data-labels="<%= JSON.stringify(spendingDetails.categories.map((category) => category.label)) %>"
+            data-values="<%= JSON.stringify(spendingDetails.categories.map((category) => category.amount.amount_minor)) %>"
+            data-colors="<%= JSON.stringify(spendingDetails.categories.map((category) => category.color)) %>"
+            aria-label="<%= spendingDetails.periodLabel %> spending segmented by category"
+            role="img"
+          ></canvas>
+        </div>
+      <% } %>
+
+      <div class="spending-detail-layout">
+        <div class="spending-detail-trend">
+          <div class="subsection-heading">
+            <div>
+              <h3>Daily spending</h3>
+              <p>Posted activity, including zero-spend days and refunds.</p>
+            </div>
+          </div>
+          <div class="chart-frame chart-frame--spending-detail">
+            <canvas
+              data-chart="line"
+              data-labels="<%= JSON.stringify(spendingDetails.seriesLabels) %>"
+              data-values="<%= JSON.stringify(spendingDetails.seriesValues) %>"
+              data-color="#2f8f4e"
+              aria-label="Daily spending for <%= spendingDetails.periodLabel %>"
+              role="img"
+            ></canvas>
+          </div>
+        </div>
+
+        <div class="spending-detail-categories">
+          <div class="subsection-heading">
+            <div>
+              <h3>All categories</h3>
+              <p>Every category in the selected period, with share and purchase count.</p>
+            </div>
+          </div>
+          <div class="spending-detail-category-list">
+            <% spendingDetails.categories.forEach((category, index) => { %>
+              <%
+                const categoryQuery = new URLSearchParams({
+                  ...(query.period ? { period: query.period } : {}),
+                  ...(query.start ? { start: query.start } : {}),
+                  ...(query.end ? { end: query.end } : {}),
+                  ...(query.q ? { q: query.q } : {}),
+                  ...(query.account ? { account: query.account } : {}),
+                  category: category.label,
+                });
+              %>
+              <a class="spending-detail-category" href="/transactions?<%= categoryQuery.toString() %>">
+                <span class="category-dot category-dot--<%= (index % 8) + 1 %>" aria-hidden="true"></span>
+                <span class="list-icon list-icon--compact" aria-hidden="true"><i class="ph <%= category.icon %>"></i></span>
+                <span>
+                  <strong><%= category.label %></strong>
+                  <small><%= category.percent %>% · <%= category.count %> purchase<%= category.count === 1 ? "" : "s" %></small>
+                </span>
+                <strong><%= formatMoney(category.amount) %></strong>
+              </a>
+            <% }) %>
+            <% if (!spendingDetails.categories.length) { %>
+              <p class="card-note"><i class="ph ph-chart-bar" aria-hidden="true"></i> No posted spending matches these filters.</p>
+            <% } %>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="ledger-summary" aria-label="Transaction summary">
+      <div><span>Money in</span><strong class="money-positive"><%= formatMoney(overview.income) %></strong></div>
+      <div><span>Posted spending</span><strong><%= formatMoney(overview.spending) %></strong></div>
+      <div><span>Net cash flow</span><strong class="<%= overview.cashFlow.amount_minor >= 0 ? 'money-positive' : 'money-negative' %>"><%= formatMoney(overview.cashFlow, { sign: true }) %></strong></div>
+    </section>
+
+    <section class="card list-card">
+      <div class="card-heading">
+        <div>
+          <p class="card-kicker">Selected period</p>
+          <h2>All transactions</h2>
+        </div>
+        <button class="button button--secondary" type="button" data-download <%= transactions.length ? "" : "disabled" %>>
+          <i class="ph ph-download-simple"></i> Export
+        </button>
+      </div>
+      <div class="transaction-list transaction-list--ledger">
+        <% transactions.forEach((transaction) => { %>
+          <%- include("partials/transaction-row", { transaction }) %>
+        <% }) %>
+        <% if (!transactions.length) { %>
+          <p class="card-note"><i class="ph ph-receipt"></i> No transactions match these filters.</p>
+        <% } %>
+      </div>
+      <div class="pagination">
+        <span>Showing <%= transactions.length %> transactions</span>
+        <% if (typeof transactionPageInfo !== "undefined" && transactionPageInfo?.has_more && transactionPageInfo.next_cursor) { %>
+          <a class="button button--secondary" href="/transactions?<%= new URLSearchParams({ ...query, cursor: transactionPageInfo.next_cursor }).toString() %>">Next page</a>
+        <% } else { %>
+          <button type="button" class="button button--secondary" disabled>End of results</button>
+        <% } %>
+      </div>
+    </section>
+  </main>
+  <%- include("partials/footer") %>

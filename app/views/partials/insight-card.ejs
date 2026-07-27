@@ -1,0 +1,82 @@
+<%
+  const showLifecycle =
+    typeof lifecycleControls !== "undefined" && lifecycleControls;
+  const compact = typeof compactInsight !== "undefined" && compactInsight;
+  const state = insight.state || "active";
+  const returnView =
+    typeof insightView !== "undefined" && insightView === "archive"
+      ? "archive"
+      : "active";
+%>
+<article
+  class="insight-card insight-card--<%= insight.severity %><%= compact ? ' insight-card--compact' : '' %>"
+  data-insight-card
+  data-finding-id="<%= insight.id %>"
+>
+  <h3><%= insight.actionTitle || insight.title %></h3>
+  <% if (insight.timeframe) { %>
+    <p class="insight-timeframe"><%= insight.timeframe %></p>
+  <% } %>
+  <p class="insight-card__detail"><%= insight.detail || insight.copy %></p>
+
+  <div class="insight-card__actions">
+    <% if (insight.solveAction?.webUrl) { %>
+      <a class="button button--secondary insight-card__solve" href="<%= insight.solveAction.webUrl %>">
+        <%= insight.solveAction.label %>
+        <i class="ph ph-arrow-up-right" aria-hidden="true"></i>
+      </a>
+    <% } else { %>
+      <a class="button button--secondary insight-card__solve" href="/insights?finding=<%= encodeURIComponent(insight.id) %>">
+        See what changed
+        <i class="ph ph-arrow-up-right" aria-hidden="true"></i>
+      </a>
+    <% } %>
+
+    <% if (showLifecycle) { %>
+      <% if (returnView === "archive") { %>
+        <span class="insight-lifecycle-label"><%= insight.lifecycleLabel %></span>
+      <% } %>
+      <% if (viewer?.is_admin) { %>
+        <details class="insight-card__menu">
+          <summary class="icon-button" aria-label="More actions for <%= insight.actionTitle || insight.title %>">
+            <i class="ph ph-dots-three" aria-hidden="true"></i>
+          </summary>
+          <div class="insight-card__menu-panel">
+            <% if (state === "active") { %>
+              <button type="button" data-insight-action="archive" data-finding-id="<%= insight.id %>">
+                <i class="ph ph-archive" aria-hidden="true"></i>
+                Archive
+              </button>
+              <button type="button" data-insight-action="mark_bad" data-finding-id="<%= insight.id %>">
+                <i class="ph ph-thumbs-down" aria-hidden="true"></i>
+                Bad insight
+              </button>
+            <% } else { %>
+              <button type="button" data-insight-action="restore" data-finding-id="<%= insight.id %>">
+                <i class="ph ph-arrow-counter-clockwise" aria-hidden="true"></i>
+                Restore
+              </button>
+              <% if (state !== "bad") { %>
+                <button type="button" data-insight-action="mark_bad" data-finding-id="<%= insight.id %>">
+                  <i class="ph ph-thumbs-down" aria-hidden="true"></i>
+                  Bad insight
+                </button>
+              <% } %>
+            <% } %>
+            <button
+              class="danger-action"
+              type="button"
+              data-insight-action="delete"
+              data-finding-id="<%= insight.id %>"
+              data-confirm-message="Delete this insight permanently? This cannot be undone."
+            >
+              <i class="ph ph-trash" aria-hidden="true"></i>
+              Delete
+            </button>
+          </div>
+        </details>
+      <% } %>
+    <% } %>
+  </div>
+  <span class="save-status" role="status" aria-live="polite" data-insight-action-status></span>
+</article>

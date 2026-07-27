@@ -1,0 +1,145 @@
+<%- include("partials/head", { pageTitle }) %>
+<body data-page="search">
+  <%- include("partials/site-header", { activePath, viewer }) %>
+  <%
+    const entityOptions =
+      typeof searchEntityTypes !== "undefined"
+        ? searchEntityTypes
+        : [
+            { value: "", label: "Everything" },
+            { value: "transaction", label: "Transactions" },
+            { value: "account", label: "Accounts" },
+            { value: "recurring", label: "Recurring" },
+            { value: "manual_asset", label: "Assets" },
+            { value: "insight", label: "Insights" },
+          ];
+    const currentQuery =
+      typeof searchQuery === "string" ? searchQuery : "";
+    const currentEntityType =
+      typeof searchEntityType === "string" ? searchEntityType : "";
+    const payload =
+      typeof searchPayload !== "undefined" && searchPayload
+        ? searchPayload
+        : {
+            query: currentQuery,
+            entity_types: currentEntityType ? [currentEntityType] : [],
+            groups: [],
+            returned_count: 0,
+            group_count: 0,
+          };
+    const state =
+      typeof searchState === "string" ? searchState : "initial";
+    const resultLabel = `Showing ${payload.returned_count} result${payload.returned_count === 1 ? "" : "s"}`;
+  %>
+  <main class="page-shell page-shell--search">
+    <section class="search-page" data-search-page aria-labelledby="search-page-title">
+      <header class="search-page__heading">
+        <p class="eyebrow">Across your finances</p>
+        <h1 id="search-page-title"><%= pageTitle %></h1>
+        <p class="page-description"><%= pageDescription %></p>
+      </header>
+
+      <form class="search-page__form card" id="search-page-form" action="/search" method="get" role="search" data-search-page-form>
+        <div class="search-page__controls">
+          <i class="ph ph-magnifying-glass" aria-hidden="true"></i>
+          <label class="sr-only" for="search-page-query">Search finances</label>
+          <input
+            id="search-page-query"
+            name="q"
+            type="search"
+            maxlength="120"
+            autocomplete="off"
+            value="<%= currentQuery %>"
+            placeholder="Merchant, category, account, subscription…"
+            data-search-page-input
+          >
+          <label class="sr-only" for="search-page-entity-type">Filter search results</label>
+          <select id="search-page-entity-type" name="entity_type" data-search-page-entity-type>
+            <% entityOptions.forEach((option) => { %>
+              <option value="<%= option.value %>" <%= currentEntityType === option.value ? "selected" : "" %>><%= option.label %></option>
+            <% }) %>
+          </select>
+          <button class="button button--dark" type="submit">Search</button>
+          <a class="button button--ghost" href="/search" data-search-page-clear>Clear</a>
+        </div>
+      </form>
+
+      <p class="search-page__status" role="status" aria-live="polite" data-search-page-status>
+        <% if (state === "results") { %>
+          <%= resultLabel %> across <%= payload.group_count %> <%= payload.group_count === 1 ? "group" : "groups" %>
+        <% } else if (state === "too_short") { %>
+          Type at least two characters to search.
+        <% } else if (state === "empty") { %>
+          No results for “<%= currentQuery %>”.
+        <% } else if (state === "error") { %>
+          Search is unavailable right now.
+        <% } else { %>
+          Search transactions, accounts, recurring charges, assets, and insights.
+        <% } %>
+      </p>
+
+      <div
+        class="search-page__results"
+        data-search-page-results
+        aria-busy="false"
+      >
+        <% if (state === "results") { %>
+          <div class="search-page__groups">
+            <% payload.groups.forEach((group) => { %>
+              <section class="search-page__group card">
+                <div class="search-page__group-heading">
+                  <h2><%= group.label %></h2>
+                  <span><%= group.returned_count %> shown</span>
+                </div>
+                <ul class="search-page__result-list">
+                  <% group.items.forEach((item) => { %>
+                    <li>
+                      <a class="search-result" href="<%= item.url %>" data-search-page-result>
+                        <i class="ph <%= item.icon || 'ph-magnifying-glass' %>" aria-hidden="true"></i>
+                        <span>
+                          <strong><%= item.title %></strong>
+                          <small><%= item.meta %></small>
+                        </span>
+                        <i class="ph ph-arrow-up-right" aria-hidden="true"></i>
+                      </a>
+                    </li>
+                  <% }) %>
+                </ul>
+              </section>
+            <% }) %>
+          </div>
+        <% } else if (state === "too_short") { %>
+          <div class="search-page__state card">
+            <span class="empty-icon"><i class="ph ph-text-aa" aria-hidden="true"></i></span>
+            <h2>Keep typing</h2>
+            <p>Search starts at two characters.</p>
+          </div>
+        <% } else if (state === "empty") { %>
+          <div class="search-page__state card">
+            <span class="empty-icon"><i class="ph ph-magnifying-glass-minus" aria-hidden="true"></i></span>
+            <h2>Nothing found</h2>
+            <p>Try another merchant, category, account, subscription, asset, or insight.</p>
+          </div>
+        <% } else if (state === "error") { %>
+          <div class="search-page__state card">
+            <span class="empty-icon"><i class="ph ph-cloud-slash" aria-hidden="true"></i></span>
+            <h2>Search is unavailable</h2>
+            <p><%= typeof searchError === "string" ? searchError : "Your data is fine. Try again in a moment." %></p>
+            <button class="button button--secondary" type="submit" form="search-page-form">Try again</button>
+          </div>
+        <% } else { %>
+          <div class="search-page__state card">
+            <span class="empty-icon"><i class="ph ph-magnifying-glass" aria-hidden="true"></i></span>
+            <h2>Search everything</h2>
+            <p>Start with a merchant, spending category, or account name.</p>
+            <div class="search-page__examples" aria-label="Example searches">
+              <a href="/search?q=Apple" data-search-example>Apple</a>
+              <a href="/search?q=groceries" data-search-example>Groceries</a>
+              <a href="/search?q=coffee" data-search-example>Coffee</a>
+            </div>
+          </div>
+        <% } %>
+      </div>
+    </section>
+  </main>
+  <%- include("partials/footer", { includeSearchDialog: false }) %>

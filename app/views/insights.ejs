@@ -1,0 +1,220 @@
+<%- include("partials/head", { pageTitle }) %>
+<body data-page="insights">
+  <%- include("partials/site-header", { activePath, viewer }) %>
+  <%
+    const currentInsightView =
+      typeof insightView !== "undefined" && insightView === "archive"
+        ? "archive"
+        : "active";
+    const allInsights = [
+      ...(insights.weekly || []),
+      ...(insights.investments || []),
+      ...(insights.subscriptions || []),
+    ];
+    const groupDefinitions = [
+      {
+        id: "review-now",
+        bucket: "review_now",
+        title: "Review now",
+        description: "Large, unusual, or uncertain activity that needs an answer.",
+        icon: "ph-warning-circle",
+      },
+      {
+        id: "spend-less",
+        bucket: "spend_less",
+        title: "Spend less",
+        description: "Purchases and subscriptions where one concrete cut would matter.",
+        icon: "ph-trend-down",
+      },
+      {
+        id: "change-a-habit",
+        bucket: "change_habit",
+        title: "Change a habit",
+        description: "Repeated behavior that is quietly becoming expensive.",
+        icon: "ph-repeat",
+      },
+      {
+        id: "investment-risk",
+        bucket: "investment_risk",
+        title: "Investment risk",
+        description: "Concentration, allocation, fees, and data gaps worth reviewing.",
+        icon: "ph-shield-warning",
+      },
+    ];
+    const activeGroups = groupDefinitions.map((group) => ({
+      ...group,
+      insights: allInsights.filter((insight) => insight.bucket === group.bucket),
+    }));
+    const actionableInsights = activeGroups.flatMap((group) => group.insights);
+    const contextInsights = allInsights.filter(
+      (insight) => insight.bucket === "context",
+    );
+    const archivedInsights = [...allInsights].sort((left, right) =>
+      String(right.generatedAt || "").localeCompare(
+        String(left.generatedAt || ""),
+      ),
+    );
+    const selectedCloseHref =
+      currentInsightView === "archive"
+        ? "/insights?view=archive"
+        : "/insights";
+  %>
+  <main class="page-shell">
+    <%- include("partials/page-heading", {
+      eyebrow: freshness,
+      pageTitle,
+      pageDescription,
+      actionLabel: "Insight settings",
+      actionHref: "/settings#insight-rules",
+      actionIcon: "ph-sliders-horizontal"
+    }) %>
+
+    <nav class="insight-view-nav" aria-label="Insight status">
+      <a href="/insights" <% if (currentInsightView === "active") { %>aria-current="page"<% } %>>
+        Active
+      </a>
+      <a href="/insights?view=archive" <% if (currentInsightView === "archive") { %>aria-current="page"<% } %>>
+        Archive
+      </a>
+    </nav>
+
+    <% if (typeof selectedInsight !== "undefined" && selectedInsight) { %>
+      <section class="card selected-detail selected-detail--insight" aria-labelledby="selected-insight-heading" data-insight-card>
+        <div>
+          <h2 id="selected-insight-heading"><%= selectedInsight.actionTitle || selectedInsight.title %></h2>
+          <% if (selectedInsight.timeframe) { %>
+            <p class="insight-timeframe"><%= selectedInsight.timeframe %></p>
+          <% } %>
+          <p><%= selectedInsight.detail || selectedInsight.copy %></p>
+        </div>
+        <div class="selected-detail__actions">
+          <% if (selectedInsight.solveAction?.webUrl) { %>
+            <a class="button button--secondary" href="<%= selectedInsight.solveAction.webUrl %>">
+              <%= selectedInsight.solveAction.label %>
+              <i class="ph ph-arrow-up-right" aria-hidden="true"></i>
+            </a>
+          <% } %>
+          <% if (viewer?.is_admin) { %>
+            <% if (selectedInsight.state === "active") { %>
+              <button class="button button--ghost" type="button" data-insight-action="archive" data-finding-id="<%= selectedInsight.id %>">Archive</button>
+              <button class="button button--ghost" type="button" data-insight-action="mark_bad" data-finding-id="<%= selectedInsight.id %>">Bad insight</button>
+            <% } else { %>
+              <button class="button button--ghost" type="button" data-insight-action="restore" data-finding-id="<%= selectedInsight.id %>">Restore</button>
+            <% } %>
+          <% } %>
+          <span class="save-status" role="status" aria-live="polite" data-insight-action-status></span>
+        </div>
+        <a class="icon-button" href="<%= selectedCloseHref %>" aria-label="Close insight details"><i class="ph ph-x" aria-hidden="true"></i></a>
+      </section>
+    <% } %>
+
+    <% if (currentInsightView === "active") { %>
+      <article class="insight-summary card">
+        <div>
+          <span class="summary-symbol summary-symbol--green"><i class="ph ph-arrow-circle-right" aria-hidden="true"></i></span>
+          <p class="card-kicker">What to fix next</p>
+          <% if (actionableInsights.length) { %>
+            <h2>Make one useful change, then come back.</h2>
+            <p>Start with <strong><%= actionableInsights[0].actionTitle %></strong>. The rest can wait its turn.</p>
+            <% if (actionableInsights[0].solveAction?.webUrl) { %>
+              <a class="button button--dark" href="<%= actionableInsights[0].solveAction.webUrl %>">
+                Start here
+                <i class="ph ph-arrow-right" aria-hidden="true"></i>
+              </a>
+            <% } %>
+          <% } else { %>
+            <h2>Nothing currently needs action.</h2>
+            <p>New spending, subscription, transaction, and portfolio checks will appear after the next sync.</p>
+          <% } %>
+        </div>
+      </article>
+
+      <% activeGroups.forEach((group) => { %>
+        <% if (group.insights.length) { %>
+          <section id="<%= group.id %>" class="insight-family" aria-labelledby="<%= group.id %>-heading">
+            <div class="insight-section-heading insight-section-heading--family">
+              <div>
+                <span class="summary-symbol"><i class="ph <%= group.icon %>" aria-hidden="true"></i></span>
+                <div>
+                  <h2 id="<%= group.id %>-heading"><%= group.title %></h2>
+                  <p><%= group.description %></p>
+                </div>
+              </div>
+            </div>
+            <div class="insight-grid insight-grid--two">
+              <% group.insights.forEach((insight) => { %>
+                <%- include("partials/insight-card", {
+                  insight,
+                  insightView: currentInsightView,
+                  lifecycleControls: true
+                }) %>
+              <% }) %>
+            </div>
+            <% if (group.bucket === "investment_risk") { %>
+              <p class="disclosure"><i class="ph ph-info" aria-hidden="true"></i> Descriptive analysis only. No buy, sell, tax, or suitability recommendations.</p>
+            <% } %>
+          </section>
+        <% } %>
+      <% }) %>
+
+      <% if (contextInsights.length) { %>
+        <details class="insight-context">
+          <summary>
+            <span>
+              <strong>Background context</strong>
+              <small>Portfolio movement and other facts that do not need action</small>
+            </span>
+            <i class="ph ph-caret-down" aria-hidden="true"></i>
+          </summary>
+          <div class="insight-grid insight-grid--two">
+            <% contextInsights.forEach((insight) => { %>
+              <%- include("partials/insight-card", {
+                insight,
+                insightView: currentInsightView,
+                lifecycleControls: true,
+                compactInsight: true
+              }) %>
+            <% }) %>
+          </div>
+        </details>
+      <% } %>
+    <% } else { %>
+      <article class="insight-summary insight-summary--archive card">
+        <div>
+          <span class="summary-symbol"><i class="ph ph-archive" aria-hidden="true"></i></span>
+          <p class="card-kicker">Insight history</p>
+          <h2>Past findings stay here, out of your way.</h2>
+          <p>Restore anything that still matters, or delete it permanently.</p>
+        </div>
+      </article>
+
+      <section class="insight-family" aria-labelledby="archive-heading">
+        <div class="insight-section-heading insight-section-heading--family">
+          <div>
+            <span class="summary-symbol"><i class="ph ph-clock-counter-clockwise" aria-hidden="true"></i></span>
+            <div>
+              <h2 id="archive-heading">Archived insights</h2>
+              <p>Resolved, archived, and rejected findings in newest-first order.</p>
+            </div>
+          </div>
+        </div>
+        <% if (archivedInsights.length) { %>
+          <div class="insight-grid insight-grid--two">
+            <% archivedInsights.forEach((insight) => { %>
+              <%- include("partials/insight-card", {
+                insight,
+                insightView: currentInsightView,
+                lifecycleControls: true
+              }) %>
+            <% }) %>
+          </div>
+        <% } else { %>
+          <div class="card insight-empty-state">
+            <h3>No archived insights yet.</h3>
+            <p>Archive or resolve an active insight and it will appear here.</p>
+          </div>
+        <% } %>
+      </section>
+    <% } %>
+  </main>
+  <%- include("partials/footer") %>

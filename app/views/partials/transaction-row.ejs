@@ -1,0 +1,11 @@
+<a class="transaction-row" href="/transactions?transaction=<%= transaction.id %>">
+  <span class="list-icon" aria-hidden="true"><i class="ph <%= transaction.icon %>"></i></span>
+  <span class="transaction-row__main">
+    <strong><%= transaction.merchant %></strong>
+    <span><%= transaction.category %> · <%= transaction.account %><%= transaction.tags?.length ? ` · ${transaction.tags.join(" · ")}` : "" %></span>
+  </span>
+  <span class="transaction-row__meta">
+    <strong class="<%= transaction.amount.amount_minor > 0 ? 'money-positive' : '' %>"><%= formatMoney(transaction.amount) %></strong>
+    <span><%= transaction.date %><% if (transaction.status === "pending") { %> · Pending<% } %></span>
+  </span>
+</a>

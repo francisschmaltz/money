@@ -1,0 +1,159 @@
+<%- include("partials/head", { pageTitle }) %>
+<body data-page="portfolio">
+  <%- include("partials/site-header", { activePath, viewer }) %>
+  <%
+    const livePortfolio = typeof portfolioData !== "undefined" ? portfolioData : null;
+    const requestedScope =
+      typeof portfolioScope !== "undefined"
+        ? portfolioScope
+        : livePortfolio?.scope ||
+          ({ include: "all", exclude: "trading", only: "retirement" }[
+            livePortfolio?.retirement_scope
+          ] || (query.scope === "taxable" ? "trading" : query.scope) || "all");
+    const selectedScope =
+      ["all", "trading", "retirement"].includes(requestedScope)
+        ? requestedScope
+        : "all";
+    const portfolioScopeLabels = {
+      all: "All investments",
+      trading: "Trading investments",
+      retirement: "Retirement investments",
+    };
+    const portfolioLabels = livePortfolio
+      ? livePortfolio.series.map((point) => point.timestamp.slice(0, 10))
+      : ["Jul 1", "Jul 6", "Jul 11", "Jul 16", "Jul 21", "Jul 26"];
+    const portfolioValues = livePortfolio
+      ? livePortfolio.series.map((point) => point.value.amount_minor)
+      : [0.973, 0.978, 0.98, 0.979, 0.991, 1].map((ratio) =>
+          Math.round(overview.portfolio.amount_minor * ratio),
+        );
+    const sinceTrackingMinor = livePortfolio && livePortfolio.series.length > 1
+      ? livePortfolio.series.at(-1).value.amount_minor - livePortfolio.series[0].value.amount_minor
+      : livePortfolio ? null : 842100;
+    const portfolioCurrency = overview.portfolio.currency || "USD";
+    const displayedPortfolioValue =
+      livePortfolio?.total_value || overview.portfolio;
+    const estimatedReturn = livePortfolio?.estimated_return_basis_points;
+    const externalCashFlow = livePortfolio?.external_cash_flow;
+    const selectedPeriod = livePortfolio?.period?.name || query.period || "1m";
+  %>
+  <main class="page-shell">
+    <%- include("partials/page-heading", {
+      eyebrow: freshness,
+      pageTitle,
+      pageDescription,
+      actionLabel: "Investment insights",
+      actionHref: "/insights#investments",
+      actionIcon: "ph-sparkle"
+    }) %>
+
+    <% if (typeof selectedHolding !== "undefined" && selectedHolding) { %>
+      <section class="card selected-detail" aria-labelledby="selected-holding-heading">
+        <b class="ticker"><%= selectedHolding.symbol.slice(0, 4) %></b>
+        <div>
+          <p class="card-kicker">Selected holding</p>
+          <h2 id="selected-holding-heading"><%= selectedHolding.symbol %></h2>
+          <p><%= selectedHolding.name %> · <%= selectedHolding.allocation %>% of <%= portfolioScopeLabels[selectedScope].toLowerCase() %></p>
+        </div>
+        <strong><%= formatMoney(selectedHolding.value) %></strong>
+        <a class="icon-button" href="/portfolio?period=<%= selectedPeriod %>&amp;scope=<%= selectedScope %>" aria-label="Close holding details"><i class="ph ph-x"></i></a>
+      </section>
+    <% } %>
+
+    <nav class="portfolio-scope-tabs" aria-label="Investment account scope">
+      <% [["all", "All"], ["trading", "Trading"], ["retirement", "Retirement"]].forEach(([scope, label]) => { %>
+        <a href="/portfolio?period=<%= selectedPeriod %>&amp;scope=<%= scope %>" aria-current="<%= selectedScope === scope ? 'page' : 'false' %>"><%= label %></a>
+      <% }) %>
+    </nav>
+
+    <section class="portfolio-grid">
+      <article class="card portfolio-hero">
+        <div class="card-heading">
+          <div>
+            <p class="card-kicker"><%= portfolioScopeLabels[selectedScope] %></p>
+            <h2 class="display-money"><%= formatMoney(displayedPortfolioValue) %></h2>
+            <% if (estimatedReturn != null && livePortfolio?.estimated_gain) { %>
+              <p class="trend <%= livePortfolio.estimated_gain.amount_minor >= 0 ? 'trend--positive' : 'trend--negative' %>">
+                <i class="ph <%= livePortfolio.estimated_gain.amount_minor >= 0 ? 'ph-arrow-up-right' : 'ph-arrow-down-right' %>"></i>
+                <%= formatMoney(livePortfolio.estimated_gain, { sign: true }) %> estimated performance
+              </p>
+            <% } else if (livePortfolio) { %>
+              <p class="trend">Estimated performance waits for complete snapshot and cash-flow history.</p>
+            <% } else { %>
+              <p class="trend trend--positive"><i class="ph ph-arrow-up-right"></i>+$2,191 estimated performance this month</p>
+            <% } %>
+          </div>
+          <div class="period-select">
+            <% [["1w", "1W"], ["1m", "1M"], ["1y", "1Y"], ["all", "All"]].forEach(([value, label]) => { %>
+              <a href="/portfolio?period=<%= value %>&amp;scope=<%= selectedScope %>" aria-current="<%= selectedPeriod === value ? 'true' : 'false' %>"><%= label %></a>
+            <% }) %>
+          </div>
+        </div>
+        <div class="chart-frame chart-frame--portfolio">
+          <canvas
+            data-chart="line"
+            data-labels="<%= JSON.stringify(portfolioLabels) %>"
+            data-values="<%= JSON.stringify(portfolioValues) %>"
+            data-color="#2664ae"
+            aria-label="Portfolio value during the selected period"
+            role="img"
+          ></canvas>
+        </div>
+        <div class="split-metrics split-metrics--three">
+          <div><span>Estimated return</span><strong><%= estimatedReturn == null ? "—" : `${estimatedReturn >= 0 ? "+" : ""}${(estimatedReturn / 100).toFixed(1)}%` %></strong></div>
+          <div><span>Net external cash flow</span><strong><%= externalCashFlow ? formatMoney(externalCashFlow, { sign: true }) : "—" %></strong></div>
+          <div><span>Since tracking began</span><strong class="<%= sinceTrackingMinor == null ? '' : sinceTrackingMinor >= 0 ? 'money-positive' : 'money-negative' %>"><%= sinceTrackingMinor == null ? "—" : formatMoney({ amount_minor: sinceTrackingMinor, currency: portfolioCurrency }, { sign: true }) %></strong></div>
+        </div>
+      </article>
+
+      <article class="card allocation-card">
+        <div class="card-heading">
+          <div><p class="card-kicker"><%= portfolioScopeLabels[selectedScope] %></p><h2>Allocation</h2></div>
+        </div>
+        <div class="allocation-chart">
+          <canvas
+            data-chart="doughnut"
+            data-labels="<%= JSON.stringify(allocation.map((item) => item.label)) %>"
+            data-values="<%= JSON.stringify(allocation.map((item) => item.value)) %>"
+            aria-label="Portfolio allocation by holding"
+            role="img"
+          ></canvas>
+          <div class="allocation-chart__center"><strong><%= holdings.length %></strong><span>holdings</span></div>
+        </div>
+        <div class="allocation-legend">
+          <% allocation.slice(0, 5).forEach((item, index) => { %>
+            <span><i></i><%= item.label %><strong><%= item.value %>%</strong></span>
+          <% }) %>
+        </div>
+      </article>
+    </section>
+
+    <section class="card holdings-card">
+      <div class="card-heading">
+        <div><p class="card-kicker"><%= portfolioScopeLabels[selectedScope] %></p><h2>Holdings</h2></div>
+        <a class="quiet-link" href="/accounts">Investment accounts <i class="ph ph-arrow-right"></i></a>
+      </div>
+      <div class="holdings-table" role="table" aria-label="Portfolio holdings">
+        <div class="holdings-row holdings-row--header" role="row">
+          <span>Holding</span><span>Value</span><span>Allocation</span><span>Selected period</span>
+        </div>
+        <% holdings.forEach((holding) => { %>
+          <a class="holdings-row" role="row" href="/portfolio?period=<%= selectedPeriod %>&amp;scope=<%= selectedScope %>&amp;holding=<%= encodeURIComponent(holding.symbol) %>">
+            <span><b class="ticker"><%= holding.symbol.slice(0, 4) %></b><span><strong><%= holding.symbol %></strong><small><%= holding.name %></small></span></span>
+            <strong><%= formatMoney(holding.value) %></strong>
+            <span><%= holding.allocation %>%</span>
+            <% if (livePortfolio) { %>
+              <span>—</span>
+            <% } else { %>
+              <strong class="<%= holding.change >= 0 ? 'money-positive' : 'money-negative' %>"><%= holding.change >= 0 ? '+' : '' %><%= holding.change %>%</strong>
+            <% } %>
+          </a>
+        <% }) %>
+        <% if (!holdings.length) { %>
+          <p class="card-note"><i class="ph ph-chart-line-up"></i> No investment holdings have synced yet.</p>
+        <% } %>
+      </div>
+      <p class="card-note"><i class="ph ph-info"></i> <%= livePortfolio?.warnings?.[0] || "Performance is estimated from local snapshots and excludes external cash flows when complete." %></p>
+    </section>
+  </main>
+  <%- include("partials/footer") %>

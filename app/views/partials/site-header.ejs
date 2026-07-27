@@ -1,0 +1,69 @@
+<header class="site-header" data-site-header>
+  <div class="site-header__inner">
+    <a class="brand" href="/" aria-label="Money dashboard">
+      <span class="brand__mark" aria-hidden="true"><i class="ph ph-currency-dollar"></i></span>
+      <span>Money</span>
+    </a>
+
+    <nav class="desktop-nav" aria-label="Primary navigation">
+      <% [
+        ["/", "Dashboard"],
+        ["/insights", "Insights"],
+        ["/transactions", "Transactions"],
+        ["/recurring", "Recurring"],
+        ["/portfolio", "Portfolio"],
+        ["/credit", "Credit"]
+      ].forEach(([href, label]) => { %>
+        <a href="<%= href %>" <%- activePath === href ? 'aria-current="page"' : "" %>><%= label %></a>
+      <% }) %>
+    </nav>
+
+    <div class="site-header__actions">
+      <a class="icon-button search-trigger" href="/search" aria-label="Search" <%- activePath === "/search" ? 'aria-current="page"' : "" %>>
+        <i class="ph ph-magnifying-glass" aria-hidden="true"></i>
+        <span class="keyboard-hint">⌘K</span>
+      </a>
+      <details class="account-menu">
+        <summary aria-label="Open user menu">
+          <span class="avatar"><%= viewer?.initials || "FS" %></span>
+        </summary>
+        <div class="account-menu__panel">
+          <div class="account-menu__identity">
+            <strong><%= viewer?.name || "Finance user" %></strong>
+            <span><%= viewer?.email || "" %></span>
+          </div>
+          <a href="/accounts" <%- activePath === "/accounts" ? 'aria-current="page"' : "" %>>
+            <i class="ph ph-bank" aria-hidden="true"></i> Accounts
+          </a>
+          <% if (viewer?.is_admin) { %>
+            <a href="/settings" <%- activePath === "/settings" ? 'aria-current="page"' : "" %>>
+              <i class="ph ph-gear" aria-hidden="true"></i> Settings
+            </a>
+          <% } %>
+          <form class="account-menu__logout" action="/auth/logout" method="post">
+            <input type="hidden" name="_csrf" value="<%= typeof csrfToken !== 'undefined' ? csrfToken : '' %>">
+            <button type="submit"><i class="ph ph-sign-out" aria-hidden="true"></i> Sign out</button>
+          </form>
+        </div>
+      </details>
+      <button class="icon-button mobile-menu-trigger" type="button" data-mobile-menu aria-label="Open navigation" aria-expanded="false">
+        <i class="ph ph-list" aria-hidden="true"></i>
+      </button>
+    </div>
+  </div>
+
+  <nav class="mobile-nav" aria-label="Mobile navigation" data-mobile-nav hidden>
+    <% [
+      ["/", "Dashboard", "ph-squares-four"],
+      ["/insights", "Insights", "ph-sparkle"],
+      ["/transactions", "Transactions", "ph-list-dashes"],
+      ["/recurring", "Recurring", "ph-repeat"],
+      ["/portfolio", "Portfolio", "ph-chart-line-up"],
+      ["/credit", "Credit", "ph-credit-card"]
+    ].forEach(([href, label, icon]) => { %>
+      <a href="<%= href %>" <%- activePath === href ? 'aria-current="page"' : "" %>>
+        <i class="ph <%= icon %>" aria-hidden="true"></i><%= label %>
+      </a>
+    <% }) %>
+  </nav>
+</header>

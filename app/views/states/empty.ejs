@@ -1,0 +1,35 @@
+<%- include("../partials/head", { pageTitle }) %>
+<body data-page="empty">
+  <%- include("../partials/site-header", { activePath: "", viewer }) %>
+  <main class="empty-page">
+    <section class="empty-state">
+      <span class="empty-hero-icon"><i class="ph ph-currency-dollar"></i></span>
+      <p class="eyebrow">Start here</p>
+      <h1>A new way to manage your finances</h1>
+      <p>Securely connect your accounts to see spending, subscriptions, balances, investments, and evidence-backed insights in one place.</p>
+      <a class="button button--dark" href="/settings#connections"><i class="ph ph-plus"></i> Connect finances</a>
+      <p class="empty-note"><i class="ph ph-shield-check"></i> Connections are handled by Plaid. Sign-in is protected by Duo.</p>
+    </section>
+    <div class="empty-preview card" aria-label="Example spending card">
+      <div><span>Spending</span><strong>$3,000</strong></div>
+      <div class="spending-chart-wrap">
+        <canvas
+          data-chart="spending"
+          data-labels="<%= JSON.stringify(categories.map((category) => category.label)) %>"
+          data-values="<%= JSON.stringify(categories.map((category) => category.amount.amount_minor)) %>"
+          data-colors="<%= JSON.stringify(categories.map((category) => category.color)) %>"
+          aria-label="Example spending segmented by category"
+          role="img"
+        ></canvas>
+      </div>
+      <% categories.slice(0, 2).forEach((category, index) => { %>
+        <div class="category-row">
+          <span class="category-dot category-dot--<%= index + 1 %>"></span>
+          <span class="list-icon list-icon--compact"><i class="ph <%= category.icon %>"></i></span>
+          <span><strong><%= category.label %></strong><small>Example category</small></span>
+          <strong><%= formatMoney(category.amount) %></strong>
+        </div>
+      <% }) %>
+    </div>
+  </main>
+  <%- include("../partials/footer") %>

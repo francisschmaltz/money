@@ -1,0 +1,23 @@
+{
+  "Namespace": "default",
+  "Path": "nomad/jobs/money",
+  "Items": {
+    "database_url": "postgres://REPLACE_USER:REPLACE_PASSWORD@REPLACE_HOST:5432/REPLACE_DATABASE",
+    "plaid_client_id": "REPLACE_PLAID_CLIENT_ID",
+    "plaid_secret": "REPLACE_PLAID_SECRET",
+    "plaid_webhook_url": "https://money.example.com/webhooks/plaid",
+    "duo_oidc_issuer": "https://sso-REPLACE.sso.duosecurity.com/oidc/REPLACE_CLIENT_ID",
+    "duo_client_id": "REPLACE_DUO_CLIENT_ID",
+    "duo_client_secret": "REPLACE_DUO_CLIENT_SECRET",
+    "duo_authorization_url": "",
+    "duo_token_url": "",
+    "duo_redirect_uri": "https://money.example.com/auth/duo/callback",
+    "duo_allowed_emails": "REPLACE_ALLOWED_EMAIL@example.com",
+    "duo_admin_emails": "REPLACE_ADMIN_EMAIL@example.com",
+    "session_secret": "REPLACE_WITH_AT_LEAST_32_RANDOM_BYTES",
+    "mcp_bearer_token": "REPLACE_WITH_AT_LEAST_32_RANDOM_BYTES",
+    "lm_studio_base_url": "",
+    "lm_studio_model": "",
+    "lm_studio_api_key": ""
+  }
+}

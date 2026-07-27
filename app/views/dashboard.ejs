@@ -1,0 +1,309 @@
+<%- include("partials/head", { pageTitle }) %>
+<body data-page="dashboard">
+  <%- include("partials/site-header", { activePath, viewer }) %>
+  <%
+    const dashboardNetWorthLabels =
+      typeof netWorthLabels !== "undefined" && netWorthLabels.length
+        ? netWorthLabels
+        : netWorthSeries.map((_, index) => `Point ${index + 1}`);
+    const dashboardPeriodLabel =
+      typeof currentPeriodLabel !== "undefined"
+        ? currentPeriodLabel
+        : "Current period";
+    const dashboardPeriodNames = ["1w", "1m", "1y", "all"];
+    const requestedDashboardPeriod =
+      typeof dashboardPeriod !== "undefined" &&
+      dashboardPeriodNames.includes(dashboardPeriod.name)
+        ? dashboardPeriod
+        : {
+            name: dashboardPeriodNames.includes(query.period)
+              ? query.period
+              : "1m",
+            label: "Last month",
+            comparison_label: "over the last month",
+          };
+    const dashboardWealthLabels =
+      typeof wealthLabels !== "undefined" && wealthLabels.length
+        ? wealthLabels
+        : dashboardNetWorthLabels;
+    const dashboardWealthSeries =
+      typeof wealthSeries !== "undefined"
+        ? wealthSeries
+        : {
+            cash: [overview.cashBalance.amount_minor],
+            short_term: [overview.shortTermWorth.amount_minor],
+            retirement: [overview.retirementInvestments.amount_minor],
+            net_worth: netWorthSeries,
+          };
+    const dashboardInvestmentTotal = {
+      amount_minor:
+        overview.taxableInvestments.amount_minor +
+        overview.retirementInvestments.amount_minor,
+      currency: overview.taxableInvestments.currency,
+    };
+    const dashboardMetricChange = (series, currency) =>
+      series.length > 1
+        ? {
+            amount_minor: series.at(-1) - series[0],
+            currency,
+          }
+        : null;
+    const dashboardMetrics = {
+      cash: {
+        label: "Cash balance",
+        description: "Cash accounts + personal brokerage",
+        value: overview.cashBalance,
+        labels: dashboardWealthLabels,
+        series: dashboardWealthSeries.cash,
+        chart_label: "Cash balance history",
+        action_label: "Cash details",
+        action_href: "/accounts",
+      },
+      short_term: {
+        label: "Short-term worth",
+        description: "Cash balance − credit-card debt",
+        value: overview.shortTermWorth,
+        labels: dashboardWealthLabels,
+        series: dashboardWealthSeries.short_term,
+        chart_label: "Short-term worth history",
+        action_label: "Credit details",
+        action_href: "/credit",
+      },
+      retirement: {
+        label: "Retirement",
+        description: "Retirement accounts only",
+        value: overview.retirementInvestments,
+        labels: dashboardWealthLabels,
+        series: dashboardWealthSeries.retirement,
+        chart_label: "Retirement balance history",
+        action_label: "Retirement details",
+        action_href: "/portfolio?scope=retirement",
+      },
+      net_worth: {
+        label: "Net worth",
+        description: "Everything you own minus everything you owe",
+        value: overview.netWorth,
+        labels: dashboardWealthLabels,
+        series: dashboardWealthSeries.net_worth,
+        chart_label: "Net worth history",
+        action_label: "Net worth details",
+        action_href: "/accounts",
+      },
+    };
+    const dashboardMetricNames = [
+      "cash",
+      "short_term",
+      "retirement",
+      "net_worth",
+    ];
+    const selectedDashboardMetric =
+      dashboardMetricNames.includes(query.metric)
+        ? query.metric
+        : "cash";
+    const selectedDashboardMetricData =
+      dashboardMetrics[selectedDashboardMetric];
+    const selectedDashboardChange = dashboardMetricChange(
+      selectedDashboardMetricData.series,
+      selectedDashboardMetricData.value.currency,
+    );
+    const dashboardPeriodHref = (period) => {
+      const parameters = new URLSearchParams({ period });
+      if (selectedDashboardMetric !== "cash") {
+        parameters.set("metric", selectedDashboardMetric);
+      }
+      return `/?${parameters.toString()}`;
+    };
+  %>
+  <main class="page-shell">
+    <%- include("partials/page-heading", {
+      eyebrow: freshness,
+      pageTitle,
+      pageDescription,
+      actionLabel: "View accounts",
+      actionHref: "/accounts",
+      actionIcon: "ph-bank"
+    }) %>
+
+    <section class="summary-grid" aria-label="Financial overview">
+      <article
+        class="card summary-card summary-card--hero"
+        data-dashboard-balance
+        data-metrics="<%= JSON.stringify(dashboardMetrics) %>"
+        data-period-comparison="<%= requestedDashboardPeriod.comparison_label %>"
+        data-period-label="<%= requestedDashboardPeriod.label %>"
+      >
+        <div data-dashboard-balance-panel aria-live="polite">
+          <div class="card-heading card-heading--balance">
+            <div>
+              <p class="card-kicker" data-balance-label><%= selectedDashboardMetricData.label %></p>
+              <h2 class="display-money" data-balance-value><%= formatMoney(selectedDashboardMetricData.value) %></h2>
+              <p class="metric-description" data-balance-description><%= selectedDashboardMetricData.description %></p>
+              <% if (selectedDashboardChange) { %>
+                <p class="trend <%= selectedDashboardChange.amount_minor >= 0 ? 'trend--positive' : 'trend--negative' %>" data-balance-trend>
+                  <i class="ph <%= selectedDashboardChange.amount_minor >= 0 ? 'ph-arrow-up-right' : 'ph-arrow-down-right' %>"></i>
+                  <span><%= formatMoney(selectedDashboardChange, { sign: true }) %> <%= requestedDashboardPeriod.comparison_label %></span>
+                </p>
+              <% } else { %>
+                <p class="trend" data-balance-trend>
+                  <i class="ph" hidden></i>
+                  <span>History begins with the first local snapshot.</span>
+                </p>
+              <% } %>
+            </div>
+            <nav class="period-select period-select--dashboard" aria-label="Balance history timeframe">
+              <% [["1w", "1W"], ["1m", "1M"], ["1y", "1Y"], ["all", "All"]].forEach(([value, label]) => { %>
+                <a
+                  href="<%= dashboardPeriodHref(value) %>"
+                  data-dashboard-period="<%= value %>"
+                  aria-current="<%= requestedDashboardPeriod.name === value ? 'true' : 'false' %>"
+                ><%= label %></a>
+              <% }) %>
+            </nav>
+          </div>
+          <div class="chart-frame chart-frame--net-worth">
+            <canvas
+              data-chart="line"
+              data-labels="<%= JSON.stringify(selectedDashboardMetricData.labels) %>"
+              data-values="<%= JSON.stringify(selectedDashboardMetricData.series) %>"
+              data-color="#249342"
+              aria-label="<%= selectedDashboardMetricData.chart_label %> · <%= requestedDashboardPeriod.label %>"
+              role="img"
+            ></canvas>
+          </div>
+          <div class="balance-card-footer">
+            <div class="balance-switcher" role="group" aria-label="Dashboard balance view">
+              <% [["cash", "Cash"], ["short_term", "Short Term"], ["retirement", "Retirement"], ["net_worth", "Net Worth"]].forEach(([value, label]) => { %>
+                <button
+                  type="button"
+                  data-balance-metric="<%= value %>"
+                  aria-pressed="<%= selectedDashboardMetric === value ? 'true' : 'false' %>"
+                ><%= label %></button>
+              <% }) %>
+            </div>
+            <a class="quiet-link" href="<%= selectedDashboardMetricData.action_href %>" data-balance-action>
+              <span><%= selectedDashboardMetricData.action_label %></span>
+              <i class="ph ph-arrow-right"></i>
+            </a>
+          </div>
+        </div>
+      </article>
+
+      <div class="summary-stack">
+        <article class="card metric-card">
+          <span class="metric-icon metric-icon--blue"><i class="ph ph-receipt"></i></span>
+          <div>
+            <span>Spending this month</span>
+            <strong><%= formatMoney(overview.spending) %></strong>
+            <small>Posted in <%= dashboardPeriodLabel %></small>
+          </div>
+        </article>
+        <article class="card metric-card">
+          <span class="metric-icon metric-icon--green"><i class="ph ph-arrows-down-up"></i></span>
+          <div>
+            <span>Cash flow this month</span>
+            <strong><%= formatMoney(overview.cashFlow, { sign: true }) %></strong>
+            <small><%= formatMoney(overview.income) %> income this month</small>
+          </div>
+        </article>
+        <article class="card metric-card">
+          <span class="metric-icon metric-icon--neutral"><i class="ph ph-chart-line-up"></i></span>
+          <div>
+            <span>Current investments</span>
+            <strong><%= formatMoney(dashboardInvestmentTotal) %></strong>
+            <small><%= formatMoney(overview.taxableInvestments) %> trading · <%= formatMoney(overview.retirementInvestments) %> retirement</small>
+            <a href="/portfolio">Compare investment views</a>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section class="section-block" aria-labelledby="insight-heading">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Latest checks</p>
+          <h2 id="insight-heading">Insights</h2>
+        </div>
+        <a class="button button--secondary" href="/insights">View all insights</a>
+      </div>
+      <div class="insight-grid">
+        <% for (const family of ["weekly", "investments", "subscriptions"]) { %>
+          <%
+            const dashboardInsight = insights[family]?.find(
+              (insight) => !insight.isDemoted,
+            );
+          %>
+          <% if (dashboardInsight) { %>
+            <%- include("partials/insight-card", { insight: dashboardInsight }) %>
+          <% } else { %>
+            <article class="card insight-card">
+              <h3>No finding needs attention.</h3>
+              <p class="insight-timeframe"><i class="ph ph-calendar-blank" aria-hidden="true"></i><%= family === "weekly" ? "Latest completed week" : family === "investments" ? "Last 1 month" : "Current active subscriptions" %></p>
+              <p>Fresh deterministic checks will appear here after the next sync.</p>
+            </article>
+          <% } %>
+        <% } %>
+      </div>
+    </section>
+
+    <section class="card spending-card" aria-labelledby="spending-heading">
+      <div class="card-heading">
+        <div>
+          <p class="card-kicker">This month</p>
+          <h2 id="spending-heading">Spend by category</h2>
+        </div>
+        <div class="card-total">
+          <strong><%= formatMoney(overview.spending) %></strong>
+          <% if (typeof spendingMoMLabel !== "undefined" && spendingMoMLabel) { %>
+            <span class="mom-change <%= spendingTrendDirection === 'up' ? 'trend--negative' : spendingTrendDirection === 'down' ? 'trend--positive' : '' %>"><%= spendingMoMLabel %></span>
+          <% } %>
+        </div>
+      </div>
+      <div class="spending-chart-wrap">
+        <canvas
+          data-chart="spending"
+          data-labels="<%= JSON.stringify(categories.map((category) => category.label)) %>"
+          data-values="<%= JSON.stringify(categories.map((category) => category.amount.amount_minor)) %>"
+          data-colors="<%= JSON.stringify(categories.map((category) => category.color)) %>"
+          aria-label="<%= dashboardPeriodLabel %> spending segmented by category"
+          role="img"
+        ></canvas>
+      </div>
+      <div class="category-grid">
+        <% categories.forEach((category, index) => { %>
+          <a href="/transactions?category=<%= encodeURIComponent(category.label) %>" class="category-row">
+            <span class="category-dot category-dot--<%= (index % 8) + 1 %>"></span>
+            <span class="list-icon list-icon--compact"><i class="ph <%= category.icon %>"></i></span>
+            <span class="category-row__label"><strong><%= category.label %></strong><small><%= category.percent %>% of spending</small></span>
+            <span class="category-row__value">
+              <strong><%= formatMoney(category.amount) %></strong>
+              <% if (category.momLabel) { %>
+                <small class="<%= category.momBasisPoints == null ? '' : category.momDirection === 'up' ? 'trend--negative' : category.momDirection === 'down' ? 'trend--positive' : '' %>"><%= category.momLabel %></small>
+              <% } %>
+            </span>
+          </a>
+        <% }) %>
+        <% if (!categories.length) { %>
+          <p class="card-note"><i class="ph ph-chart-bar"></i> Spending categories appear after posted transactions sync.</p>
+        <% } %>
+      </div>
+    </section>
+
+    <section class="card list-card" aria-labelledby="recent-heading">
+      <div class="card-heading">
+        <div>
+          <p class="card-kicker">Latest activity across all accounts</p>
+          <h2 id="recent-heading">Recent transactions</h2>
+        </div>
+        <a class="quiet-link" href="/transactions">View all <i class="ph ph-arrow-right"></i></a>
+      </div>
+      <div class="transaction-list">
+        <% transactions.slice(0, 6).forEach((transaction) => { %>
+          <%- include("partials/transaction-row", { transaction }) %>
+        <% }) %>
+        <% if (!transactions.length) { %>
+          <p class="card-note"><i class="ph ph-receipt"></i> Recent activity appears after the first transaction sync.</p>
+        <% } %>
+      </div>
+    </section>
+  </main>
+  <%- include("partials/footer") %>

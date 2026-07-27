@@ -1,0 +1,47 @@
+{
+  "name": "money",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Shared personal-finance dashboard, deterministic insights, and MCP service.",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "node app/index.js",
+    "start:web": "node app/index.js",
+    "start:worker": "node app/worker/index.js",
+    "dev": "node --watch --env-file-if-exists=.env app/index.js",
+    "migrate": "node app/db/migrate.js",
+    "test": "node --test --test-reporter=spec test/*.test.js",
+    "test:coverage": "node --test --experimental-test-coverage test/*.test.js",
+    "test:browser": "playwright test",
+    "check": "node --check app/index.js && npm test"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "@phosphor-icons/web": "^2.1.2",
+    "busboy": "^1.6.0",
+    "chart.js": "^4.5.0",
+    "connect-pg-simple": "^10.0.0",
+    "csv-parse": "^6.2.1",
+    "ejs": "^6.0.1",
+    "express": "^5.1.0",
+    "express-rate-limit": "^8.1.0",
+    "express-session": "^1.18.2",
+    "helmet": "^8.1.0",
+    "jose": "^6.1.0",
+    "openid-client": "6.8.4",
+    "passport": "^0.7.0",
+    "pg": "^8.16.3",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "^4.10.2",
+    "@playwright/test": "^1.55.0",
+    "supertest": "^7.1.4"
+  },
+  "overrides": {
+    "@hono/node-server": "^2.0.5"
+  }
+}

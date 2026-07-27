@@ -1,0 +1,11 @@
+.git
+.github
+.DS_Store
+.env
+node_modules
+coverage
+playwright-report
+test-results
+design-qa-assets
+test
+*.log
