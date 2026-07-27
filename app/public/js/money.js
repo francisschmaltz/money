@@ -2753,6 +2753,134 @@
       });
   }
 
+  function planningForms() {
+    const forms = document.querySelectorAll("[data-plan-form]");
+    if (!forms.length) return;
+    const csrfToken =
+      document.querySelector('meta[name="csrf-token"]')?.content || "";
+
+    const minorUnits = (value) => {
+      const normalized = String(value ?? "")
+        .trim()
+        .replaceAll(",", "")
+        .replace(/^\$/, "");
+      if (!/^\d+(?:\.\d{0,2})?$/.test(normalized)) {
+        throw new Error("Enter a valid dollar amount with at most two decimals.");
+      }
+      const [whole, fractional = ""] = normalized.split(".");
+      const amount = Number(whole) * 100 + Number(fractional.padEnd(2, "0"));
+      if (!Number.isSafeInteger(amount)) {
+        throw new Error("That amount is too large.");
+      }
+      return amount;
+    };
+
+    const payloadFor = (form, submitter) => {
+      if (form.dataset.transactionSplit !== undefined) {
+        if (submitter?.dataset.clearSplit !== undefined) {
+          return { lines: [] };
+        }
+        const sign = Math.sign(Number(form.dataset.sourceAmount)) || 1;
+        return {
+          lines: [...form.querySelectorAll("[data-split-line]")].map(
+            (line) => ({
+              category: line.querySelector("[data-split-category]").value,
+              amount_minor:
+                sign *
+                minorUnits(line.querySelector("[data-split-amount]").value),
+            }),
+          ),
+        };
+      }
+      const payload = Object.fromEntries(new FormData(form));
+      form.querySelectorAll("[data-money-minor]").forEach((input) => {
+        payload[input.dataset.moneyMinor] = minorUnits(input.value);
+      });
+      for (const [key, value] of Object.entries(payload)) {
+        if (value !== "") continue;
+        const field = form.elements.namedItem(key);
+        if (field?.dataset?.nullWhenEmpty !== undefined) {
+          payload[key] = null;
+        } else {
+          delete payload[key];
+        }
+      }
+      if (
+        form.dataset.planScenario === undefined &&
+        (form.dataset.method || "POST") !== "GET"
+      ) {
+        payload.idempotency_key =
+          form.dataset.idempotencyKey ||
+          (window.crypto?.randomUUID?.() ??
+            `web-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+        form.dataset.idempotencyKey = payload.idempotency_key;
+      }
+      return payload;
+    };
+
+    const moneyText = (money) =>
+      new Intl.NumberFormat("en-US", {
+        style: "currency",
+        currency: money?.currency || "USD",
+      }).format(Number(money?.amount_minor || 0) / 100);
+
+    forms.forEach((form) => {
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const status = form.querySelector("[data-plan-status]");
+        const submitter = event.submitter;
+        if (submitter) submitter.disabled = true;
+        if (status) status.textContent = "Saving…";
+        try {
+          const response = await fetch(form.dataset.endpoint, {
+            method: form.dataset.method || "POST",
+            credentials: "same-origin",
+            headers: {
+              Accept: "application/json",
+              "Content-Type": "application/json",
+              "X-CSRF-Token": csrfToken,
+            },
+            body: JSON.stringify(payloadFor(form, submitter)),
+          });
+          const body = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            throw new Error(body.message || body.error || "The plan did not save.");
+          }
+          if (form.dataset.planScenario !== undefined) {
+            const scenario = body.data || {};
+            const result = document.querySelector(
+              "[data-plan-scenario-result]",
+            );
+            if (result) {
+              const timing =
+                scenario.months_to_target == null
+                  ? "These contributions do not reach the target."
+                  : scenario.months_to_target === 0
+                    ? "The goal is already funded under these assumptions."
+                    : `Funded in about ${scenario.months_to_target} months, around ${scenario.estimated_target_on}.`;
+              result.replaceChildren();
+              const heading = document.createElement("strong");
+              heading.textContent = scenario.goal_name || "Scenario";
+              const copy = document.createElement("p");
+              copy.textContent = `${timing} Brokerage after the modeled change: ${moneyText(scenario.shocked_brokerage_value)}.`;
+              result.append(heading, copy);
+            }
+            if (status) status.textContent = "Scenario updated";
+            if (submitter) submitter.disabled = false;
+            return;
+          }
+          if (status) status.textContent = body.title || "Saved";
+          window.setTimeout(() => window.location.reload(), 250);
+        } catch (error) {
+          if (status) {
+            status.textContent = error.message || "The plan did not save.";
+          }
+          if (submitter) submitter.disabled = false;
+        }
+      });
+    });
+  }
+
   function initialize() {
     mobileNavigation();
     globalSearch();
@@ -2768,6 +2896,7 @@
     transactionCleanupRules();
     transactionCleanup();
     creditScoreTracking();
+    planningForms();
   }
 
   if (document.readyState === "loading") {

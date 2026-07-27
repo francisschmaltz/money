@@ -15,6 +15,7 @@ export class FinanceWorker {
     plaidSyncService,
     recurringService,
     insightService,
+    planningService = null,
     workerId = `money-${randomUUID()}`,
     pollIntervalMs = 1_000,
   }) {
@@ -74,6 +75,7 @@ export class FinanceWorker {
           await insightService.generateAll({
             workspaceId: payload.workspaceId,
           });
+          await planningService?.processDueGoalSchedules?.();
         },
       ],
     ]);

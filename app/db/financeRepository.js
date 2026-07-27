@@ -5060,6 +5060,20 @@ export class PgFinanceRepository {
             WHEN normalized_text = $2 THEN 4
             WHEN normalized_text LIKE $2 || '%' THEN 3
             WHEN search_vector @@ plainto_tsquery('simple', $2) THEN 2
+            WHEN entity_type = 'transaction'
+              AND EXISTS (
+                SELECT 1
+                FROM transaction_splits split
+                WHERE split.workspace_id = search_documents.workspace_id
+                  AND split.transaction_id = search_documents.entity_id
+                  AND lower(regexp_replace(
+                    split.category,
+                    '[^[:alnum:]]+',
+                    ' ',
+                    'g'
+                  )) LIKE '%' || $2 || '%'
+              )
+              THEN 2
             ELSE 1
           END AS match_tier,
           similarity(normalized_text, $2) AS similarity_score
@@ -5070,6 +5084,21 @@ export class PgFinanceRepository {
             normalized_text LIKE $2 || '%'
             OR search_vector @@ plainto_tsquery('simple', $2)
             OR similarity(normalized_text, $2) >= 0.2
+            OR (
+              entity_type = 'transaction'
+              AND EXISTS (
+                SELECT 1
+                FROM transaction_splits split
+                WHERE split.workspace_id = search_documents.workspace_id
+                  AND split.transaction_id = search_documents.entity_id
+                  AND lower(regexp_replace(
+                    split.category,
+                    '[^[:alnum:]]+',
+                    ' ',
+                    'g'
+                  )) LIKE '%' || $2 || '%'
+              )
+            )
           )
         ORDER BY match_tier DESC, similarity_score DESC, title
         LIMIT $4

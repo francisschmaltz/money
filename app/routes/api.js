@@ -282,11 +282,47 @@ function invokeWithActorAndStatus(
     .catch(next);
 }
 
+function invokePlanWrite(
+  service,
+  operation,
+  method,
+  input,
+  actor,
+  response,
+  next,
+  status = 200,
+) {
+  if (
+    typeof input?.idempotency_key !== "string" ||
+    input.idempotency_key.trim().length < 8
+  ) {
+    invalidRequest(
+      response,
+      "idempotency_key is required for planning writes.",
+    );
+    return;
+  }
+  const promise =
+    typeof service?.executeIdempotentWrite === "function"
+      ? service.executeIdempotentWrite(operation, input, actor)
+      : typeof service?.[method] === "function"
+        ? service[method](input, actor)
+        : null;
+  if (!promise) {
+    unavailable(response, "Finance planning");
+    return;
+  }
+  Promise.resolve(promise)
+    .then((result) => response.status(status).json(result))
+    .catch(next);
+}
+
 export function createApiRouter({
   requireAuth = (_request, _response, next) => next(),
   requireAdmin = (_request, _response, next) => next(),
   requireCsrf = (_request, _response, next) => next(),
   financeService,
+  planningService = null,
   plaidSyncService,
   appleCardImportService,
 } = {}) {
@@ -321,6 +357,214 @@ export function createApiRouter({
           period,
           current_user_id: request.user?.id,
         },
+        response,
+        next,
+      );
+    },
+  );
+
+  router.get(
+    "/api/v1/plan/safe-to-spend",
+    (request, response, next) => {
+      invoke(
+        planningService,
+        "getSafeToSpend",
+        {},
+        response,
+        next,
+      );
+    },
+  );
+
+  router.get(
+    "/api/v1/plan/goals",
+    (request, response, next) => {
+      invoke(
+        planningService,
+        "listFinanceGoals",
+        {
+          include_archived: booleanValue(
+            request.query.include_archived,
+          ),
+        },
+        response,
+        next,
+      );
+    },
+  );
+
+  router.get(
+    "/api/v1/plan/budget",
+    (request, response, next) => {
+      invoke(
+        planningService,
+        "getBudgetStatus",
+        { month_on: request.query.month_on ?? null },
+        response,
+        next,
+      );
+    },
+  );
+
+  router.post(
+    "/api/v1/plan/scenarios",
+    requireCsrf,
+    (request, response, next) => {
+      invoke(
+        planningService,
+        "modelFinancePlan",
+        request.body ?? {},
+        response,
+        next,
+      );
+    },
+  );
+
+  router.post(
+    "/api/v1/plan/goals",
+    requireCsrf,
+    (request, response, next) => {
+      invokePlanWrite(
+        planningService,
+        "create_finance_goal",
+        "createFinanceGoal",
+        request.body ?? {},
+        request.user,
+        response,
+        next,
+        201,
+      );
+    },
+  );
+
+  router.put(
+    "/api/v1/plan/goals/:goalId",
+    requireCsrf,
+    (request, response, next) => {
+      invokePlanWrite(
+        planningService,
+        "update_finance_goal",
+        "updateFinanceGoal",
+        {
+          ...(request.body ?? {}),
+          goal_id: request.params.goalId,
+        },
+        request.user,
+        response,
+        next,
+      );
+    },
+  );
+
+  router.post(
+    "/api/v1/plan/goals/:goalId/allocations",
+    requireCsrf,
+    (request, response, next) => {
+      invokePlanWrite(
+        planningService,
+        "allocate_finance_goal",
+        "allocateFinanceGoal",
+        {
+          ...(request.body ?? {}),
+          goal_id: request.params.goalId,
+        },
+        request.user,
+        response,
+        next,
+      );
+    },
+  );
+
+  router.put(
+    "/api/v1/plan/goals/:goalId/schedule",
+    requireCsrf,
+    (request, response, next) => {
+      invokePlanWrite(
+        planningService,
+        "set_goal_funding_schedule",
+        "setGoalFundingSchedule",
+        {
+          ...(request.body ?? {}),
+          goal_id: request.params.goalId,
+        },
+        request.user,
+        response,
+        next,
+      );
+    },
+  );
+
+  router.delete(
+    "/api/v1/plan/goals/:goalId",
+    requireCsrf,
+    (request, response, next) => {
+      invokePlanWrite(
+        planningService,
+        "archive_finance_goal",
+        "archiveFinanceGoal",
+        {
+          ...(request.body ?? {}),
+          goal_id: request.params.goalId,
+        },
+        request.user,
+        response,
+        next,
+      );
+    },
+  );
+
+  router.put(
+    "/api/v1/plan/budget/:monthOn/:category",
+    requireCsrf,
+    (request, response, next) => {
+      invokePlanWrite(
+        planningService,
+        "set_category_budget",
+        "setCategoryBudget",
+        {
+          ...(request.body ?? {}),
+          month_on: request.params.monthOn,
+          category: request.params.category,
+        },
+        request.user,
+        response,
+        next,
+      );
+    },
+  );
+
+  router.post(
+    "/api/v1/plan/budget/:monthOn/copy",
+    requireCsrf,
+    (request, response, next) => {
+      invokePlanWrite(
+        planningService,
+        "copy_budget_month",
+        "copyBudgetMonth",
+        {
+          ...(request.body ?? {}),
+          month_on: request.params.monthOn,
+        },
+        request.user,
+        response,
+        next,
+      );
+    },
+  );
+
+  router.put(
+    "/api/v1/transactions/:transactionId/splits",
+    requireCsrf,
+    (request, response, next) => {
+      invokePlanWrite(
+        planningService,
+        "split_transaction",
+        "splitTransaction",
+        {
+          ...(request.body ?? {}),
+          transaction_id: request.params.transactionId,
+        },
+        request.user,
         response,
         next,
       );

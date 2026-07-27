@@ -31,6 +31,11 @@ const KIND_DISPLAY = Object.freeze({
     title: "Tracked credit scores",
     path: "/credit?score_period=1y",
   },
+  safe_to_spend: { title: "Safe to Spend", path: "/plan" },
+  goals: { title: "Finance goals", path: "/plan#goals" },
+  budget: { title: "Monthly budget", path: "/plan#budget" },
+  scenario: { title: "Finance plan scenario", path: "/plan#scenario" },
+  plan_change: { title: "Plan change", path: "/plan" },
 });
 
 const SNAKE_CASE_KEY = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/;
@@ -402,6 +407,7 @@ function validateSemanticField(key, value, path) {
     ![
       "weekly",
       "biweekly",
+      "biweekly_friday",
       "monthly",
       "quarterly",
       "annual",

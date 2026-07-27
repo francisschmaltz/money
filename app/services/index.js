@@ -3,6 +3,12 @@ export {
   createFinanceService,
 } from "./financeService.js";
 export {
+  PlanningService,
+  createPlanningService,
+} from "./planningService.js";
+export { createDemoPlanningService } from "./demoPlanningService.js";
+export * from "./planningAnalytics.js";
+export {
   PlaidSyncService,
   createPlaidSyncService,
 } from "./plaidSyncService.js";

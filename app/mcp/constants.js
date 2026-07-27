@@ -17,6 +17,33 @@ export const FINANCE_TOOL_KIND_MAP = Object.freeze({
   get_credit_score_summary: "credit_score",
 });
 
+export const PLANNING_READ_TOOL_KIND_MAP = Object.freeze({
+  get_safe_to_spend: "safe_to_spend",
+  list_finance_goals: "goals",
+  get_budget_status: "budget",
+  model_finance_plan: "scenario",
+});
+
+export const PLANNING_WRITE_TOOL_KIND_MAP = Object.freeze({
+  create_finance_goal: "plan_change",
+  update_finance_goal: "plan_change",
+  allocate_finance_goal: "plan_change",
+  set_goal_funding_schedule: "plan_change",
+  archive_finance_goal: "plan_change",
+  set_category_budget: "plan_change",
+  split_transaction: "plan_change",
+});
+
+export const PLANNING_TOOL_KIND_MAP = Object.freeze({
+  ...PLANNING_READ_TOOL_KIND_MAP,
+  ...PLANNING_WRITE_TOOL_KIND_MAP,
+});
+
+const ALL_TOOL_KIND_MAP = Object.freeze({
+  ...FINANCE_TOOL_KIND_MAP,
+  ...PLANNING_TOOL_KIND_MAP,
+});
+
 export const FINANCE_SERVICE_METHOD_MAP = Object.freeze({
   get_finance_overview: "getFinanceOverview",
   get_finance_insights: "getFinanceInsights",
@@ -34,8 +61,16 @@ export const FINANCE_TOOL_NAMES = Object.freeze(
   Object.keys(FINANCE_TOOL_KIND_MAP),
 );
 
+export const PLANNING_READ_TOOL_NAMES = Object.freeze(
+  Object.keys(PLANNING_READ_TOOL_KIND_MAP),
+);
+
+export const PLANNING_WRITE_TOOL_NAMES = Object.freeze(
+  Object.keys(PLANNING_WRITE_TOOL_KIND_MAP),
+);
+
 export const FINANCE_CARD_KINDS = Object.freeze(
-  [...new Set(Object.values(FINANCE_TOOL_KIND_MAP))],
+  [...new Set(Object.values(ALL_TOOL_KIND_MAP))],
 );
 
 export const FINANCE_KIND_TOOL_MAP = Object.freeze(
@@ -49,7 +84,7 @@ export const FINANCE_KIND_TOOL_MAP = Object.freeze(
 
 export const FINANCE_CARD_KIND_BY_TOOL = Object.freeze(
   Object.fromEntries(
-    Object.entries(FINANCE_TOOL_KIND_MAP).flatMap(([toolName, kind]) => [
+    Object.entries(ALL_TOOL_KIND_MAP).flatMap(([toolName, kind]) => [
       [toolName, kind],
       [`${FINANCE_MCP_CONNECTION_ID}_${toolName}`, kind],
     ]),
@@ -61,19 +96,19 @@ export function normalizeFinanceToolName(value) {
     return undefined;
   }
 
-  if (Object.hasOwn(FINANCE_TOOL_KIND_MAP, value)) return value;
+  if (Object.hasOwn(ALL_TOOL_KIND_MAP, value)) return value;
 
   const connectionPrefix = `${FINANCE_MCP_CONNECTION_ID}_`;
   const withoutConnectionPrefix = value.startsWith(connectionPrefix)
     ? value.slice(connectionPrefix.length)
     : value;
 
-  return Object.hasOwn(FINANCE_TOOL_KIND_MAP, withoutConnectionPrefix)
+  return Object.hasOwn(ALL_TOOL_KIND_MAP, withoutConnectionPrefix)
     ? withoutConnectionPrefix
     : undefined;
 }
 
 export function financeCardKindForTool(value) {
   const toolName = normalizeFinanceToolName(value);
-  return toolName ? FINANCE_TOOL_KIND_MAP[toolName] : undefined;
+  return toolName ? ALL_TOOL_KIND_MAP[toolName] : undefined;
 }

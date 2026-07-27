@@ -19,12 +19,13 @@ Tools**:
 | Type | MCP (Streamable HTTP) |
 | URL | `https://money.example.com/mcp` |
 | Authentication | Bearer |
-| Key | The exact `MCP_BEARER_TOKEN` value |
+| Key | The exact `MCP_PLAN_WRITE_TOKEN` value for the authorized planning connection |
 | Function filter | Empty |
 
 Verify the connection before saving, then restrict access to the intended users
-or groups. The server is read-only, but the bearer can read the whole shared
-finance workspace.
+or groups. This credential can read the whole shared workspace and change the
+family plan. `MCP_BEARER_TOKEN` remains read-only for clients that should never
+discover write tools.
 
 Expected discovery:
 
@@ -39,6 +40,17 @@ list_recurring_payments
 get_net_worth_history
 get_portfolio_summary
 get_credit_score_summary
+get_safe_to_spend
+list_finance_goals
+get_budget_status
+model_finance_plan
+create_finance_goal
+update_finance_goal
+allocate_finance_goal
+set_goal_funding_schedule
+archive_finance_goal
+set_category_budget
+split_transaction
 ```
 
 Attach **`server:mcp:money`** to the Open WebUI model used by compatible clients.
@@ -49,7 +61,8 @@ accepts both.
 After changing tool names or schemas:
 
 1. Verify/refresh the `money` external tool connection.
-2. Confirm all ten tools are rediscovered.
+2. Confirm the read credential discovers 14 tools and the planning credential
+   discovers all 21.
 3. Start a fresh chat. Existing chats may retain stale tool metadata.
 4. Call every card kind before declaring the deploy done.
 
@@ -70,7 +83,7 @@ Use a client-side environment variable with a different name so nobody confuses
 it with server configuration:
 
 ```bash
-export MONEY_MCP_TOKEN='REPLACE_WITH_THE_NOMAD_VALUE'
+export MONEY_MCP_TOKEN='REPLACE_WITH_THE_PLAN_WRITE_NOMAD_VALUE'
 ```
 
 Discover tools:

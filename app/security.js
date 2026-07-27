@@ -27,6 +27,42 @@ export function bearerAuth(expectedToken, realm = "money-mcp") {
   };
 }
 
+export function scopedBearerAuth(
+  {
+    readToken,
+    planWriteToken,
+  },
+  realm = "money-mcp",
+) {
+  return (request, response, next) => {
+    const match = /^Bearer\s+(.+)$/i.exec(
+      request.get("authorization") || "",
+    );
+    const presented = match?.[1];
+    const write =
+      presented &&
+      planWriteToken &&
+      planWriteToken !== readToken &&
+      timingSafeStringEqual(presented, planWriteToken);
+    const read =
+      presented &&
+      readToken &&
+      timingSafeStringEqual(presented, readToken);
+    if (!write && !read) {
+      response
+        .status(401)
+        .set("WWW-Authenticate", `Bearer realm="${realm}"`)
+        .json({
+          error: "unauthorized",
+          message: "A valid bearer token is required.",
+        });
+      return;
+    }
+    request.mcpScope = write ? "plan:write" : "read";
+    next();
+  };
+}
+
 export function allowedHost(allowedHosts) {
   const allowed = new Set(allowedHosts.map((host) => host.toLowerCase()));
   return (request, response, next) => {

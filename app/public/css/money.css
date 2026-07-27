@@ -4689,6 +4689,480 @@ kbd {
   }
 }
 
+/* Planning */
+.safe-to-spend-hero,
+.plan-safe {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(260px, 0.8fr) auto;
+  align-items: center;
+  gap: 28px;
+  padding: 28px;
+  margin-bottom: 18px;
+  border-color: color-mix(in srgb, var(--green) 26%, var(--line));
+  background:
+    radial-gradient(circle at 0 0, rgba(36, 147, 66, 0.1), transparent 38%),
+    var(--surface);
+}
+
+.safe-to-spend-hero--negative,
+.plan-safe--negative {
+  border-color: #e2a29c;
+  background:
+    radial-gradient(circle at 0 0, rgba(174, 47, 36, 0.1), transparent 38%),
+    var(--surface);
+}
+
+.safe-to-spend-hero h2,
+.plan-safe h2 {
+  margin: 3px 0 0;
+}
+
+.safe-to-spend-hero .display-money,
+.plan-safe .display-money {
+  margin: 5px 0;
+}
+
+.safe-to-spend-breakdown,
+.plan-math,
+.goal-composition {
+  margin: 0;
+}
+
+.safe-to-spend-breakdown > div,
+.plan-math > div,
+.goal-composition > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.safe-to-spend-breakdown dt,
+.plan-math dt,
+.goal-composition dt {
+  color: var(--ink-soft);
+}
+
+.safe-to-spend-breakdown dd,
+.plan-math dd,
+.goal-composition dd {
+  margin: 0;
+  font-weight: 680;
+  text-align: right;
+}
+
+.plan-safe {
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 0.8fr);
+}
+
+.plan-math__result {
+  border-bottom: 0 !important;
+  color: var(--ink);
+  font-weight: 750;
+}
+
+.plan-source-strip {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  padding: 8px 16px;
+  margin: -6px 0 24px;
+}
+
+.plan-source-strip > div {
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+}
+
+.plan-source-strip dt {
+  color: var(--ink-soft);
+  font-size: 0.74rem;
+}
+
+.plan-source-strip dd {
+  margin: 0;
+  font-weight: 700;
+}
+
+.plan-alerts {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 28px;
+}
+
+.plan-alert {
+  display: flex;
+  gap: 12px;
+  padding: 13px 16px;
+  border: 1px solid #e4c269;
+  border-radius: 12px;
+  background: #fff9e9;
+}
+
+.plan-alert > i {
+  margin-top: 2px;
+  color: #926d05;
+  font-size: 1.2rem;
+}
+
+.plan-alert strong {
+  text-transform: capitalize;
+}
+
+.plan-alert p {
+  margin: 3px 0 0;
+  color: var(--ink-soft);
+}
+
+.plan-section {
+  margin-top: 28px;
+}
+
+.section-heading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+.section-heading h2 {
+  margin: 2px 0 0;
+}
+
+.goal-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.goal-card {
+  padding: 22px;
+}
+
+.goal-card__heading,
+.goal-card__money {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.goal-card__heading h3 {
+  margin: 0;
+  font-size: 1.15rem;
+}
+
+.goal-card__heading p,
+.goal-card__money span {
+  margin: 3px 0 0;
+  color: var(--ink-soft);
+  font-size: 0.82rem;
+}
+
+.plan-progress {
+  height: 8px;
+  overflow: hidden;
+  margin: 16px 0 8px;
+  border-radius: 999px;
+  background: #e9ece9;
+}
+
+.plan-progress span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--green);
+}
+
+.goal-card__money {
+  align-items: baseline;
+  justify-content: flex-start;
+  margin-bottom: 12px;
+}
+
+.goal-composition {
+  font-size: 0.83rem;
+}
+
+.plan-inline-form,
+.plan-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.plan-inline-form {
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.plan-inline-form label,
+.plan-form-grid label,
+.plan-month-picker label {
+  display: grid;
+  gap: 6px;
+  color: var(--ink-soft);
+  font-size: 0.76rem;
+  font-weight: 650;
+}
+
+.plan-inline-form input,
+.plan-inline-form select,
+.plan-form-grid input,
+.plan-form-grid select,
+.plan-month-picker input {
+  width: 100%;
+  min-height: 40px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.plan-inline-form .money-input,
+.plan-form-grid .money-input,
+.budget-row .money-input {
+  display: flex;
+  align-items: center;
+  min-height: 40px;
+  padding-left: 9px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface);
+}
+
+.plan-inline-form .money-input input,
+.plan-form-grid .money-input input,
+.budget-row .money-input input {
+  min-width: 0;
+  border: 0;
+  outline: 0;
+}
+
+.form-status {
+  align-self: center;
+  min-height: 1em;
+  color: var(--ink-soft);
+  font-size: 0.75rem;
+}
+
+.plan-details {
+  margin-top: 14px;
+}
+
+.plan-details summary,
+.plan-create summary {
+  cursor: pointer;
+  color: var(--ink-soft);
+  font-size: 0.84rem;
+  font-weight: 650;
+}
+
+.plan-create {
+  padding: 20px 22px;
+  margin-top: 14px;
+}
+
+.budget-board,
+.scenario-card,
+.plan-section.card {
+  padding: 24px;
+}
+
+.plan-month-picker {
+  display: flex;
+  align-items: end;
+  gap: 8px;
+  margin: 10px 0 18px;
+}
+
+.budget-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-bottom: 18px;
+  border-block: 1px solid var(--line);
+}
+
+.budget-summary > div {
+  display: grid;
+  gap: 4px;
+  padding: 14px;
+}
+
+.budget-summary span {
+  color: var(--ink-soft);
+  font-size: 0.76rem;
+}
+
+.negative {
+  color: #aa3328 !important;
+}
+
+.budget-table {
+  overflow-x: auto;
+}
+
+.budget-row {
+  display: grid;
+  grid-template-columns: minmax(150px, 1.4fr) minmax(130px, 0.8fr) minmax(100px, 0.7fr) minmax(100px, 0.7fr) minmax(160px, 0.9fr);
+  align-items: center;
+  gap: 14px;
+  min-width: 800px;
+  padding: 10px 6px;
+  border-bottom: 1px solid var(--line);
+}
+
+.budget-row--heading {
+  color: var(--ink-soft);
+  font-size: 0.74rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.budget-row > span:first-of-type {
+  display: grid;
+}
+
+.budget-row small {
+  color: var(--ink-soft);
+}
+
+.budget-row--over {
+  background: rgba(174, 47, 36, 0.035);
+}
+
+.future-default {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 5px;
+  color: var(--ink-soft);
+  font-size: 0.7rem;
+}
+
+.scenario-result {
+  margin-top: 16px;
+}
+
+.scenario-result:not(:empty) {
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-muted);
+}
+
+.scenario-result strong {
+  display: block;
+  margin-bottom: 4px;
+}
+
+.plan-history {
+  display: grid;
+}
+
+.plan-history > div {
+  display: flex;
+  gap: 11px;
+  padding: 11px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.plan-history > div > i {
+  margin-top: 2px;
+  color: var(--ink-soft);
+}
+
+.plan-history span {
+  display: grid;
+  gap: 2px;
+}
+
+.plan-history small {
+  color: var(--ink-soft);
+}
+
+.transaction-split-editor {
+  margin-top: 10px;
+}
+
+.transaction-split-editor summary {
+  cursor: pointer;
+  color: var(--green-dark);
+  font-size: 0.76rem;
+  font-weight: 650;
+}
+
+.transaction-split-editor form {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.transaction-split-editor [data-split-line] {
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) minmax(120px, 0.7fr);
+  gap: 8px;
+}
+
+.transaction-split-editor label {
+  display: grid;
+  gap: 4px;
+  color: var(--ink-soft);
+  font-size: 0.72rem;
+}
+
+.transaction-split-editor select {
+  min-height: 38px;
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface);
+}
+
+.transaction-split-editor .money-input {
+  display: flex;
+  align-items: center;
+  min-height: 38px;
+  padding-left: 8px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+}
+
+.transaction-split-editor .money-input input {
+  min-width: 0;
+  border: 0;
+  outline: 0;
+}
+
+@media (max-width: 760px) {
+  .safe-to-spend-hero,
+  .plan-safe,
+  .goal-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .safe-to-spend-hero .button {
+    width: 100%;
+  }
+
+  .plan-inline-form,
+  .plan-form-grid,
+  .transaction-split-editor [data-split-line] {
+    grid-template-columns: 1fr;
+  }
+
+  .budget-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .plan-source-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

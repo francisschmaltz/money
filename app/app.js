@@ -15,9 +15,9 @@ import { createApiRouter, createPlaidWebhookRouter } from "./routes/api.js";
 import { createWebRouter } from "./routes/web.js";
 import {
   allowedHost,
-  bearerAuth,
   ensureCsrfToken,
   requireCsrf,
+  scopedBearerAuth,
 } from "./security.js";
 
 const projectRoot = fileURLToPath(new URL("../", import.meta.url));
@@ -81,6 +81,7 @@ export function createApp({
   pool = null,
   repository = null,
   financeService,
+  planningService = null,
   plaidSyncService,
   appleCardImportService,
   oidcConfiguration = null,
@@ -202,7 +203,10 @@ export function createApp({
   });
 
   const mcpHost = allowedHost(config.mcp.allowedHosts);
-  const mcpBearer = bearerAuth(config.mcp.bearerToken);
+  const mcpBearer = scopedBearerAuth({
+    readToken: config.mcp.bearerToken,
+    planWriteToken: config.mcp.planWriteToken,
+  });
   const mcpRateLimit = rateLimit({
     windowMs: 60_000,
     limit: 120,
@@ -227,6 +231,8 @@ export function createApp({
 
       const server = createFinanceMcpServer({
         financeService,
+        planningService,
+        accessScope: request.mcpScope,
         baseUrl: config.mcp.cardBaseUrl,
       });
       const transport = new StreamableHTTPServerTransport({
@@ -296,6 +302,7 @@ export function createApp({
       requireAdmin,
       requireCsrf,
       financeService,
+      planningService,
       plaidSyncService,
       appleCardImportService,
     }),
@@ -305,6 +312,7 @@ export function createApp({
       requireAuth: requireUser,
       requireAdmin,
       financeService,
+      planningService,
       demoMode: config.demoMode,
     }),
   );

@@ -124,6 +124,23 @@
       actionIcon: "ph-bank"
     }) %>
 
+    <% if (typeof planning !== "undefined" && planning?.safeToSpend) { %>
+      <section class="card safe-to-spend-hero <%= planning.safeToSpend.safe_to_spend.amount_minor < 0 ? 'safe-to-spend-hero--negative' : '' %>" aria-labelledby="safe-to-spend-heading">
+        <div>
+          <p class="card-kicker">Available after cards and cash-backed goals</p>
+          <h2 id="safe-to-spend-heading">Safe to Spend</h2>
+          <p class="display-money"><%= formatMoney(planning.safeToSpend.safe_to_spend) %></p>
+          <p class="card-note"><%= planning.safeToSpend.formula %></p>
+        </div>
+        <dl class="safe-to-spend-breakdown">
+          <div><dt>Liquid cash</dt><dd><%= formatMoney(planning.safeToSpend.liquid_cash) %></dd></div>
+          <div><dt>Current card balances</dt><dd>− <%= formatMoney(planning.safeToSpend.current_card_liabilities) %></dd></div>
+          <div><dt>Cash goal earmarks</dt><dd>− <%= formatMoney(planning.safeToSpend.cash_goal_earmarks) %></dd></div>
+        </dl>
+        <a class="button button--dark" href="/plan">Open the family plan <i class="ph ph-arrow-right"></i></a>
+      </section>
+    <% } %>
+
     <section class="summary-grid" aria-label="Financial overview">
       <article
         class="card summary-card summary-card--hero"

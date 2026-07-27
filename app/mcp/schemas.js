@@ -4,6 +4,7 @@ import {
   FINANCE_CARD_SCHEMA,
   FINANCE_CARD_VERSION,
   FINANCE_TOOL_KIND_MAP,
+  PLANNING_TOOL_KIND_MAP,
 } from "./constants.js";
 
 const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
@@ -69,6 +70,18 @@ const safeMinorUnitsSchema = z
   .int()
   .min(Number.MIN_SAFE_INTEGER)
   .max(Number.MAX_SAFE_INTEGER);
+const nonnegativeMinorUnitsSchema = z
+  .number()
+  .int()
+  .min(0)
+  .max(Number.MAX_SAFE_INTEGER);
+const positiveMinorUnitsSchema = nonnegativeMinorUnitsSchema.min(1);
+const idempotencyKeySchema = z
+  .string()
+  .trim()
+  .min(8)
+  .max(160)
+  .refine((value) => !/[\u0000-\u001f\u007f]/.test(value));
 
 const boundedLimit = (defaultValue, maximum) =>
   z.number().int().min(1).max(maximum).default(defaultValue);
@@ -248,6 +261,150 @@ export const FINANCE_TOOL_INPUT_SCHEMAS = Object.freeze({
       period: z.enum(["1m", "1y", "all"]).default("1y"),
     })
     .strict(),
+
+  get_safe_to_spend: z.object({}).strict(),
+
+  list_finance_goals: z
+    .object({
+      include_archived: z.boolean().default(false),
+    })
+    .strict(),
+
+  get_budget_status: z
+    .object({
+      month_on: isoDateSchema.optional(),
+    })
+    .strict(),
+
+  model_finance_plan: z
+    .object({
+      goal_id: opaqueIdSchema.optional(),
+      monthly_contribution_minor:
+        nonnegativeMinorUnitsSchema.default(0),
+      biweekly_contribution_minor:
+        nonnegativeMinorUnitsSchema.default(0),
+      one_time_contribution_minor:
+        nonnegativeMinorUnitsSchema.default(0),
+      brokerage_change_basis_points: z
+        .number()
+        .int()
+        .min(-10_000)
+        .max(100_000)
+        .default(0),
+    })
+    .strict(),
+
+  create_finance_goal: z
+    .object({
+      name: z.string().trim().min(1).max(120),
+      target_amount_minor: positiveMinorUnitsSchema,
+      target_on: isoDateSchema.nullable().optional(),
+      idempotency_key: idempotencyKeySchema,
+    })
+    .strict(),
+
+  update_finance_goal: z
+    .object({
+      goal_id: opaqueIdSchema,
+      expected_version: z.number().int().min(1),
+      name: z.string().trim().min(1).max(120).optional(),
+      target_amount_minor: positiveMinorUnitsSchema.optional(),
+      target_on: isoDateSchema.nullable().optional(),
+      idempotency_key: idempotencyKeySchema,
+    })
+    .strict()
+    .refine(
+      (value) =>
+        value.name !== undefined ||
+        value.target_amount_minor !== undefined ||
+        Object.hasOwn(value, "target_on"),
+      "At least one goal field must change.",
+    ),
+
+  allocate_finance_goal: z
+    .object({
+      goal_id: opaqueIdSchema,
+      source: z.enum(["cash", "brokerage"]),
+      direction: z.enum(["allocate", "release"]).default("allocate"),
+      amount_minor: positiveMinorUnitsSchema,
+      expected_version: z.number().int().min(1),
+      idempotency_key: idempotencyKeySchema,
+    })
+    .strict(),
+
+  set_goal_funding_schedule: z
+    .object({
+      goal_id: opaqueIdSchema,
+      schedule_id: opaqueIdSchema.optional(),
+      expected_version: z.number().int().min(1).default(1),
+      source: z.enum(["cash", "brokerage"]),
+      cadence: z.enum(["monthly", "biweekly_friday"]),
+      amount_minor: positiveMinorUnitsSchema,
+      monthly_day: z.number().int().min(1).max(31).optional(),
+      anchor_on: isoDateSchema.optional(),
+      status: z.enum(["active", "paused"]).default("active"),
+      idempotency_key: idempotencyKeySchema,
+    })
+    .strict()
+    .superRefine((value, context) => {
+      if (value.cadence === "monthly" && value.monthly_day == null) {
+        context.addIssue({
+          code: "custom",
+          message: "monthly_day is required for monthly schedules.",
+          path: ["monthly_day"],
+        });
+      }
+      if (
+        value.cadence === "biweekly_friday" &&
+        value.anchor_on == null
+      ) {
+        context.addIssue({
+          code: "custom",
+          message: "anchor_on is required for alternate-Friday schedules.",
+          path: ["anchor_on"],
+        });
+      }
+    }),
+
+  archive_finance_goal: z
+    .object({
+      goal_id: opaqueIdSchema,
+      expected_version: z.number().int().min(1),
+      idempotency_key: idempotencyKeySchema,
+    })
+    .strict(),
+
+  set_category_budget: z
+    .object({
+      category: categorySchema,
+      amount_minor: nonnegativeMinorUnitsSchema,
+      scope: z.enum(["month", "future_default"]).default("month"),
+      month_on: isoDateSchema.optional(),
+      effective_month_on: isoDateSchema.optional(),
+      idempotency_key: idempotencyKeySchema,
+    })
+    .strict(),
+
+  split_transaction: z
+    .object({
+      transaction_id: opaqueIdSchema,
+      lines: z
+        .array(
+          z
+            .object({
+              category: categorySchema,
+              amount_minor: safeMinorUnitsSchema.refine(
+                (value) => value !== 0,
+                "Split amounts cannot be zero.",
+              ),
+              note: z.string().trim().max(240).nullable().optional(),
+            })
+            .strict(),
+        )
+        .max(50),
+      idempotency_key: idempotencyKeySchema,
+    })
+    .strict(),
 });
 
 const warningOutputSchema = z.union([
@@ -279,7 +436,10 @@ const envelopeOutputBase = {
 
 export const FINANCE_TOOL_OUTPUT_SCHEMAS = Object.freeze(
   Object.fromEntries(
-    Object.entries(FINANCE_TOOL_KIND_MAP).map(([toolName, kind]) => [
+    Object.entries({
+      ...FINANCE_TOOL_KIND_MAP,
+      ...PLANNING_TOOL_KIND_MAP,
+    }).map(([toolName, kind]) => [
       toolName,
       z
         .object({

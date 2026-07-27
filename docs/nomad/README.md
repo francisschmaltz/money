@@ -65,6 +65,7 @@ Required static values:
 | `duo_admin_emails` | Admin subset |
 | `session_secret` | Express session signing; at least 32 random bytes |
 | `mcp_bearer_token` | Read access to the full shared workspace |
+| `mcp_plan_write_token` | Read plus audited family-plan writes; must differ from the read token |
 | `lm_studio_*` | Optional aggregate narrative service |
 
 Leave the optional Duo endpoint checks and LM Studio values as empty strings if
@@ -130,8 +131,9 @@ Then perform the authenticated checks:
 2. Plaid Link or update mode from Settings.
 3. A manual sync followed by recent transactions.
 4. Worker remains running and consumes queued sync/insight jobs.
-5. Open WebUI rediscovers all ten tools under connection `money`.
-6. A fresh chat receives each finance card kind.
+5. The read bearer discovers 14 tools and the planning bearer discovers 21
+   under connection `money`.
+6. A fresh chat receives each of the 15 finance card kinds.
 
 Readiness must fail when production configuration or PostgreSQL is unavailable.
 Do not weaken it to make a broken rollout look green.
@@ -143,6 +145,7 @@ Update the secure variable document, then run `nomad var put` again. The job's
 
 - Rotating `session_secret` signs everyone out.
 - Rotating `mcp_bearer_token` requires updating Open WebUI immediately.
+- Rotating `mcp_plan_write_token` requires updating the authorized Open WebUI connection immediately.
 - Rotate Plaid/Duo credentials in their provider consoles first, then update
   Nomad.
 - Never print variable contents into CI logs or ticket attachments.

@@ -120,6 +120,7 @@ job "money" {
           DUO_ADMIN_EMAILS={{ .duo_admin_emails | toJSON }}
           SESSION_SECRET={{ .session_secret | toJSON }}
           MCP_BEARER_TOKEN={{ .mcp_bearer_token | toJSON }}
+          MCP_PLAN_WRITE_TOKEN={{ .mcp_plan_write_token | toJSON }}
           LM_STUDIO_BASE_URL={{ .lm_studio_base_url | toJSON }}
           LM_STUDIO_MODEL={{ .lm_studio_model | toJSON }}
           LM_STUDIO_API_KEY={{ .lm_studio_api_key | toJSON }}

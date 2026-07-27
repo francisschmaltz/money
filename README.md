@@ -1,6 +1,6 @@
 # Money
 
-Money is a shared personal-finance dashboard and read-only MCP server for
+Money is a shared personal-finance dashboard and scoped MCP server for
 `money.example.com`. It imports accounts through Plaid and Apple Card CSV,
 stores normalized finance data in PostgreSQL, produces deterministic insights,
 and gives Open WebUI structured results that compatible clients can render as native
@@ -35,7 +35,7 @@ Redis, GraphQL, or frontend framework hiding under the couch.
 - Duo OIDC login. Every allowlisted user sees the same workspace; only admins
   may connect institutions or change shared finance data. Each member may
   manage only their own manually tracked credit-score sources.
-- Ten read-only MCP tools at `POST /mcp`, protected by a separate bearer token.
+- Fourteen read tools plus seven audited planning-write MCP tools at `POST /mcp`. Read and `plan:write` credentials are separate.
 - Optional LM Studio narratives generated only from precomputed findings.
   Balances, metrics, MCP data, and detector decisions never come from the model.
 
@@ -177,7 +177,8 @@ and uses the `sso-*.sso.duosecurity.com/oidc/...` host/path. See Duo's
 ## MCP
 
 The public MCP endpoint is `https://money.example.com/mcp`. Browser OIDC
-sessions do not authorize it; MCP uses `MCP_BEARER_TOKEN`.
+sessions do not authorize it. `MCP_BEARER_TOKEN` discovers read tools only;
+the distinct `MCP_PLAN_WRITE_TOKEN` also discovers audited planning writes.
 
 The Open WebUI connection ID is **`money`** and the model tool attachment ID is
 **`server:mcp:money`**. See [Open WebUI setup](docs/open-webui.md) for

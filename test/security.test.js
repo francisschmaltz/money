@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { safeLocalReturnTo } from "../app/auth.js";
-import { allowedHost, bearerAuth, timingSafeStringEqual } from "../app/security.js";
+import {
+  allowedHost,
+  bearerAuth,
+  scopedBearerAuth,
+  timingSafeStringEqual,
+} from "../app/security.js";
 
 function runMiddleware(middleware, headers = {}) {
   const normalized = Object.fromEntries(
@@ -19,6 +24,7 @@ function runMiddleware(middleware, headers = {}) {
       return normalized[name.toLowerCase()];
     },
   };
+  state.request = request;
   const response = {
     status(value) {
       state.status = value;
@@ -55,6 +61,30 @@ test("bearer middleware rejects missing and accepts valid credentials", () => {
     authorization: "Bearer secret",
   });
   assert.equal(accepted.nextCalled, true);
+});
+
+test("scoped MCP credentials cannot elevate when read and write tokens collide", () => {
+  const scoped = scopedBearerAuth({
+    readToken: "read-secret",
+    planWriteToken: "write-secret",
+  });
+  const read = runMiddleware(scoped, {
+    authorization: "Bearer read-secret",
+  });
+  const write = runMiddleware(scoped, {
+    authorization: "Bearer write-secret",
+  });
+  assert.equal(read.request.mcpScope, "read");
+  assert.equal(write.request.mcpScope, "plan:write");
+
+  const collision = runMiddleware(
+    scopedBearerAuth({
+      readToken: "same-secret",
+      planWriteToken: "same-secret",
+    }),
+    { authorization: "Bearer same-secret" },
+  );
+  assert.equal(collision.request.mcpScope, "read");
 });
 
 test("host allowlist accepts explicit host and rejects other hosts", () => {

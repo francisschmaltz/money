@@ -165,6 +165,7 @@ export function loadConfig(environment = process.env, argv = process.argv.slice(
     },
     mcp: {
       bearerToken: environment.MCP_BEARER_TOKEN || "",
+      planWriteToken: environment.MCP_PLAN_WRITE_TOKEN || "",
       allowedHosts: csv(environment.MCP_ALLOWED_HOSTS).length
         ? csv(environment.MCP_ALLOWED_HOSTS)
         : [new URL(publicBaseUrl).host.toLowerCase()],
@@ -210,6 +211,16 @@ export function readiness(config) {
     if (!config.plaid.clientId) failures.push("PLAID_CLIENT_ID");
     if (!config.plaid.secret) failures.push("PLAID_SECRET");
     if (!config.mcp.bearerToken) failures.push("MCP_BEARER_TOKEN");
+    if (!config.mcp.planWriteToken) {
+      failures.push("MCP_PLAN_WRITE_TOKEN");
+    }
+    if (
+      config.mcp.bearerToken &&
+      config.mcp.planWriteToken &&
+      config.mcp.bearerToken === config.mcp.planWriteToken
+    ) {
+      failures.push("MCP_PLAN_WRITE_TOKEN_DISTINCT");
+    }
   }
 
   return { ready: failures.length === 0, failures };

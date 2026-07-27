@@ -596,6 +596,7 @@ export function formatMoney(value, { sign = false } = {}) {
 function pageMeta(pathname) {
   const pages = {
     "/": ["Dashboard", "A clear view of what changed and what deserves attention."],
+    "/plan": ["Plan", "Turn today’s balances into decisions the family can actually make."],
     "/insights": ["Insights", "What to change next—and the evidence behind it."],
     "/transactions": ["Transactions", "Every account, charge, deposit, and adjustment in one ledger."],
     "/recurring": ["Recurring", "Subscriptions, bills, and the charges quietly becoming habits."],
@@ -632,6 +633,7 @@ export function createWebRouter({
   requireAuth = (_req, _res, next) => next(),
   requireAdmin = (_req, _res, next) => next(),
   financeService = null,
+  planningService = null,
   demoMode = false,
 } = {}) {
   const router = express.Router();
@@ -682,15 +684,46 @@ export function createWebRouter({
 
   async function renderPage(req, res, view) {
     const [pageTitle, pageDescription] = pageMeta(req.path);
-    const serviceModel = demoMode
-      ? await demoPageModel(
-          view,
-          req.query,
-          demo,
-          financeService,
-        )
-      : await financeService?.getPageData?.(view, req);
-    if (!demoMode) assertPageModel(view, serviceModel);
+    const planning =
+      (view === "dashboard" || view === "plan") &&
+      typeof planningService?.getPlanningOverview === "function"
+        ? await planningService.getPlanningOverview({
+            month_on:
+              /^\d{4}-\d{2}$/.test(String(req.query.month ?? ""))
+                ? `${req.query.month}-01`
+                : req.query.month,
+          })
+        : null;
+    const serviceModel =
+      view === "plan"
+        ? planning
+        : demoMode
+          ? await demoPageModel(
+              view,
+              req.query,
+              demo,
+              financeService,
+            )
+          : await financeService?.getPageData?.(view, req);
+    if (!demoMode && view !== "plan") {
+      assertPageModel(view, serviceModel);
+    }
+    if (view === "plan" && !serviceModel) {
+      const error = new Error("Planning is unavailable.");
+      error.statusCode = 503;
+      error.expose = true;
+      throw error;
+    }
+    if (
+      view === "transactions" &&
+      serviceModel?.selectedTransaction?.id &&
+      typeof planningService?.getTransactionSplit === "function"
+    ) {
+      const split = await planningService.getTransactionSplit({
+        transaction_id: serviceModel.selectedTransaction.id,
+      });
+      serviceModel.selectedTransactionSplits = split.lines;
+    }
     if (view === "dashboard" && serviceModel?.hasAccounts === false) {
       res.render("states/empty", {
         ...demo,
@@ -703,6 +736,7 @@ export function createWebRouter({
     res.render(view, {
       ...(demoMode ? demo : {}),
       ...(serviceModel || {}),
+      planning,
       viewer: viewerFromRequest(
         req,
         serviceModel?.viewer ||
@@ -735,6 +769,7 @@ export function createWebRouter({
   }));
 
   router.get("/", requireAuth, (req, res, next) => renderPage(req, res, "dashboard").catch(next));
+  router.get("/plan", requireAuth, (req, res, next) => renderPage(req, res, "plan").catch(next));
   router.get("/insights", requireAuth, (req, res, next) => renderPage(req, res, "insights").catch(next));
   router.get("/transactions", requireAuth, (req, res, next) => renderPage(req, res, "transactions").catch(next));
   router.get("/recurring", requireAuth, (req, res, next) => renderPage(req, res, "recurring").catch(next));

@@ -96,6 +96,7 @@ test("production readiness reports every missing auth and service secret", () =>
       "PLAID_CLIENT_ID",
       "PLAID_SECRET",
       "MCP_BEARER_TOKEN",
+      "MCP_PLAN_WRITE_TOKEN",
     ],
   });
 });
@@ -125,6 +126,7 @@ test("production readiness cannot bypass service secrets with a demo flag", () =
     "PLAID_CLIENT_ID",
     "PLAID_SECRET",
     "MCP_BEARER_TOKEN",
+    "MCP_PLAN_WRITE_TOKEN",
   ]);
 });
 

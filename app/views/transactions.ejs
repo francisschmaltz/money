@@ -53,6 +53,45 @@
               Clean up name, category &amp; tags <i class="ph ph-arrow-up-right" aria-hidden="true"></i>
             </a>
           <% } %>
+          <% if (selectedTransaction.status !== "pending") {
+            const absoluteMinor = Math.abs(selectedTransaction.amount.amount_minor);
+            const firstHalf = Math.floor(absoluteMinor / 2);
+            const secondHalf = absoluteMinor - firstHalf;
+            const splitRows =
+              typeof selectedTransactionSplits !== "undefined" &&
+              selectedTransactionSplits.length >= 2
+                ? selectedTransactionSplits.map((line) => [
+                    Math.abs(line.amount_minor),
+                    line.category,
+                  ])
+                : [
+                    [firstHalf, selectedTransaction.category],
+                    [secondHalf, "Other"],
+                  ];
+          %>
+            <details class="transaction-split-editor">
+              <summary>Split this transaction</summary>
+              <form
+                data-plan-form
+                data-transaction-split
+                data-source-amount="<%= selectedTransaction.amount.amount_minor %>"
+                data-endpoint="/api/v1/transactions/<%= encodeURIComponent(selectedTransaction.id) %>/splits"
+                data-method="PUT"
+              >
+                <% splitRows.forEach(([amount, category], index) => { %>
+                  <div data-split-line>
+                    <label>Category <select data-split-category><% categories.forEach((option) => { %><option value="<%= option.label %>" <%= option.label === category ? "selected" : "" %>><%= option.label %></option><% }) %></select></label>
+                    <label>Amount <span class="money-input"><span>$</span><input data-split-amount inputmode="decimal" value="<%= (amount / 100).toFixed(2) %>" aria-label="Split <%= index + 1 %> amount"></span></label>
+                  </div>
+                <% }) %>
+                <div class="selected-detail__actions">
+                  <button class="button button--secondary" type="submit">Save split</button>
+                  <button class="button button--ghost" type="submit" data-clear-split>Clear split</button>
+                  <span class="form-status" data-plan-status aria-live="polite"></span>
+                </div>
+              </form>
+            </details>
+          <% } %>
         </div>
         <strong><%= formatMoney(selectedTransaction.amount) %></strong>
         <a class="icon-button" href="/transactions" aria-label="Close transaction details"><i class="ph ph-x"></i></a>

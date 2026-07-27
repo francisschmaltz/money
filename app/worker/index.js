@@ -4,6 +4,7 @@ import {
   createPgPool,
   PgFinanceRepository,
   PgJobQueue,
+  PgPlanningRepository,
   PgPlaidSecretRepository,
 } from "../db/index.js";
 import { createPlaidProvider } from "../providers/index.js";
@@ -12,6 +13,7 @@ import {
   LmStudioNarrativeService,
   RecurringService,
   createPlaidSyncService,
+  createPlanningService,
 } from "../services/index.js";
 import {
   FinanceWorker,
@@ -38,6 +40,7 @@ export async function startFinanceWorker(
     applicationName: "money-worker",
   });
   const repository = new PgFinanceRepository(pool);
+  const planningRepository = new PgPlanningRepository(pool);
   const secretRepository = new PgPlaidSecretRepository(pool);
   const queue = new PgJobQueue(pool);
   const provider = createPlaidProvider({
@@ -63,12 +66,18 @@ export async function startFinanceWorker(
     narrativeService,
     baseUrl: config.mcp.cardBaseUrl,
   });
+  const planningService = createPlanningService({
+    repository: planningRepository,
+    financeRepository: repository,
+    baseUrl: config.mcp.cardBaseUrl,
+  });
   const worker = createFinanceWorker({
     queue,
     repository,
     plaidSyncService,
     recurringService,
     insightService,
+    planningService,
     pollIntervalMs: config.worker.pollIntervalMs,
   });
   await worker.start();

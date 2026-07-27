@@ -16,6 +16,7 @@
     "duo_admin_emails": "REPLACE_ADMIN_EMAIL@example.com",
     "session_secret": "REPLACE_WITH_AT_LEAST_32_RANDOM_BYTES",
     "mcp_bearer_token": "REPLACE_WITH_AT_LEAST_32_RANDOM_BYTES",
+    "mcp_plan_write_token": "REPLACE_WITH_A_DIFFERENT_32_BYTE_RANDOM_VALUE",
     "lm_studio_base_url": "",
     "lm_studio_model": "",
     "lm_studio_api_key": ""
