@@ -557,6 +557,13 @@ export function buildBudgetStatus({
               0,
             ),
         );
+    const childPlannedTotal = (
+      selectedChildren.get(categoryId) ?? []
+    ).reduce(
+      (sum, childId) =>
+        sum + Number(planById.get(childId)?.amount_minor ?? 0),
+      0,
+    );
     const childNodes = (selectedChildren.get(categoryId) ?? [])
       .sort((left, right) =>
         compareBudgetCategories(
@@ -579,6 +586,11 @@ export function buildBudgetStatus({
         ? "informational"
         : "tracked",
       planned: money(planned, currency),
+      child_planned_total: money(childPlannedTotal, currency),
+      unallocated_planned: money(
+        Math.max(0, planned - childPlannedTotal),
+        currency,
+      ),
       actual: money(actual, currency),
       direct_actual: money(
         directActualById.get(categoryId) ?? 0,

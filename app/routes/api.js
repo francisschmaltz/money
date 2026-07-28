@@ -551,6 +551,22 @@ export function createApiRouter({
     },
   );
 
+  router.post(
+    "/api/v1/plan/budget/batch",
+    requireCsrf,
+    (request, response, next) => {
+      invokePlanWrite(
+        planningService,
+        "set_category_budgets",
+        "setCategoryBudgets",
+        request.body ?? {},
+        request.user,
+        response,
+        next,
+      );
+    },
+  );
+
   router.put(
     "/api/v1/plan/budget/:categoryId",
     requireCsrf,

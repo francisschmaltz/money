@@ -6299,7 +6299,7 @@ kbd {
   font-weight: 650;
 }
 
-.plan-inline-form input,
+.plan-inline-form input:not([type="checkbox"]),
 .plan-inline-form select,
 .plan-form-grid input,
 .plan-form-grid select {
@@ -6310,6 +6310,188 @@ kbd {
   border-radius: 9px;
   background: var(--surface);
   color: var(--ink);
+}
+
+.budget-config {
+  display: grid;
+  gap: 10px;
+  margin: 18px 0;
+}
+
+.plan-disclosure {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.plan-disclosure > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 16px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.plan-disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+
+.plan-disclosure > summary > span {
+  display: grid;
+  gap: 2px;
+}
+
+.plan-disclosure > summary strong {
+  font-size: 0.9rem;
+}
+
+.plan-disclosure > summary small,
+.budget-add-row__category small,
+.income-category-row small {
+  color: var(--ink-soft);
+  font-size: 0.72rem;
+  font-weight: 500;
+}
+
+.plan-disclosure > summary > i {
+  color: var(--ink-soft);
+  transition: transform 160ms ease;
+}
+
+.plan-disclosure[open] > summary {
+  border-bottom: 1px solid var(--line);
+}
+
+.plan-disclosure[open] > summary > i {
+  transform: rotate(180deg);
+}
+
+.plan-disclosure__body {
+  padding: 14px 16px 16px;
+}
+
+.budget-category-picker,
+.income-category-list {
+  display: grid;
+  gap: 0;
+  padding: 0;
+  margin: 0;
+  border: 0;
+}
+
+.budget-add-row {
+  display: grid;
+  grid-template-columns: minmax(210px, 1fr) minmax(130px, 0.45fr) minmax(130px, 0.4fr);
+  align-items: center;
+  gap: 12px;
+  min-height: 54px;
+  padding: 7px 0 7px calc(var(--budget-depth, 0) * 20px);
+  border-bottom: 1px solid var(--line);
+}
+
+.budget-add-row:last-child,
+.income-category-row:last-child {
+  border-bottom: 0;
+}
+
+.budget-add-row__category,
+.income-category-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 9px;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.budget-add-row__category > span,
+.income-category-row > span {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+
+.budget-add-row__category input,
+.income-category-row input {
+  width: 18px;
+  height: 18px;
+  min-height: 0;
+  flex: 0 0 18px;
+  padding: 0;
+  margin: 0;
+  border-radius: 4px;
+  accent-color: var(--green-dark);
+}
+
+.budget-add-row .money-input {
+  display: flex;
+  align-items: center;
+  min-height: 38px;
+  padding-left: 9px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface);
+}
+
+.budget-add-row .money-input input {
+  width: 100%;
+  min-width: 0;
+  min-height: 36px;
+  padding: 7px 9px 7px 5px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+}
+
+.budget-add-row select {
+  width: 100%;
+  min-height: 38px;
+  padding: 7px 28px 7px 9px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.budget-add-row input:disabled,
+.budget-add-row select:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+}
+
+.income-category-list {
+  max-height: min(420px, 55vh);
+  overflow-y: auto;
+}
+
+.income-category-row {
+  min-height: 44px;
+  padding: 7px 4px 7px calc(4px + var(--budget-depth, 0) * 20px);
+  border-bottom: 1px solid var(--line);
+}
+
+.plan-disclosure__actions {
+  display: flex;
+  min-height: 40px;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  padding-top: 14px;
+}
+
+.plan-disclosure__actions .form-status {
+  margin-right: auto;
+}
+
+.budget-config__manage-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 12px;
+  font-size: 0.76rem;
 }
 
 .plan-inline-form .money-input,
@@ -6967,6 +7149,30 @@ kbd {
   .transaction-split-editor [data-split-line],
   .transaction-goal-spend-form {
     grid-template-columns: 1fr;
+  }
+
+  .budget-add-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+    padding-block: 11px;
+  }
+
+  .budget-add-row__amount,
+  .budget-add-row > label:last-child {
+    padding-left: 27px;
+  }
+
+  .plan-disclosure__actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .plan-disclosure__actions .form-status {
+    margin-right: 0;
+  }
+
+  .plan-disclosure__actions .button {
+    width: 100%;
   }
 
   .plan-dialog__footer {

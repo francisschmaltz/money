@@ -39,6 +39,7 @@ const IDEMPOTENT_WRITE_METHODS = Object.freeze({
   set_goal_funding_schedule: "setGoalFundingSchedule",
   finish_finance_goal: "finishFinanceGoal",
   set_category_budget: "setCategoryBudget",
+  set_category_budgets: "setCategoryBudgets",
   clear_category_budget: "clearCategoryBudget",
   set_budget_income_categories: "setBudgetIncomeCategories",
   split_transaction: "splitTransaction",
@@ -289,7 +290,13 @@ export class PlanningService {
         0;
     }
     if (include_available_categories) {
-      data.available_categories = categories;
+      data.available_categories = categories.map((category) => ({
+        ...category,
+        budget_version:
+          versionByCategory.get(category.id) ??
+          versionByCategory.get(category.path) ??
+          0,
+      }));
     }
     data.settings_version = budgetSettings.version ?? 0;
     data.is_current_month = month === currentMonth;
@@ -1099,132 +1106,303 @@ export class PlanningService {
   }
 
   async setCategoryBudget(input = {}, actorInput = null) {
-    const actor = normalizeActor(actorInput);
-    const expectedVersion = nonnegativeMinor(
-      input.expected_version,
-      "expected_version",
+    return this.#setCategoryBudgets(
+      [input],
+      actorInput,
+      "Budget saved",
     );
+  }
+
+  async setCategoryBudgets(input = {}, actorInput = null) {
+    if (
+      !Array.isArray(input.lines) ||
+      input.lines.length < 1 ||
+      input.lines.length > 100
+    ) {
+      throw badRequest("lines must contain between 1 and 100 budgets.");
+    }
+    return this.#setCategoryBudgets(
+      input.lines,
+      actorInput,
+      input.lines.length === 1 ? "Budget saved" : "Budgets saved",
+    );
+  }
+
+  async #setCategoryBudgets(lines, actorInput, title) {
+    const actor = normalizeActor(actorInput);
     const timeZone = await this.#repository.getWorkspaceTimezone(
       this.#workspaceId,
     );
     const currentMonth = monthStart(
       workspaceDate(this.#now(), timeZone),
     );
-    const requestedCategory =
-      input.category_id ??
-      requiredText(input.category, 500, "category");
-    const resolvedCategory =
-      typeof this.#financeRepository.resolveSpendingCategory === "function"
-        ? await this.#financeRepository.resolveSpendingCategory(
-            this.#workspaceId,
-            requestedCategory,
+    const mutate = async () => {
+      const currentBudget = await this.getBudgetStatus({
+        include_available_categories: true,
+      });
+      const categories = [
+        ...(currentBudget.data.available_categories ?? []),
+      ];
+      const categoriesById = new Map(
+        categories.map((category) => [category.id, category]),
+      );
+      const currentById = new Map(
+        currentBudget.data.lines.map((line) => [
+          line.category_id,
+          line,
+        ]),
+      );
+      const incomeSubtreeIds = categorySubtreeIds(
+        categories,
+        currentBudget.data.income_category_ids,
+      );
+      const requestedById = new Map();
+
+      for (const line of lines) {
+        const requestedCategory =
+          line.category_id ??
+          requiredText(line.category, 500, "category");
+        let resolvedCategory =
+          categoriesById.get(requestedCategory) ??
+          categories.find(
+            (category) =>
+              category.path === requestedCategory ||
+              category.name === requestedCategory,
+          );
+        if (
+          !resolvedCategory &&
+          typeof this.#financeRepository.resolveSpendingCategory ===
+            "function"
+        ) {
+          resolvedCategory =
+            await this.#financeRepository.resolveSpendingCategory(
+              this.#workspaceId,
+              requestedCategory,
+            );
+        }
+        if (
+          !resolvedCategory &&
+          !categories.length &&
+          typeof line.category === "string"
+        ) {
+          resolvedCategory = {
+            id: requestedCategory,
+            name: requestedCategory,
+            path: requestedCategory,
+            parent_category_id: null,
+            budget_version: 0,
+          };
+        }
+        if (!resolvedCategory) {
+          throw notFound("Budget category not found.");
+        }
+        if (!categoriesById.has(resolvedCategory.id)) {
+          categories.push(resolvedCategory);
+          categoriesById.set(resolvedCategory.id, resolvedCategory);
+        }
+        if (requestedById.has(resolvedCategory.id)) {
+          throw badRequest("A budget category can only appear once.");
+        }
+        const requestedSubtreeIds = categorySubtreeIds(
+          categories,
+          [resolvedCategory.id],
+        );
+        if (
+          incomeSubtreeIds.has(resolvedCategory.id) ||
+          currentBudget.data.income_category_ids.some(
+            (incomeCategoryId) =>
+              requestedSubtreeIds.has(incomeCategoryId),
           )
-        : null;
-    if (
-      !resolvedCategory &&
-      typeof this.#financeRepository.resolveSpendingCategory ===
-        "function"
-    ) {
-      throw notFound("Budget category not found.");
-    }
-    const budgetCategory = resolvedCategory ?? {
-      id: input.category_id ?? requestedCategory,
-      path: requestedCategory,
-      parent_category_id: null,
+        ) {
+          throw badRequest(
+            "An income category cannot also be an expense budget.",
+          );
+        }
+        const expectedVersion = nonnegativeMinor(
+          line.expected_version,
+          "expected_version",
+        );
+        const currentVersion = Number(
+          currentById.get(resolvedCategory.id)?.version ??
+            resolvedCategory.budget_version ??
+            0,
+        );
+        if (expectedVersion !== currentVersion) {
+          const error = conflict(
+            "The planning record changed; refresh and try again.",
+          );
+          error.current =
+            currentById.get(resolvedCategory.id) ?? {
+              category_id: resolvedCategory.id,
+              version: currentVersion,
+            };
+          throw error;
+        }
+        requestedById.set(resolvedCategory.id, {
+          category: resolvedCategory,
+          amountMinor: nonnegativeMinor(
+            line.amount_minor,
+            "amount_minor",
+          ),
+          trackingMode: enumValue(
+            line.tracking_mode ?? "tracked",
+            ["tracked", "informational"],
+            "tracking_mode",
+          ),
+          expectedVersion,
+        });
+      }
+
+      const desiredById = new Map(
+        currentBudget.data.lines.map((line) => [
+          line.category_id,
+          {
+            category: categoriesById.get(line.category_id) ?? {
+              id: line.category_id,
+              path: line.category,
+              name: line.name ?? line.category,
+              parent_category_id: line.parent_category_id,
+              budget_version: line.version,
+            },
+            amountMinor: line.planned.amount_minor,
+            trackingMode: line.tracking_mode,
+            expectedVersion: line.version,
+          },
+        ]),
+      );
+      for (const [categoryId, requested] of requestedById) {
+        desiredById.set(categoryId, requested);
+      }
+
+      const ancestorIds = new Set();
+      for (const requested of requestedById.values()) {
+        let parentId = requested.category.parent_category_id;
+        const visited = new Set();
+        while (parentId && !visited.has(parentId)) {
+          visited.add(parentId);
+          const parent = categoriesById.get(parentId);
+          if (!parent) {
+            throw badRequest("Budget category hierarchy is incomplete.");
+          }
+          ancestorIds.add(parentId);
+          if (!desiredById.has(parentId)) {
+            desiredById.set(parentId, {
+              category: parent,
+              amountMinor: 0,
+              trackingMode: "tracked",
+              expectedVersion: Number(parent.budget_version ?? 0),
+            });
+          }
+          parentId = parent.parent_category_id;
+        }
+      }
+
+      const parentIdsToEvaluate = new Set(ancestorIds);
+      for (const categoryId of requestedById.keys()) {
+        if (
+          [...desiredById.values()].some(
+            (entry) =>
+              entry.category.parent_category_id === categoryId,
+          )
+        ) {
+          parentIdsToEvaluate.add(categoryId);
+        }
+      }
+      const orderedAncestors = [...parentIdsToEvaluate].sort(
+        (left, right) =>
+          categoryDepth(categoriesById, right) -
+          categoryDepth(categoriesById, left),
+      );
+      const adjustedParentIds = [];
+      for (const parentId of orderedAncestors) {
+        const parent = desiredById.get(parentId);
+        const childTotal = [...desiredById.values()]
+          .filter(
+            (entry) =>
+              entry.category.parent_category_id === parentId,
+          )
+          .reduce((sum, entry) => sum + entry.amountMinor, 0);
+        if (
+          requestedById.has(parentId) &&
+          parent.amountMinor < childTotal
+        ) {
+          throw badRequest(
+            `${parent.category.path} cannot be lower than its ${formatMinorMoney({
+              amount_minor: childTotal,
+              currency: this.#currency,
+            })} child allocation total.`,
+          );
+        }
+        const nextAmount = Math.max(parent.amountMinor, childTotal);
+        if (nextAmount !== parent.amountMinor) {
+          parent.amountMinor = nextAmount;
+          adjustedParentIds.push(parentId);
+        }
+      }
+
+      const writesById = new Map(requestedById);
+      for (const parentId of ancestorIds) {
+        const desired = desiredById.get(parentId);
+        const current = currentById.get(parentId);
+        if (
+          !current ||
+          current.planned.amount_minor !== desired.amountMinor
+        ) {
+          writesById.set(parentId, desired);
+        }
+      }
+
+      const changes = [];
+      for (const [categoryId, write] of writesById) {
+        const changed = await this.#repository.setBudgetLine(
+          this.#workspaceId,
+          {
+            monthOn: currentMonth,
+            effectiveMonthOn: currentMonth,
+            category: write.category.path,
+            categoryId,
+            amountMinor: write.amountMinor,
+            trackingMode: write.trackingMode,
+            scope: "standing",
+            expectedVersion: write.expectedVersion,
+            auditEventId: `audit_${randomUUID()}`,
+          },
+          actor,
+        );
+        assertMutation(changed);
+        changes.push(changed);
+      }
+
+      return { changes, adjustedParentIds };
     };
-    const amountMinor = nonnegativeMinor(
-      input.amount_minor,
-      "amount_minor",
-    );
-    const currentBudget = await this.getBudgetStatus({
+
+    const outcome =
+      typeof this.#repository.withWorkspacePlanningLock === "function"
+        ? await this.#repository.withWorkspacePlanningLock(
+            this.#workspaceId,
+            mutate,
+          )
+        : await mutate();
+    const updatedBudget = await this.getBudgetStatus({
       include_available_categories: true,
     });
-    const currentById = new Map(
-      currentBudget.data.lines.map((line) => [
-        line.category_id,
-        line,
-      ]),
-    );
-    const availableCategories =
-      currentBudget.data.available_categories ?? [];
-    const incomeSubtreeIds = categorySubtreeIds(
-      availableCategories,
-      currentBudget.data.income_category_ids,
-    );
-    const budgetSubtreeIds = categorySubtreeIds(
-      availableCategories,
-      [budgetCategory.id],
-    );
-    if (
-      incomeSubtreeIds.has(budgetCategory.id) ||
-      currentBudget.data.income_category_ids.some((categoryId) =>
-        budgetSubtreeIds.has(categoryId),
-      )
-    ) {
-      throw badRequest(
-        "An income category cannot also be an expense budget.",
-      );
-    }
-    const parentId = budgetCategory.parent_category_id;
-    if (parentId && !currentById.has(parentId)) {
-      throw badRequest(
-        "Add the parent category to the budget before adding this child.",
-      );
-    }
-    const childTotal = currentBudget.data.lines
-      .filter(
-        (line) =>
-          line.parent_category_id === budgetCategory.id,
-      )
-      .reduce(
-        (sum, line) => sum + line.planned.amount_minor,
-        0,
-      );
-    if (childTotal > amountMinor) {
-      throw badRequest(
-        "This budget cannot be lower than its child allocations.",
-      );
-    }
-    if (parentId) {
-      const siblingTotal = currentBudget.data.lines
-        .filter(
-          (line) =>
-            line.parent_category_id === parentId &&
-            line.category_id !== resolvedCategory.id,
-        )
-        .reduce(
-          (sum, line) => sum + line.planned.amount_minor,
-          0,
-        );
-      const parentAmount =
-        currentById.get(parentId).planned.amount_minor;
-      if (siblingTotal + amountMinor > parentAmount) {
-        throw badRequest(
-          "Child allocations cannot exceed the parent budget.",
-        );
-      }
-    }
-    const changed = await this.#repository.setBudgetLine(
-      this.#workspaceId,
-      {
-        monthOn: currentMonth,
-        effectiveMonthOn: currentMonth,
-        category: budgetCategory.path,
-        categoryId: resolvedCategory?.id ?? input.category_id ?? null,
-        amountMinor,
-        trackingMode: enumValue(
-          input.tracking_mode ?? "tracked",
-          ["tracked", "informational"],
-          "tracking_mode",
-        ),
-        scope: "standing",
-        expectedVersion,
-        auditEventId: `audit_${randomUUID()}`,
-      },
-      actor,
-    );
-    assertMutation(changed);
-    return this.#changeResult("Budget saved", changed);
+    const primaryChange = outcome.changes.at(-1) ?? {
+      before: null,
+      after: null,
+      audit_event_id: null,
+    };
+    const response = await this.#changeResult(title, {
+      before: outcome.changes.map((change) => change.before),
+      after: outcome.changes.map((change) => change.after),
+      lines: outcome.changes.map((change) => change.line),
+      adjusted_parent_ids: outcome.adjustedParentIds,
+      audit_event_id: primaryChange.audit_event_id,
+      audit_event_ids: outcome.changes
+        .map((change) => change.audit_event_id)
+        .filter(Boolean),
+    });
+    response.budget = updatedBudget.data;
+    return response;
   }
 
   async clearCategoryBudget(input = {}, actorInput = null) {
@@ -2220,6 +2398,21 @@ function categorySubtreeIds(categories = [], rootIds = []) {
     }
   }
   return result;
+}
+
+function categoryDepth(categoriesById, categoryId) {
+  let depth = 0;
+  let current = categoriesById.get(categoryId);
+  const visited = new Set();
+  while (
+    current?.parent_category_id &&
+    !visited.has(current.parent_category_id)
+  ) {
+    visited.add(current.parent_category_id);
+    depth += 1;
+    current = categoriesById.get(current.parent_category_id);
+  }
+  return depth;
 }
 
 function netIncomeForTransactions(

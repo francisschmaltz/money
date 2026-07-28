@@ -181,14 +181,15 @@ test("the budget is view-only until edit mode is explicit", async () => {
     .expect(200);
 
   assert.match(response.text, /Done<\/a>/);
-  assert.match(response.text, /Add or configure categories/);
+  assert.match(response.text, /Add budget categories/);
+  assert.match(response.text, /Income categories/);
   assert.match(
     response.text,
-    /data-endpoint="\/api\/v1\/plan\/budget"/,
+    /data-endpoint="\/api\/v1\/plan\/budget\/batch"/,
   );
   assert.match(
     response.text,
-    /name="expected_version" value="0"/,
+    /data-budget-version="0"/,
   );
   assert.match(
     response.text,

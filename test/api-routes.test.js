@@ -124,6 +124,49 @@ test("a fresh budget can create its first current standing category from the bro
   ]);
 });
 
+test("the browser can submit one idempotent atomic budget batch", async () => {
+  const calls = [];
+  const app = planningApiApp({
+    executeIdempotentWrite(operation, input, actor) {
+      calls.push({ operation, input, actor });
+      return { saved: true };
+    },
+  });
+  const lines = [
+    {
+      category_id: "category_car",
+      amount_minor: 30_000,
+      tracking_mode: "tracked",
+      expected_version: 0,
+    },
+    {
+      category_id: "category_home",
+      amount_minor: 200_000,
+      tracking_mode: "tracked",
+      expected_version: 2,
+    },
+  ];
+
+  await request(app)
+    .post("/api/v1/plan/budget/batch")
+    .send({
+      lines,
+      idempotency_key: "budget-car-home-2026-08",
+    })
+    .expect(200, { saved: true });
+
+  assert.deepEqual(calls, [
+    {
+      operation: "set_category_budgets",
+      input: {
+        lines,
+        idempotency_key: "budget-car-home-2026-08",
+      },
+      actor: undefined,
+    },
+  ]);
+});
+
 test("transaction goal-spending routes read, spend, and reverse with path-bound IDs", async () => {
   const calls = [];
   const middlewareCalls = [];

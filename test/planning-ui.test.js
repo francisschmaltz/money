@@ -96,7 +96,7 @@ test("the standing budget is view-only by default with linked category status", 
   assert.match(plan, /budget-row--total/);
   assert.match(
     plan,
-    /data-endpoint="\/api\/v1\/plan\/budget"/,
+    /data-endpoint="\/api\/v1\/plan\/budget\/batch"/,
   );
   assert.match(
     plan,
@@ -105,11 +105,14 @@ test("the standing budget is view-only by default with linked category status", 
   assert.match(plan, /Average monthly income/);
   assert.match(plan, /Estimated leftover/);
   assert.match(plan, /Actual leftover/);
-  assert.match(plan, /name="tracking_mode"/);
+  assert.match(plan, /data-budget-add-tracking/);
   assert.match(plan, /data-budget-remove/);
   assert.match(plan, /data-budget-toggle/);
+  assert.match(plan, /data-budget-batch-form/);
+  assert.match(plan, /class="income-category-row"/);
+  assert.match(plan, /child_planned_total/);
   assert.match(plan, /Informational \(inherited\)/);
-  assert.match(plan, /name="category_id"/);
+  assert.match(plan, /data-budget-version/);
   assert.doesNotMatch(
     plan,
     /name="scope"|name="effective_month_on"|budgetEditMonth/,

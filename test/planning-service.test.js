@@ -32,9 +32,11 @@ function fixture() {
   let goalSpends = [];
   const budgetVersions = new Map();
   const budgetLines = new Map();
+  const budgetCategories = [];
   const calls = {
     budgetSnapshots: 0,
     budgetWrite: null,
+    budgetWrites: [],
     planningLocks: 0,
     goalCreate: null,
     goalUpdate: null,
@@ -164,6 +166,7 @@ function fixture() {
     },
     async setBudgetLine(_workspaceId, input) {
       calls.budgetWrite = structuredClone(input);
+      calls.budgetWrites.push(structuredClone(input));
       const currentVersion =
         budgetVersions.get(input.category) ?? 0;
       const before = budgetLines.has(input.category)
@@ -360,6 +363,19 @@ function fixture() {
     ],
   ]);
   const financeRepository = {
+    async listSpendingCategories() {
+      return structuredClone(budgetCategories);
+    },
+    async resolveSpendingCategory(_workspaceId, value) {
+      return structuredClone(
+        budgetCategories.find(
+          (category) =>
+            category.id === value ||
+            category.path === value ||
+            category.name === value,
+        ) ?? null,
+      );
+    },
     async listAccounts() {
       return [
         {
@@ -408,6 +424,9 @@ function fixture() {
     savedSplits,
     calls,
     transactions,
+    budgetCategories,
+    budgetLines,
+    budgetVersions,
   };
 }
 
@@ -924,13 +943,141 @@ test("planning reads stay pure and budget edits update the current standing plan
   );
 });
 
+test("budget batches create and expand missing parents without shrinking them", async () => {
+  const state = fixture();
+  state.budgetCategories.push(
+    {
+      id: "home",
+      name: "Home",
+      path: "Home",
+      parent_category_id: null,
+    },
+    {
+      id: "rent",
+      name: "Rent",
+      path: "Home / Rent",
+      parent_category_id: "home",
+    },
+    {
+      id: "utilities",
+      name: "Utilities",
+      path: "Home / Utilities",
+      parent_category_id: "home",
+    },
+    {
+      id: "car",
+      name: "Car",
+      path: "Car",
+      parent_category_id: null,
+    },
+  );
+  state.budgetLines.set("Home / Utilities", 40_000);
+  state.budgetVersions.set("Home / Utilities", 1);
+
+  const added = await state.service.setCategoryBudgets({
+    lines: [
+      {
+        category_id: "car",
+        amount_minor: 30_000,
+        tracking_mode: "tracked",
+        expected_version: 0,
+      },
+      {
+        category_id: "rent",
+        amount_minor: 180_000,
+        tracking_mode: "tracked",
+        expected_version: 0,
+      },
+    ],
+  });
+  assert.deepEqual(added.changed.adjusted_parent_ids, ["home"]);
+  assert.equal(state.calls.planningLocks, 1);
+  assert.deepEqual(
+    state.calls.budgetWrites.map((write) => [
+      write.categoryId,
+      write.amountMinor,
+    ]),
+    [
+      ["car", 30_000],
+      ["rent", 180_000],
+      ["home", 220_000],
+    ],
+  );
+  let home = added.budget.lines.find(
+    (line) => line.category_id === "home",
+  );
+  let rent = added.budget.lines.find(
+    (line) => line.category_id === "rent",
+  );
+  assert.equal(home.planned.amount_minor, 220_000);
+  assert.equal(home.child_planned_total.amount_minor, 220_000);
+
+  const reduced = await state.service.setCategoryBudget({
+    category_id: "rent",
+    amount_minor: 100_000,
+    tracking_mode: "tracked",
+    expected_version: rent.version,
+  });
+  home = reduced.budget.lines.find(
+    (line) => line.category_id === "home",
+  );
+  assert.equal(home.planned.amount_minor, 220_000);
+  assert.equal(home.child_planned_total.amount_minor, 140_000);
+  assert.equal(home.unallocated_planned.amount_minor, 80_000);
+
+  const writesBeforeRejectedParent = state.calls.budgetWrites.length;
+  await assert.rejects(
+    state.service.setCategoryBudget({
+      category_id: "home",
+      amount_minor: 130_000,
+      tracking_mode: "tracked",
+      expected_version: home.version,
+    }),
+    /cannot be lower than its .*child allocation total/i,
+  );
+  assert.equal(
+    state.calls.budgetWrites.length,
+    writesBeforeRejectedParent,
+  );
+
+  await assert.rejects(
+    state.service.setCategoryBudgets({
+      lines: [
+        {
+          category_id: "car",
+          amount_minor: 35_000,
+          tracking_mode: "tracked",
+          expected_version: 1,
+        },
+        {
+          category_id: "rent",
+          amount_minor: 110_000,
+          tracking_mode: "tracked",
+          expected_version: 0,
+        },
+      ],
+    }),
+    (error) => error.statusCode === 409,
+  );
+  assert.equal(
+    state.calls.budgetWrites.length,
+    writesBeforeRejectedParent,
+  );
+});
+
 test("budget mutations enforce income subtrees and explicit cascade confirmation", async () => {
   const categories = [
     {
+      id: "banking",
+      name: "Banking",
+      path: "Banking",
+      parent_category_id: null,
+    },
+    {
       id: "income",
       name: "Income",
-      path: "Income",
-      parent_category_id: null,
+      path: "Banking / Income",
+      parent_category_id: "banking",
     },
     {
       id: "salary",
@@ -1025,6 +1172,14 @@ test("budget mutations enforce income subtrees and explicit cascade confirmation
   await assert.rejects(
     service.setCategoryBudget({
       category_id: "salary",
+      amount_minor: 1_000,
+      expected_version: 0,
+    }),
+    /income category cannot also be an expense budget/i,
+  );
+  await assert.rejects(
+    service.setCategoryBudget({
+      category_id: "banking",
       amount_minor: 1_000,
       expected_version: 0,
     }),

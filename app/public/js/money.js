@@ -4237,6 +4237,25 @@
 
   function planningForms() {
     const forms = document.querySelectorAll("[data-plan-form]");
+    const disclosureStateKey = "money.plan.save-state.v1";
+    try {
+      const savedState = JSON.parse(
+        window.sessionStorage.getItem(disclosureStateKey) || "null",
+      );
+      if (savedState?.disclosure) {
+        const disclosure = document.querySelector(
+          `[data-plan-disclosure="${CSS.escape(savedState.disclosure)}"]`,
+        );
+        if (disclosure instanceof HTMLDetailsElement) {
+          disclosure.open = true;
+          const status = disclosure.querySelector("[data-plan-status]");
+          if (status) status.textContent = savedState.message || "Saved";
+        }
+      }
+      window.sessionStorage.removeItem(disclosureStateKey);
+    } catch {
+      // Saving still works when session storage is unavailable.
+    }
     const budgetRows = [
       ...document.querySelectorAll("[data-budget-category-id]"),
     ];
@@ -4377,6 +4396,34 @@
           idempotency_key: idempotencyKeyFor(form),
         };
       }
+      if (form.dataset.budgetBatchForm !== undefined) {
+        const selectedRows = [
+          ...form.querySelectorAll("[data-budget-add-row]"),
+        ].filter(
+          (row) => row.querySelector("[data-budget-add-toggle]")?.checked,
+        );
+        if (!selectedRows.length) {
+          throw new Error("Select at least one budget category.");
+        }
+        return {
+          lines: selectedRows.map((row) => {
+            const toggle = row.querySelector("[data-budget-add-toggle]");
+            return {
+              category_id: toggle.value,
+              amount_minor: minorUnits(
+                row.querySelector("[data-budget-add-amount]").value,
+              ),
+              tracking_mode: row.querySelector(
+                "[data-budget-add-tracking]",
+              ).value,
+              expected_version: Number(
+                toggle.dataset.budgetVersion || 0,
+              ),
+            };
+          }),
+          idempotency_key: idempotencyKeyFor(form),
+        };
+      }
       const payload = Object.fromEntries(new FormData(form));
       if (form.dataset.budgetIncomeForm !== undefined) {
         payload.income_category_ids = [
@@ -4402,6 +4449,64 @@
       }
       return payload;
     };
+
+    document
+      .querySelectorAll("[data-budget-batch-form]")
+      .forEach((form) => {
+        const rows = [
+          ...form.querySelectorAll("[data-budget-add-row]"),
+        ];
+        const submit = form.querySelector("[data-budget-batch-submit]");
+        const update = () => {
+          let selectedCount = 0;
+          for (const row of rows) {
+            const toggle = row.querySelector("[data-budget-add-toggle]");
+            const amount = row.querySelector("[data-budget-add-amount]");
+            const tracking = row.querySelector(
+              "[data-budget-add-tracking]",
+            );
+            const selected = toggle?.checked === true;
+            if (selected) selectedCount += 1;
+            if (amount) {
+              amount.disabled = !selected;
+              amount.required = selected;
+            }
+            if (tracking) tracking.disabled = !selected;
+          }
+          if (submit) {
+            submit.disabled = selectedCount === 0;
+            submit.textContent = selectedCount
+              ? `Add ${selectedCount} categor${selectedCount === 1 ? "y" : "ies"}`
+              : "Add selected";
+          }
+        };
+        rows.forEach((row) =>
+          row
+            .querySelector("[data-budget-add-toggle]")
+            ?.addEventListener("change", update),
+        );
+        update();
+      });
+
+    const incomeCategoryCount = document.querySelector(
+      "[data-income-category-count]",
+    );
+    const incomeForm = document.querySelector(
+      "[data-budget-income-form]",
+    );
+    const updateIncomeCount = () => {
+      if (!incomeCategoryCount || !incomeForm) return;
+      const count = incomeForm.querySelectorAll(
+        'input[name="income_category_ids"]:checked',
+      ).length;
+      incomeCategoryCount.textContent = `${count} selected`;
+    };
+    incomeForm
+      ?.querySelectorAll('input[name="income_category_ids"]')
+      .forEach((input) =>
+        input.addEventListener("change", updateIncomeCount),
+      );
+    updateIncomeCount();
 
     document
       .querySelectorAll("[data-goal-spend-form]")
@@ -4443,6 +4548,7 @@
     forms.forEach((form) => {
       form.addEventListener("submit", async (event) => {
         event.preventDefault();
+        if (!form.reportValidity()) return;
         const status = form.querySelector("[data-plan-status]");
         const submitter = event.submitter;
         if (submitter) submitter.disabled = true;
@@ -4464,6 +4570,20 @@
           }
           if (status) status.textContent = body.title || "Saved";
           delete form.dataset.idempotencyKey;
+          const disclosure = form.closest("[data-plan-disclosure]");
+          if (disclosure?.dataset.planDisclosure) {
+            try {
+              window.sessionStorage.setItem(
+                disclosureStateKey,
+                JSON.stringify({
+                  disclosure: disclosure.dataset.planDisclosure,
+                  message: body.title || "Saved",
+                }),
+              );
+            } catch {
+              // The inline status still confirms the save.
+            }
+          }
           const reloadDelay = form.dataset.endpoint.includes("/budget")
             ? 650
             : 250;

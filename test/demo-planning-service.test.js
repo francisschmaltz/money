@@ -103,6 +103,114 @@ test("demo goal reads validate and scope history pagination", async () => {
   }
 });
 
+test("budget batches add siblings together, expand parents, and preserve headroom", async () => {
+  const service = createDemoPlanningService();
+  const initial = await service.getBudgetStatus({
+    include_available_categories: true,
+  });
+  const versionFor = (name, budget = initial.data) =>
+    budget.available_categories.find(
+      (category) => category.name === name,
+    ).budget_version;
+
+  const added = await service.setCategoryBudgets({
+    lines: [
+      {
+        category_id: "category_car",
+        amount_minor: 30_000,
+        tracking_mode: "tracked",
+        expected_version: versionFor("Car"),
+      },
+      {
+        category_id: "category_rent",
+        amount_minor: 180_000,
+        tracking_mode: "tracked",
+        expected_version: versionFor("Rent"),
+      },
+    ],
+  });
+  const home = added.budget.lines.find(
+    (line) => line.category_id === "category_home",
+  );
+  assert.deepEqual(
+    added.changed.adjusted_parent_ids,
+    ["category_home"],
+  );
+  assert.equal(home.planned.amount_minor, 220_000);
+  assert.equal(home.child_planned_total.amount_minor, 220_000);
+  assert.equal(home.unallocated_planned.amount_minor, 0);
+
+  const rent = added.budget.lines.find(
+    (line) => line.category_id === "category_rent",
+  );
+  const reduced = await service.setCategoryBudget({
+    category_id: "category_rent",
+    amount_minor: 100_000,
+    tracking_mode: "tracked",
+    expected_version: rent.version,
+  });
+  const reducedHome = reduced.budget.lines.find(
+    (line) => line.category_id === "category_home",
+  );
+  assert.equal(reducedHome.planned.amount_minor, 220_000);
+  assert.equal(reducedHome.child_planned_total.amount_minor, 140_000);
+  assert.equal(reducedHome.unallocated_planned.amount_minor, 80_000);
+
+  await assert.rejects(
+    service.setCategoryBudget({
+      category_id: "category_home",
+      amount_minor: 130_000,
+      tracking_mode: "tracked",
+      expected_version: reducedHome.version,
+    }),
+    /cannot be lower than its child allocation total/i,
+  );
+});
+
+test("removed Home exposes its real version when re-added", async () => {
+  const service = createDemoPlanningService();
+  const initial = await service.getBudgetStatus({
+    include_available_categories: true,
+  });
+  const homeVersion = initial.data.available_categories.find(
+    (category) => category.name === "Home",
+  ).budget_version;
+  await service.setCategoryBudget({
+    category_id: "category_home",
+    amount_minor: 50_000,
+    expected_version: homeVersion,
+  });
+  await service.clearCategoryBudget({
+    category_id: "category_home",
+    expected_version: 1,
+    confirm_descendants: true,
+  });
+
+  const removed = await service.getBudgetStatus({
+    include_available_categories: true,
+  });
+  const removedHome = removed.data.available_categories.find(
+    (category) => category.name === "Home",
+  );
+  assert.equal(removedHome.budget_version, 2);
+  const readded = await service.setCategoryBudgets({
+    lines: [
+      {
+        category_id: removedHome.id,
+        amount_minor: 35_000,
+        tracking_mode: "tracked",
+        expected_version: removedHome.budget_version,
+      },
+    ],
+  });
+  assert.equal(
+    readded.budget.lines.find(
+      (line) => line.category_id === removedHome.id,
+    ).planned.amount_minor,
+    35_000,
+  );
+});
+
 test("demo goal overspending and undo never manufacture earmarks", async () => {
   const service = createDemoPlanningService();
   const created = await service.createFinanceGoal({

@@ -613,6 +613,14 @@ test("hierarchical budgets count roots once and carve informational children out
   assert.equal(budget.planned_total.amount_minor, 100_000);
   assert.equal(budget.actual_total.amount_minor, 115_000);
   assert.equal(transportation.actual.amount_minor, 95_000);
+  assert.equal(
+    transportation.child_planned_total.amount_minor,
+    70_000,
+  );
+  assert.equal(
+    transportation.unallocated_planned.amount_minor,
+    30_000,
+  );
   assert.equal(transportation.tracked_planned.amount_minor, 70_000);
   assert.equal(transportation.tracked_actual.amount_minor, 45_000);
   assert.equal(service.remaining, null);
@@ -621,6 +629,81 @@ test("hierarchical budgets count roots once and carve informational children out
   assert.equal(
     budget.lines.some((line) => line.category === "Airlines"),
     false,
+  );
+});
+
+test("nested planned and actual totals bubble through every ancestor exactly once", () => {
+  const budget = buildBudgetStatus({
+    monthOn: "2026-07-01",
+    categories: [
+      {
+        id: "home",
+        name: "Home",
+        path: "Home",
+        parent_category_id: null,
+      },
+      {
+        id: "utilities",
+        name: "Utilities",
+        path: "Home / Utilities",
+        parent_category_id: "home",
+      },
+      {
+        id: "electric",
+        name: "Electric",
+        path: "Home / Utilities / Electric",
+        parent_category_id: "utilities",
+      },
+    ],
+    budgetLines: [
+      {
+        category_id: "home",
+        category: "Home",
+        amount_minor: 100_000,
+      },
+      {
+        category_id: "utilities",
+        category: "Home / Utilities",
+        amount_minor: 100_000,
+      },
+      {
+        category_id: "electric",
+        category: "Home / Utilities / Electric",
+        amount_minor: 70_000,
+      },
+    ],
+    transactions: [
+      {
+        id: "power-bill",
+        category_id: "electric",
+        category_primary: "Home / Utilities / Electric",
+        posted_on: "2026-07-08",
+        amount_minor: -25_000,
+        currency_code: "USD",
+        pending: false,
+        excluded_from_spending: false,
+      },
+    ],
+  });
+
+  const byId = new Map(
+    budget.lines.map((line) => [line.category_id, line]),
+  );
+  assert.equal(budget.planned_total.amount_minor, 100_000);
+  assert.equal(budget.actual_total.amount_minor, 25_000);
+  assert.equal(byId.get("home").actual.amount_minor, 25_000);
+  assert.equal(byId.get("utilities").actual.amount_minor, 25_000);
+  assert.equal(byId.get("electric").actual.amount_minor, 25_000);
+  assert.equal(byId.get("home").direct_actual.amount_minor, 0);
+  assert.equal(byId.get("utilities").direct_actual.amount_minor, 0);
+  assert.equal(byId.get("electric").direct_actual.amount_minor, 25_000);
+  assert.equal(
+    byId.get("home").child_planned_total.amount_minor,
+    100_000,
+  );
+  assert.equal(
+    byId.get("utilities").unallocated_planned.amount_minor,
+    30_000,
   );
 });
 

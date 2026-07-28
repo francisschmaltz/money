@@ -486,7 +486,13 @@ export function createDemoPlanningService({
       delete data.groups;
       const demoAvailableCategories = demoBudgetCategories();
       if (include_available_categories) {
-        data.available_categories = demoAvailableCategories;
+        data.available_categories = demoAvailableCategories.map(
+          (category) => ({
+            ...category,
+            budget_version:
+              budgetVersions.get(category.name) ?? 0,
+          }),
+        );
       }
       data.settings_version = budgetSettingsVersion;
       data.income_category_ids = incomeCategoryIds;
@@ -1060,105 +1066,224 @@ export function createDemoPlanningService({
     },
 
     async setCategoryBudget(input, actorInput) {
+      return service.setCategoryBudgets(
+        { lines: [input] },
+        actorInput,
+      );
+    },
+
+    async setCategoryBudgets(input, actorInput) {
+      if (
+        !Array.isArray(input.lines) ||
+        input.lines.length < 1 ||
+        input.lines.length > 100
+      ) {
+        throw demoBadRequest(
+          "lines must contain between 1 and 100 budgets.",
+        );
+      }
       const month = monthStart(
         workspaceDate(now(), "America/Los_Angeles"),
       );
-      const category =
-        input.category ??
-        demoBudgetCategoryName(input.category_id) ??
-        input.category_id;
-      const currentVersion =
-        budgetVersions.get(category) ?? 0;
-      if (currentVersion !== Number(input.expected_version)) {
-        throw demoConflict(
-          "The planning record changed; refresh and try again.",
-        );
-      }
-      const requestedSubtree = new Set(
-        demoBudgetDescendantNames(category),
-      );
-      if (
-        incomeCategoryIds.some((categoryId) => {
-          const incomeName = demoBudgetCategoryName(categoryId);
-          return (
-            requestedSubtree.has(incomeName) ||
-            demoBudgetDescendantNames(incomeName).includes(category)
+      const requested = new Map();
+      for (const line of input.lines) {
+        const category =
+          line.category ??
+          demoBudgetCategoryName(line.category_id) ??
+          line.category_id;
+        if (!demoBudgetCategories().some(
+          (candidate) => candidate.name === category,
+        )) {
+          throw demoBadRequest("Budget category not found.");
+        }
+        if (requested.has(category)) {
+          throw demoBadRequest(
+            "A budget category can only appear once.",
           );
-        })
-      ) {
-        throw demoBadRequest(
-          "An income category cannot also be an expense budget.",
+        }
+        const currentVersion = budgetVersions.get(category) ?? 0;
+        if (currentVersion !== Number(line.expected_version)) {
+          throw demoConflict(
+            "The planning record changed; refresh and try again.",
+          );
+        }
+        const requestedSubtree = new Set(
+          demoBudgetDescendantNames(category),
         );
+        if (
+          incomeCategoryIds.some((categoryId) => {
+            const incomeName = demoBudgetCategoryName(categoryId);
+            return (
+              requestedSubtree.has(incomeName) ||
+              demoBudgetDescendantNames(incomeName).includes(category)
+            );
+          })
+        ) {
+          throw demoBadRequest(
+            "An income category cannot also be an expense budget.",
+          );
+        }
+        requested.set(category, {
+          category,
+          amount_minor: Number(line.amount_minor),
+          tracking_mode: line.tracking_mode ?? "tracked",
+          expected_version: currentVersion,
+        });
       }
-      if (
-        category === "Airlines" &&
-        !budgetDefaults.has("Travel")
-      ) {
-        throw demoBadRequest(
-          "Add the parent category to the budget before adding this child.",
-        );
-      }
-      if (
-        category === "Airlines" &&
-        Number(input.amount_minor) >
-          Number(budgetDefaults.get("Travel"))
-      ) {
-        throw demoBadRequest(
-          "Child allocations cannot exceed the parent budget.",
-        );
-      }
-      if (
-        category === "Travel" &&
-        budgetDefaults.has("Airlines") &&
-        Number(input.amount_minor) <
-          Number(budgetDefaults.get("Airlines"))
-      ) {
-        throw demoBadRequest(
-          "This budget cannot be lower than its child allocations.",
-        );
-      }
-      const before = budgetDefaults.has(category)
-        ? {
+
+      const desired = new Map(
+        [...budgetDefaults.entries()].map(([category, amount]) => [
+          category,
+          {
             category,
-            amount_minor: budgetDefaults.get(category),
-            version: currentVersion,
+            amount_minor: amount,
+            tracking_mode:
+              budgetModes.get(category) ?? "tracked",
+          },
+        ]),
+      );
+      for (const [category, line] of requested) {
+        desired.set(category, line);
+      }
+      const ancestors = new Set();
+      for (const category of requested.keys()) {
+        let parent = demoBudgetParentName(category);
+        while (parent) {
+          ancestors.add(parent);
+          if (!desired.has(parent)) {
+            desired.set(parent, {
+              category: parent,
+              amount_minor: 0,
+              tracking_mode: "tracked",
+            });
           }
-        : null;
-      budgetDefaults.set(category, Number(input.amount_minor));
-      budgetModes.set(
-        category,
-        input.tracking_mode ?? "tracked",
+          parent = demoBudgetParentName(parent);
+        }
+      }
+      const parentsToEvaluate = new Set(ancestors);
+      for (const category of requested.keys()) {
+        if (
+          [...desired.values()].some(
+            (line) =>
+              demoBudgetParentName(line.category) === category,
+          )
+        ) {
+          parentsToEvaluate.add(category);
+        }
+      }
+      const adjustedParents = [];
+      for (const parent of [...parentsToEvaluate].sort(
+        (left, right) =>
+          demoBudgetDepth(right) - demoBudgetDepth(left),
+      )) {
+        const childTotal = [...desired.values()]
+          .filter(
+            (line) =>
+              demoBudgetParentName(line.category) === parent,
+          )
+          .reduce(
+            (sum, line) => sum + Number(line.amount_minor),
+            0,
+          );
+        const parentLine = desired.get(parent);
+        if (
+          requested.has(parent) &&
+          parentLine.amount_minor < childTotal
+        ) {
+          throw demoBadRequest(
+            `${parent} cannot be lower than its child allocation total.`,
+          );
+        }
+        if (parentLine.amount_minor < childTotal) {
+          parentLine.amount_minor = childTotal;
+          adjustedParents.push(parent);
+        }
+      }
+
+      const changedNames = new Set(requested.keys());
+      for (const parent of ancestors) {
+        if (
+          !budgetDefaults.has(parent) ||
+          budgetDefaults.get(parent) !==
+            desired.get(parent).amount_minor
+        ) {
+          changedNames.add(parent);
+        }
+      }
+      const changes = [];
+      let auditId = null;
+      for (const category of changedNames) {
+        const line = desired.get(category);
+        const currentVersion = budgetVersions.get(category) ?? 0;
+        const before = budgetDefaults.has(category)
+          ? {
+              category,
+              amount_minor: budgetDefaults.get(category),
+              version: currentVersion,
+            }
+          : null;
+        budgetDefaults.set(category, Number(line.amount_minor));
+        budgetModes.set(category, line.tracking_mode);
+        const nextVersion = currentVersion + 1;
+        budgetVersions.set(category, nextVersion);
+        const after = {
+          category,
+          category_id: demoBudgetCategoryId(category),
+          amount_minor: Number(line.amount_minor),
+          tracking_mode: line.tracking_mode,
+          version: nextVersion,
+        };
+        auditId = audit(
+          "budget.standing_set",
+          "budget_line",
+          `${month}:${category}`,
+          actor(actorInput),
+          before,
+          after,
+        );
+        changes.push({ before, after, line: after });
+      }
+      const response = change(
+        input.lines.length === 1
+          ? "Budget saved"
+          : "Budgets saved",
+        {
+          before: changes.map((entry) => entry.before),
+          after: changes.map((entry) => entry.after),
+          lines: changes.map((entry) => entry.line),
+          adjusted_parent_ids: adjustedParents.map(
+            demoBudgetCategoryId,
+          ),
+        },
+        auditId,
       );
-      const nextVersion = currentVersion + 1;
-      budgetVersions.set(category, nextVersion);
-      const after = {
-        category,
-        category_id: demoBudgetCategoryId(category),
-        amount_minor: Number(input.amount_minor),
-        tracking_mode: budgetModes.get(category),
-        version: nextVersion,
-      };
-      const auditId = audit(
-        "budget.standing_set",
-        "budget_line",
-        `${month}:${category}`,
-        actor(actorInput),
-        before,
-        after,
-      );
-      return change("Budget saved", { before, after }, auditId);
+      response.budget = (
+        await service.getBudgetStatus({
+          include_available_categories: true,
+        })
+      ).data;
+      return response;
     },
 
     async clearCategoryBudget(input, actorInput) {
       const category =
         demoBudgetCategoryName(input.category_id) ?? input.category_id;
+      const descendantNames = demoBudgetDescendantNames(category).filter(
+        (name) => name !== category && budgetDefaults.has(name),
+      );
       if (
-        category === "Travel" &&
-        budgetDefaults.has("Airlines") &&
+        descendantNames.length &&
         input.confirm_descendants !== true
       ) {
         throw demoBadRequest(
-          "Confirm removal of descendant budgets: Travel / Airlines.",
+          `Confirm removal of descendant budgets: ${descendantNames
+            .map(
+              (name) =>
+                demoBudgetCategories().find(
+                  (candidate) => candidate.name === name,
+                )?.path ?? name,
+            )
+            .join(", ")}.`,
         );
       }
       const currentVersion = budgetVersions.get(category) ?? 0;
@@ -1177,12 +1302,12 @@ export function createDemoPlanningService({
       budgetDefaults.delete(category);
       budgetModes.delete(category);
       budgetVersions.set(category, currentVersion + 1);
-      if (category === "Travel") {
-        budgetDefaults.delete("Airlines");
-        budgetModes.delete("Airlines");
+      for (const descendant of descendantNames) {
+        budgetDefaults.delete(descendant);
+        budgetModes.delete(descendant);
         budgetVersions.set(
-          "Airlines",
-          (budgetVersions.get("Airlines") ?? 0) + 1,
+          descendant,
+          (budgetVersions.get(descendant) ?? 0) + 1,
         );
       }
       const auditId = audit(
@@ -1306,6 +1431,7 @@ export function createDemoPlanningService({
         set_goal_funding_schedule: "setGoalFundingSchedule",
         finish_finance_goal: "finishFinanceGoal",
         set_category_budget: "setCategoryBudget",
+        set_category_budgets: "setCategoryBudgets",
         clear_category_budget: "clearCategoryBudget",
         set_budget_income_categories: "setBudgetIncomeCategories",
         split_transaction: "splitTransaction",
@@ -1632,6 +1758,9 @@ function demoBudgetCategoryId(name) {
 function demoBudgetCategories() {
   return [
     "Income",
+    "Car",
+    "Home",
+    "Rent",
     "Housing",
     "Groceries",
     "Dining",
@@ -1651,6 +1780,8 @@ function demoBudgetCategories() {
     parent_category_id:
       name === "Airlines"
         ? demoBudgetCategoryId("Travel")
+        : name === "Rent" || name === "Utilities"
+          ? demoBudgetCategoryId("Home")
         : null,
     is_system: name === "Other",
   }));
@@ -1664,7 +1795,25 @@ function demoBudgetCategoryName(categoryId) {
 
 function demoBudgetDescendantNames(name) {
   if (!name) return [];
-  return name === "Travel" ? ["Travel", "Airlines"] : [name];
+  if (name === "Travel") return ["Travel", "Airlines"];
+  if (name === "Home") return ["Home", "Rent", "Utilities"];
+  return [name];
+}
+
+function demoBudgetParentName(name) {
+  if (name === "Airlines") return "Travel";
+  if (name === "Rent" || name === "Utilities") return "Home";
+  return null;
+}
+
+function demoBudgetDepth(name) {
+  let depth = 0;
+  let current = name;
+  while (demoBudgetParentName(current)) {
+    depth += 1;
+    current = demoBudgetParentName(current);
+  }
+  return depth;
 }
 
 function demoBadRequest(message) {

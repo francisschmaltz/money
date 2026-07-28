@@ -4,6 +4,7 @@ test("Plan keeps one Safe to Spend card and a fixed, editable budget", async ({
   page,
 }) => {
   const diningWriteKeys = [];
+  const budgetBatches = [];
   page.on("request", (request) => {
     if (
       request.method() === "PUT" &&
@@ -14,6 +15,12 @@ test("Plan keeps one Safe to Spend card and a fixed, editable budget", async ({
       diningWriteKeys.push(
         request.postDataJSON().idempotency_key,
       );
+    }
+    if (
+      request.method() === "POST" &&
+      request.url().endsWith("/api/v1/plan/budget/batch")
+    ) {
+      budgetBatches.push(request.postDataJSON());
     }
   });
   await page.goto("/plan");
@@ -71,17 +78,45 @@ test("Plan keeps one Safe to Spend card and a fixed, editable budget", async ({
   expect(diningWriteKeys).toHaveLength(2);
   expect(diningWriteKeys[0]).not.toBe(diningWriteKeys[1]);
 
-  await page.getByText("Add or configure categories").click();
-  const addBudgetForm = page.locator(
-    'form[data-endpoint="/api/v1/plan/budget"]',
+  await page.getByText("Add budget categories").click();
+  const addBudgetForm = page.locator("[data-budget-batch-form]");
+  const selectBudget = async (name, amount, tracking = "tracked") => {
+    const row = addBudgetForm
+      .locator("[data-budget-add-row]")
+      .filter({ hasText: name });
+    await row.getByRole("checkbox").check();
+    await row.locator("[data-budget-add-amount]").fill(amount);
+    await row
+      .locator("[data-budget-add-tracking]")
+      .selectOption(tracking);
+  };
+  await selectBudget("Car", "300.00");
+  await selectBudget("Home", "500.00");
+  await selectBudget("Airlines", "100.00", "informational");
+  await addBudgetForm
+    .getByRole("button", { name: "Add 3 categories" })
+    .click();
+  expect(budgetBatches).toHaveLength(1);
+  expect(
+    budgetBatches[0].lines.map((line) => line.category_id),
+  ).toEqual([
+    "category_car",
+    "category_home",
+    "category_airlines",
+  ]);
+  expect(new Set(budgetBatches[0].lines.map((line) => line.expected_version))).toEqual(
+    new Set([0]),
   );
-  await addBudgetForm.getByLabel("Category").selectOption("category_airlines");
-  await addBudgetForm.getByLabel("Plan amount").fill("100.00");
-  await addBudgetForm.getByLabel("Tracking").selectOption("informational");
-  await addBudgetForm.getByRole("button", { name: "Add category" }).click();
   await expect(
     page.getByRole("row", { name: /^Airlines / }),
   ).toContainText("Informational");
+  await expect(page.getByRole("row", { name: /^Car / })).toBeVisible();
+  const homeRow = page
+    .getByRole("row")
+    .filter({
+      has: page.getByRole("link", { name: "Home", exact: true }),
+    });
+  await expect(homeRow).toContainText("allocated");
   const travelRow = page
     .getByRole("row")
     .filter({
@@ -134,6 +169,42 @@ test("Plan contains wide budget data without widening the mobile page", async ({
   }));
   expect(widths.page).toBeLessThanOrEqual(widths.viewport);
   expect(widths.table).toBeGreaterThan(widths.tableViewport);
+
+  await page.goto("/plan?edit_budget=1");
+  const incomeDisclosure = page.locator(
+    '[data-plan-disclosure="income-categories"]',
+  );
+  await expect(incomeDisclosure).not.toHaveAttribute("open", "");
+  const summary = incomeDisclosure.locator("summary");
+  await summary.focus();
+  await summary.press("Enter");
+  await expect(incomeDisclosure).toHaveAttribute("open", "");
+  const firstIncomeRow = incomeDisclosure.locator(".income-category-row").first();
+  const checkbox = firstIncomeRow.getByRole("checkbox");
+  const metrics = await firstIncomeRow.evaluate((row) => {
+    const input = row.querySelector('input[type="checkbox"]');
+    const label = row.querySelector("span");
+    const inputBox = input.getBoundingClientRect();
+    const labelBox = label.getBoundingClientRect();
+    return {
+      width: inputBox.width,
+      height: inputBox.height,
+      adjacent: labelBox.left > inputBox.right,
+    };
+  });
+  expect(metrics).toEqual({
+    width: 18,
+    height: 18,
+    adjacent: true,
+  });
+  await expect(checkbox).toBeVisible();
+  await incomeDisclosure
+    .getByRole("button", { name: "Save income categories" })
+    .click();
+  await expect(incomeDisclosure).toHaveAttribute("open", "");
+  await expect(incomeDisclosure.locator("[data-plan-status]")).toContainText(
+    "Income categories saved",
+  );
 });
 
 test("goal summaries use compact actions and modal editing", async ({
