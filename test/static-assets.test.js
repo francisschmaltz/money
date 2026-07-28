@@ -21,7 +21,7 @@ test("first-party asset revisions change with the current deployment", async () 
     path.resolve("app/views/partials/head.ejs"),
     "utf8",
   );
-  assert.match(head, /\/css\/money\.css\?v=18/);
+  assert.match(head, /\/css\/money\.css\?v=19/);
   assert.match(head, /\/js\/charts\.js\?v=5/);
   assert.match(head, /\/js\/money\.js\?v=13/);
 });

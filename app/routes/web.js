@@ -757,7 +757,6 @@ export function createWebRouter({
     }
     if (view === "dashboard" && serviceModel?.hasAccounts === false) {
       res.render("states/empty", {
-        ...demo,
         viewer: viewerFromRequest(req, null),
         pageTitle: "Connect your finances",
         currentPath: "/empty",
@@ -785,10 +784,9 @@ export function createWebRouter({
   }));
 
   router.get("/empty", requireAuth, (req, res) => res.render("states/empty", {
-    ...demo,
     pageTitle: "Connect your finances",
     currentPath: "/empty",
-    viewer: viewerFromRequest(req, demo.viewer),
+    viewer: viewerFromRequest(req, null),
   }));
 
   router.get("/error", requireAuth, (req, res) => res.status(503).render("states/error", {

@@ -864,6 +864,7 @@ test("auth, empty, and error states render without application data dependencies
   assert.match(login, /Continue with Duo/);
   assert.match(login, /Sign-in failed/);
   assert.match(empty, /Connect finances/);
+  assert.doesNotMatch(empty, /\$3,000|Example category|data-chart="spending"/);
   assert.match(error, /Request ID: req_test/);
   assert.match(notFound, /That page isn’t here/);
   assert.match(notFound, /Back to dashboard/);
