@@ -5,10 +5,10 @@ import ejs from "ejs";
 import express from "express";
 import request from "supertest";
 import {
-  buildDemoModel,
   createWebRouter,
   formatMoney,
 } from "../app/routes/web.js";
+import { buildDemoModel } from "../app/demo/webFixtures.js";
 import {
   createDemoFinanceService,
 } from "../app/services/demoFinanceService.js";
@@ -75,7 +75,7 @@ test("Plaid OAuth callback renders a resumable authenticated return page", async
   assert.match(response.text, /data-page="plaid-oauth"/);
   assert.match(response.text, /data-plaid-oauth-return/);
   assert.match(response.text, /Returning to Plaid/);
-  assert.match(response.text, /\/js\/money\.js\?v=19/);
+  assert.match(response.text, /\/js\/money\.js\?v=20/);
   assert.doesNotMatch(response.text, /data-search-dialog/);
 });
 
@@ -219,6 +219,18 @@ test("dashboard places insights before spending", async () => {
     insightsPosition < spendingPosition,
     "expected Insights to render before Spend by category",
   );
+});
+
+test("dashboard replaces stale insight promotion with a freshness banner", async () => {
+  const html = await render("dashboard", {
+    pageTitle: "Overview",
+    activePath: "/",
+    insightsStale: true,
+    insights: { weekly: [], investments: [], subscriptions: [] },
+  });
+
+  assert.match(html, /Insights are paused/);
+  assert.match(html, /none are promoted here/);
 });
 
 test("transactions puts detailed spending analysis before the ledger", async () => {
@@ -977,7 +989,9 @@ test("active insights lead with actions and keep lifecycle controls compact", as
   assert.match(html, /<h3>Spend less on Dining<\/h3>[\s\S]*?Jul 19–25 vs Jul 12–18[\s\S]*?You spent \$126 more/);
   assert.match(html, /class="button button--secondary insight-card__solve"/);
   assert.match(html, /data-insight-action="archive"/);
-  assert.match(html, /data-insight-action="mark_bad"/);
+  assert.match(html, /data-insight-action="ignore"/);
+  assert.match(html, /data-insight-action="report_incorrect"/);
+  assert.match(html, /data-reason-code="not_subscription"/);
   assert.match(html, /data-insight-action="delete"/);
   assert.match(html, /<details class="insight-context">/);
   assert.match(html, /Portfolio gained 1\.8% this month/);
@@ -987,7 +1001,7 @@ test("active insights lead with actions and keep lifecycle controls compact", as
   );
 });
 
-test("insight archive exposes restore, bad, and confirmed delete actions", async () => {
+test("insight archive exposes restore, incorrect, and confirmed delete actions", async () => {
   const html = await render("insights", {
     pageTitle: "Insights",
     activePath: "/insights",
@@ -1000,11 +1014,11 @@ test("insight archive exposes restore, bad, and confirmed delete actions", async
   assert.match(html, /Past findings stay here, out of your way/);
   assert.match(html, /id="archive-heading"/);
   assert.match(html, /data-insight-action="restore"/);
-  assert.match(html, /data-insight-action="mark_bad"/);
+  assert.match(html, /data-insight-action="report_incorrect"/);
   assert.match(html, /data-insight-action="delete"/);
   assert.match(html, /Delete this insight permanently\?/);
   assert.match(html, />Archived</);
-  assert.match(html, />Marked bad</);
+  assert.match(html, />Incorrect</);
   assert.doesNotMatch(html, /id="review-now"/);
 });
 
@@ -1017,6 +1031,52 @@ test("recurring view includes functional monthly and annual values", async () =>
   assert.match(html, /data-period="annual"/);
   assert.match(html, /data-monthly="\$85\.64"/);
   assert.match(html, /data-annual="\$1,027\.68"/);
+});
+
+test("recurring view separates frequent spending and opens classification evidence in a modal", async () => {
+  const selectedRecurring = {
+    id: "stream-shell",
+    name: "Shell Oil",
+    cadence: "Monthly",
+    account: "Everyday card",
+    accountId: "account-card",
+    amount: { amount_minor: 5_000, currency: "USD" },
+    annual: { amount_minor: 60_000, currency: "USD" },
+    icon: "ph-repeat",
+    state: "active",
+    next: "2026-08-01",
+    type: "frequent_spending",
+    detectedType: "frequent_spending",
+    classificationSignals: {
+      classification_confidence_basis_points: 9_000,
+    },
+    transactions: [
+      {
+        id: "txn-shell",
+        merchant: "Shell Oil",
+        date: "Jul 1",
+        amount: { amount_minor: -5_000, currency: "USD" },
+      },
+    ],
+  };
+  const html = await render("recurring", {
+    pageTitle: "Recurring",
+    activePath: "/recurring",
+    frequentSpending: [selectedRecurring],
+    selectedRecurring,
+  });
+
+  assert.match(html, /id="frequent-spending-heading"/);
+  assert.match(html, /Repeated discretionary merchants/);
+  assert.match(html, /data-detail-query-key="item"/);
+  assert.match(
+    html,
+    /data-endpoint="\/api\/v1\/recurring\/stream-shell\/classification"/,
+  );
+  assert.match(
+    html,
+    /href="\/transactions\?transaction=txn-shell"/,
+  );
 });
 
 test("shared header keeps Accounts in the user menu, not primary navigation", async () => {

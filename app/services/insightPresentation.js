@@ -85,8 +85,8 @@ export function lifecycleLabel(state) {
   return {
     active: "Active",
     archived: "Archived",
-    bad: "Marked bad",
-    dismissed: "Dismissed",
+    bad: "Incorrect",
+    dismissed: "Ignored",
     resolved: "Resolved",
   }[state] ?? humanize(state);
 }

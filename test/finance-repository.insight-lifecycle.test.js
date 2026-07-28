@@ -130,6 +130,79 @@ test("nightly insight replacement retires history and applies sticky preferences
   assert.match(inserts[0].sql, /retired_at = NULL/);
 });
 
+test("recurring replacement refreshes detector signals and inherits an override across stream IDs", async () => {
+  const db = fakePool(async (sql) => {
+    if (
+      sql.startsWith("SELECT r.stream_type_override") &&
+      sql.includes("FROM recurring_streams r")
+    ) {
+      return {
+        rows: [
+          {
+            stream_type_override: "subscription",
+            override_source_finding_id: null,
+            override_updated_by: "admin-1",
+            override_updated_at: "2026-07-26T10:00:00.000Z",
+          },
+        ],
+      };
+    }
+    return { rows: [] };
+  });
+  const repository = new PgFinanceRepository(db.pool);
+
+  await repository.replaceRecurringStreams("shared", [
+    {
+      id: "stream-1",
+      service_family: "shell oil",
+      display_name: "Shell Oil",
+      stream_type: "frequent_spending",
+      cadence: "monthly",
+      account_id: "account-1",
+      expected_amount_minor: 5_000,
+      min_amount_minor: 4_900,
+      max_amount_minor: 5_100,
+      monthly_equivalent_minor: 5_000,
+      currency_code: "USD",
+      first_seen_on: "2026-01-01",
+      last_seen_on: "2026-04-01",
+      next_expected_on: "2026-05-01",
+      confidence_basis_points: 9_000,
+      status: "active",
+      classification_signals: { hard_negative: true },
+      transaction_ids: ["txn-1"],
+    },
+  ]);
+
+  const insert = db.calls.find((call) =>
+    call.sql.startsWith("INSERT INTO recurring_streams"),
+  );
+  assert.equal(insert.params[17], JSON.stringify({ hard_negative: true }));
+  assert.deepEqual(insert.params.slice(18), [
+    "subscription",
+    null,
+    "admin-1",
+    "2026-07-26T10:00:00.000Z",
+  ]);
+  assert.match(
+    insert.sql,
+    /classification_signals = EXCLUDED\.classification_signals/,
+  );
+  assert.doesNotMatch(
+    insert.sql,
+    /stream_type_override = EXCLUDED\.stream_type_override/,
+  );
+  const overrideLookup = db.calls.find((call) =>
+    call.sql.startsWith("SELECT r.stream_type_override"),
+  );
+  assert.deepEqual(overrideLookup.params, [
+    "shared",
+    "stream-1",
+    "account-1",
+    ["txn-1"],
+  ]);
+});
+
 test("nightly replacement keeps a deleted occurrence tombstoned without suppressing a future period", async () => {
   const db = fakePool(async (sql) => {
     if (sql.includes("FROM insight_finding_preferences")) {
@@ -270,6 +343,7 @@ test("insight transitions write sticky feedback and an append-only event", async
     "active",
     "bad",
     "user-1",
+    "other_false_positive",
   ]);
   const preference = db.calls.find((call) =>
     call.sql.startsWith("INSERT INTO insight_finding_preferences"),
@@ -278,6 +352,7 @@ test("insight transitions write sticky feedback and an append-only event", async
     "shared",
     "pattern-dining",
     "bad",
+    "other_false_positive",
     "user-1",
   ]);
 });
@@ -340,7 +415,11 @@ test("insight feedback summaries are bounded and contain no financial evidence",
           {
             feedback_key: "pattern-dining",
             count: "3",
-            reason_codes: ["marked_bad", "dismissed", "marked_bad"],
+            reason_codes: [
+              "other_false_positive",
+              "ignored",
+              "other_false_positive",
+            ],
             last_feedback_at: "2026-07-27T13:00:00.000Z",
           },
         ],
@@ -388,7 +467,7 @@ test("insight feedback summaries are bounded and contain no financial evidence",
       {
         feedback_key: "pattern-dining",
         count: 3,
-        reason_codes: ["dismissed", "marked_bad"],
+        reason_codes: ["ignored", "other_false_positive"],
       },
     ],
     archived: [

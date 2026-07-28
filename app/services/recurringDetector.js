@@ -26,11 +26,19 @@ const DEFAULT_ALIASES = new Map([
   ["icloud", "icloud"],
 ]);
 
+const KNOWN_SUBSCRIPTION_FAMILIES = new Set(DEFAULT_ALIASES.values());
+const FREQUENT_SPENDING_PATTERN =
+  /\b(food|drink|restaurant|fast food|coffee|cafe|delivery|takeout|doordash|uber eats|grubhub|hotel|lodging|travel|gas|fuel|service station|grocery|groceries|supermarket|general merchandise|department store|shopping)\b/i;
+const BILL_PATTERN =
+  /\b(rent|mortgage|utilities?|electric|electricity|water|sewer|insurance|loan|childcare|medical|phone|internet|wireless|cable|government|tax)\b/i;
+const SUBSCRIPTION_PATTERN =
+  /\b(subscription|membership|streaming|software|cloud|storage|workspace|hosting|domain|gym)\b/i;
+
 export function detectRecurringStreams(
   transactions,
   {
     aliases = {},
-    minimumOccurrences = 3,
+    minimumOccurrences = 2,
     now = new Date(),
   } = {},
 ) {
@@ -73,6 +81,11 @@ export function detectRecurringStreams(
           daysBetween(cluster[index].posted_on, transaction.posted_on),
         );
       const cadence = inferCadence(intervals);
+      const patternMinimum =
+        cadence.name === "annual" ? 2 : cadence.name === "irregular" ? 4 : 3;
+      if (cluster.length < Math.max(minimumOccurrences, patternMinimum)) {
+        continue;
+      }
       if (
         cadence.name === "irregular" &&
         (cluster.length < 4 || coefficientOfVariation(intervals) > 0.35)
@@ -100,7 +113,12 @@ export function detectRecurringStreams(
       );
       const first = cluster[0];
       const last = cluster.at(-1);
-      const streamType = inferStreamType(first);
+      const classification = classifyStream(cluster, {
+        cadence,
+        amountCv,
+        intervalFit,
+        confidence,
+      });
       const identity = [
         first.serviceFamily,
         first.account_id ?? "unknown",
@@ -116,7 +134,8 @@ export function detectRecurringStreams(
         service_family: first.serviceFamily,
         display_name:
           preferredDisplayName(cluster) || titleCase(first.serviceFamily),
-        stream_type: streamType,
+        stream_type: classification.type,
+        classification_signals: classification.signals,
         cadence: cadence.name,
         account_id: first.account_id ?? null,
         expected_amount_minor: expected,
@@ -170,7 +189,7 @@ export class RecurringService {
     const transactions = await this.#repository.getTransactionsForPeriod(
       workspaceId,
       {
-        startOn: shiftDateOnly(this.#now(), -730),
+        startOn: shiftDateOnly(this.#now(), -399),
         endOn: shiftDateOnly(this.#now(), 1),
         activeAccountsOnly: true,
       },
@@ -238,14 +257,68 @@ function inferCadence(intervals) {
   );
 }
 
-function inferStreamType(transaction) {
-  const category =
-    `${transaction.category_primary ?? ""} ${transaction.category_detailed ?? ""}`.toLowerCase();
-  return /\b(rent|mortgage|utilities|insurance|loan|child|medical|phone|internet|government)\b/.test(
-    category,
-  )
-    ? "bill"
-    : "subscription";
+function classifyStream(
+  transactions,
+  { cadence, amountCv, intervalFit, confidence },
+) {
+  const first = transactions[0];
+  const classificationText = transactions
+    .map(
+      (transaction) =>
+        `${transaction.category_primary ?? ""} ${transaction.category_detailed ?? ""} ${transaction.merchant_name ?? ""} ${transaction.name ?? ""}`,
+    )
+    .join(" ")
+    .replaceAll("_", " ");
+  const hardNegative = FREQUENT_SPENDING_PATTERN.test(classificationText);
+  const billSignal = BILL_PATTERN.test(classificationText);
+  const subscriptionSignal =
+    KNOWN_SUBSCRIPTION_FAMILIES.has(first.serviceFamily) ||
+    SUBSCRIPTION_PATTERN.test(classificationText);
+  const strongSignal = billSignal || subscriptionSignal;
+  const cadenceMinimum = {
+    weekly: 6,
+    biweekly: 6,
+    monthly: 3,
+    quarterly: 3,
+    annual: 2,
+  }[cadence.name];
+  const knownEligible =
+    !hardNegative &&
+    cadenceMinimum != null &&
+    transactions.length >= cadenceMinimum &&
+    strongSignal;
+  const unknownEligible =
+    !hardNegative &&
+    ["monthly", "quarterly", "annual"].includes(cadence.name) &&
+    transactions.length >= 4 &&
+    intervalFit >= 0.75 &&
+    amountCv <= 0.1 &&
+    confidence >= 8_500;
+  const type =
+    knownEligible || unknownEligible
+      ? billSignal
+        ? "bill"
+        : "subscription"
+      : "frequent_spending";
+  return {
+    type,
+    signals: {
+      hard_negative: hardNegative,
+      bill_signal: billSignal,
+      subscription_signal: subscriptionSignal,
+      occurrence_count: transactions.length,
+      interval_fit_basis_points: Math.round(intervalFit * 10_000),
+      amount_variation_basis_points: Math.round(amountCv * 10_000),
+      classification_confidence_basis_points:
+        type === "frequent_spending"
+          ? hardNegative
+            ? 10_000
+            : cadence.name === "irregular"
+              ? 8_500
+              : Math.max(5_000, 10_000 - confidence)
+          : confidence,
+    },
+  };
 }
 
 function inferStatus(last, cadence, now) {

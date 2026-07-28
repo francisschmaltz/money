@@ -19,6 +19,10 @@
     ).length;
     const inactiveItems =
       typeof inactiveRecurring !== "undefined" ? inactiveRecurring : [];
+    const frequentItems =
+      typeof frequentSpending !== "undefined" ? frequentSpending : [];
+    const selectedRecurringItem =
+      typeof selectedRecurring !== "undefined" ? selectedRecurring : null;
   %>
   <main class="page-shell">
     <%- include("partials/page-heading", {
@@ -30,23 +34,71 @@
     }) %>
 
     <% if (typeof selectedRecurring !== "undefined" && selectedRecurring) { %>
-      <section class="card selected-detail" aria-labelledby="selected-recurring-heading">
-        <span class="list-icon"><i class="ph <%= selectedRecurring.icon %>"></i></span>
-        <div>
-          <p class="card-kicker">Selected recurring payment</p>
-          <h2 id="selected-recurring-heading"><%= selectedRecurring.name %></h2>
-          <p
-            <% if (selectedRecurring.accountId) { %>
-              data-account-display-name="<%= selectedRecurring.accountId %>"
-              data-account-provider-name="<%= selectedRecurring.account %>"
-              data-account-prefix="<%= `${selectedRecurring.cadence} · ` %>"
-              data-account-suffix="<%= ` · ${selectedRecurring.state}` %>"
+      <dialog
+        class="entity-detail-dialog"
+        data-detail-dialog
+        data-detail-auto-open
+        data-detail-query-key="<%= typeof selectedRecurringQueryKey !== "undefined" ? selectedRecurringQueryKey : "item" %>"
+        aria-labelledby="selected-recurring-heading"
+      >
+        <div class="entity-detail-dialog__panel">
+          <section class="selected-detail entity-detail-dialog__summary">
+            <span class="list-icon"><i class="ph <%= selectedRecurring.icon %>"></i></span>
+            <div>
+              <p class="card-kicker"><%= selectedRecurring.type === "frequent_spending" ? "Frequent spending pattern" : "Recurring payment" %></p>
+              <h2 id="selected-recurring-heading"><%= selectedRecurring.name %></h2>
+              <p><%= selectedRecurring.cadence %> · <%= selectedRecurring.account %> · <%= selectedRecurring.state %></p>
+            </div>
+            <strong><%= formatMoney(selectedRecurring.amount) %></strong>
+            <button class="icon-button" type="button" data-detail-dialog-close aria-label="Close recurring details"><i class="ph ph-x"></i></button>
+          </section>
+          <div class="entity-detail-dialog__body">
+            <dl class="entity-detail-grid">
+              <div><dt>Classification</dt><dd><%= selectedRecurring.type === "frequent_spending" ? "Frequent spending" : selectedRecurring.type === "bill" ? "Bill" : "Subscription" %></dd></div>
+              <div><dt>Detected as</dt><dd><%= selectedRecurring.detectedType === "frequent_spending" ? "Frequent spending" : selectedRecurring.detectedType === "bill" ? "Bill" : "Subscription" %></dd></div>
+              <div><dt>Cadence</dt><dd><%= selectedRecurring.cadence %></dd></div>
+              <div><dt>Confidence</dt><dd><%= ((selectedRecurring.classificationSignals?.classification_confidence_basis_points || 0) / 100).toFixed(0) %>%</dd></div>
+              <div><dt>Occurrences</dt><dd><%= selectedRecurring.classificationSignals?.occurrence_count || selectedRecurring.transactions?.length || 0 %></dd></div>
+              <div><dt>Interval fit</dt><dd><%= ((selectedRecurring.classificationSignals?.interval_fit_basis_points || 0) / 100).toFixed(0) %>%</dd></div>
+              <div><dt>Amount variation</dt><dd><%= ((selectedRecurring.classificationSignals?.amount_variation_basis_points || 0) / 100).toFixed(1) %>%</dd></div>
+              <div><dt>Detector signal</dt><dd><%= selectedRecurring.classificationSignals?.hard_negative ? "Discretionary spending category" : selectedRecurring.classificationSignals?.bill_signal ? "Bill category" : selectedRecurring.classificationSignals?.subscription_signal ? "Known subscription service" : "Cadence and amount stability" %></dd></div>
+            </dl>
+            <% if (viewer?.is_admin) { %>
+              <form
+                class="settings-form"
+                data-recurring-classification
+                data-endpoint="/api/v1/recurring/<%= encodeURIComponent(selectedRecurring.id) %>/classification"
+              >
+                <label>
+                  <span>Correct classification</span>
+                  <select name="type">
+                    <option value="subscription" <%= selectedRecurring.type === "subscription" ? "selected" : "" %>>Subscription</option>
+                    <option value="bill" <%= selectedRecurring.type === "bill" ? "selected" : "" %>>Bill</option>
+                    <option value="frequent_spending" <%= selectedRecurring.type === "frequent_spending" ? "selected" : "" %>>Frequent spending</option>
+                  </select>
+                </label>
+                <div class="form-actions">
+                  <span class="save-status" role="status" data-save-status></span>
+                  <button class="button button--dark" type="submit">Save classification</button>
+                </div>
+              </form>
             <% } %>
-          ><%= selectedRecurring.cadence %> · <%= selectedRecurring.account %> · <%= selectedRecurring.state %></p>
+            <% if (selectedRecurring.transactions?.length) { %>
+              <div>
+                <h3>Supporting transactions</h3>
+                <div class="recurring-list">
+                  <% selectedRecurring.transactions.forEach((transaction) => { %>
+                    <a class="recurring-row" href="/transactions?transaction=<%= encodeURIComponent(transaction.id) %>">
+                      <span class="recurring-row__main"><strong><%= transaction.merchant %></strong><span><%= transaction.date %></span></span>
+                      <strong><%= formatMoney(transaction.amount) %></strong>
+                    </a>
+                  <% }) %>
+                </div>
+              </div>
+            <% } %>
+          </div>
         </div>
-        <strong><%= formatMoney(selectedRecurring.amount) %></strong>
-        <a class="icon-button" href="/recurring" aria-label="Close recurring details"><i class="ph ph-x"></i></a>
-      </section>
+      </dialog>
     <% } %>
 
     <section class="card recurring-card" aria-labelledby="subscriptions-heading" data-recurring-section>
@@ -66,7 +118,7 @@
       </div>
       <div class="recurring-list">
         <% subscriptions.forEach((item) => { %>
-          <a href="/recurring?item=<%= item.id %>" class="recurring-row">
+          <a href="/recurring?item=<%= encodeURIComponent(item.id) %>" class="recurring-row" data-detail-dialog-link <% if (selectedRecurringItem?.id === item.id) { %>aria-current="true"<% } %>>
             <span class="list-icon"><i class="ph <%= item.icon %>"></i></span>
             <span class="recurring-row__main"><strong><%= item.name %></strong><span <% if (item.accountId) { %>data-account-display-name="<%= item.accountId %>" data-account-provider-name="<%= item.account %>" data-account-prefix="<%= `${item.cadence} · ` %>"<% } %>><%= item.cadence %> · <%= item.account %></span></span>
             <span class="recurring-row__date">Next <%= item.next %></span>
@@ -76,6 +128,29 @@
       </div>
       <% if (!subscriptions.length) { %>
         <p class="card-note"><i class="ph ph-info"></i> No active subscriptions are detected yet.</p>
+      <% } %>
+    </section>
+
+    <section class="card recurring-card" aria-labelledby="frequent-spending-heading">
+      <div class="card-heading card-heading--align-start">
+        <div>
+          <p class="card-kicker"><%= frequentItems.length %> patterns</p>
+          <h2 id="frequent-spending-heading">Frequent spending</h2>
+          <p>Repeated discretionary merchants—not subscriptions or bills.</p>
+        </div>
+      </div>
+      <div class="recurring-list">
+        <% frequentItems.forEach((item) => { %>
+          <a href="/recurring?item=<%= encodeURIComponent(item.id) %>" class="recurring-row" data-detail-dialog-link <% if (selectedRecurringItem?.id === item.id) { %>aria-current="true"<% } %>>
+            <span class="list-icon"><i class="ph ph-chart-line"></i></span>
+            <span class="recurring-row__main"><strong><%= item.name %></strong><span><%= item.cadence %> pattern · <%= item.account %></span></span>
+            <span class="recurring-row__date">Last seen pattern</span>
+            <strong><%= formatMoney(item.amount) %></strong>
+          </a>
+        <% }) %>
+      </div>
+      <% if (!frequentItems.length) { %>
+        <p class="card-note"><i class="ph ph-info"></i> No frequent discretionary patterns are detected.</p>
       <% } %>
     </section>
 
@@ -96,7 +171,7 @@
       </div>
       <div class="recurring-list">
         <% bills.forEach((item) => { %>
-          <a href="/recurring?item=<%= item.id %>" class="recurring-row">
+          <a href="/recurring?item=<%= encodeURIComponent(item.id) %>" class="recurring-row" data-detail-dialog-link <% if (selectedRecurringItem?.id === item.id) { %>aria-current="true"<% } %>>
             <span class="list-icon"><i class="ph <%= item.icon %>"></i></span>
             <span class="recurring-row__main"><strong><%= item.name %></strong><span <% if (item.accountId) { %>data-account-display-name="<%= item.accountId %>" data-account-provider-name="<%= item.account %>" data-account-prefix="<%= `${item.cadence} · ` %>"<% } %>><%= item.cadence %> · <%= item.account %></span></span>
             <span class="recurring-row__date">Expected <%= item.next %></span>

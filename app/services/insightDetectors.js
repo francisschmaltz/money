@@ -1259,8 +1259,9 @@ function genericFinding({
   dataAsOf,
 }) {
   const periodEnd = period?.end_on ?? "";
+  const id = stableFindingId(family, type, identity, periodEnd);
   return {
-    id: stableFindingId(family, type, identity, periodEnd),
+    id,
     finding_key: stableFindingKey(family, type, identity),
     family,
     type,
@@ -1272,11 +1273,59 @@ function genericFinding({
     metrics,
     rule,
     confidence_basis_points: confidence,
-    evidence,
-    actions,
+    evidence: routeEvidenceLinks(evidence ?? []),
+    actions: routeEvidenceActions(actions ?? [], evidence ?? [], id),
     generated_at: toIso(generatedAt),
     data_as_of: toIso(dataAsOf),
   };
+}
+
+function routeEvidenceLinks(evidence) {
+  return evidence.map((entry) => {
+    const current = new URL(
+      entry.web_url ?? "/insights",
+      "https://money.example.com",
+    );
+    if (
+      ["recurring", "recurring_stream"].includes(entry.entity_type)
+    ) {
+      current.pathname = "/recurring";
+      current.search = `?item=${encodeURIComponent(entry.entity_id)}`;
+    } else if (entry.entity_type === "transaction") {
+      current.pathname = "/transactions";
+      current.search = `?transaction=${encodeURIComponent(entry.entity_id)}`;
+    } else if (entry.entity_type === "holding") {
+      current.pathname = "/portfolio";
+      current.search = `?holding=${encodeURIComponent(entry.label)}`;
+    }
+    return { ...entry, web_url: current.toString() };
+  });
+}
+
+function routeEvidenceActions(actions, evidence, findingId) {
+  const routedEvidence = routeEvidenceLinks(evidence);
+  const objectEvidence = routedEvidence.filter((entry) =>
+    ["recurring", "recurring_stream", "holding"].includes(
+      entry.entity_type,
+    ),
+  );
+  const direct =
+    objectEvidence.length === 1
+      ? objectEvidence[0]
+      : objectEvidence.length === 0 && routedEvidence.length === 1
+        ? routedEvidence[0]
+        : null;
+  return actions.map((entry) => {
+    if (!["review", "confirm"].includes(entry.type)) return entry;
+    if (direct) return { ...entry, web_url: direct.web_url };
+    const current = new URL(
+      entry.web_url ?? "/insights",
+      "https://money.example.com",
+    );
+    current.pathname = "/insights";
+    current.search = `?finding=${encodeURIComponent(findingId)}`;
+    return { ...entry, web_url: current.toString() };
+  });
 }
 
 function transactionEvidence(transaction, baseUrl) {
@@ -1293,7 +1342,7 @@ function streamEvidence(stream, baseUrl) {
     entity_type: "recurring",
     entity_id: stream.id,
     label: stream.display_name,
-    web_url: `${baseUrl}/recurring?stream=${encodeURIComponent(stream.id)}`,
+    web_url: `${baseUrl}/recurring?item=${encodeURIComponent(stream.id)}`,
   };
 }
 

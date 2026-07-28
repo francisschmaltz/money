@@ -805,6 +805,43 @@
     });
   }
 
+  function recurringClassification() {
+    document
+      .querySelectorAll("[data-recurring-classification]")
+      .forEach((form) => {
+        form.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          const status = form.querySelector("[data-save-status]");
+          const button = form.querySelector('button[type="submit"]');
+          const type = new FormData(form).get("type");
+          const csrfToken =
+            document.querySelector('meta[name="csrf-token"]')?.content ||
+            "";
+          button.disabled = true;
+          if (status) status.textContent = "Saving…";
+          try {
+            const response = await fetch(form.dataset.endpoint, {
+              method: "PUT",
+              headers: {
+                Accept: "application/json",
+                "Content-Type": "application/json",
+                "X-CSRF-Token": csrfToken,
+              },
+              body: JSON.stringify({ type }),
+            });
+            if (!response.ok) throw new Error("Classification failed");
+            if (status) status.textContent = "Saved";
+            window.setTimeout(() => window.location.reload(), 300);
+          } catch {
+            button.disabled = false;
+            if (status) {
+              status.textContent = "Couldn’t save classification";
+            }
+          }
+        });
+      });
+  }
+
   function dashboardBalanceSwitcher() {
     const root = document.querySelector("[data-dashboard-balance]");
     if (!root) return;
@@ -2125,6 +2162,7 @@
           card?.querySelector("[data-insight-action-status]") ??
           document.querySelector("[data-insight-action-status]");
         const confirmation = button.dataset.confirmMessage;
+        const reasonCode = button.dataset.reasonCode;
         if (confirmation && !window.confirm(confirmation)) return;
         button.disabled = true;
         if (status) status.textContent = "Saving…";
@@ -2141,7 +2179,9 @@
                 "Content-Type": "application/json",
                 "X-CSRF-Token": csrfToken,
               },
-              body: "{}",
+              body: JSON.stringify(
+                reasonCode ? { reason_code: reasonCode } : {},
+              ),
             },
           );
           if (!response.ok) throw new Error("Action failed");
@@ -2151,7 +2191,9 @@
               "confirm",
               "delete",
               "dismiss",
+              "ignore",
               "mark_bad",
+              "report_incorrect",
               "mark_expected",
               "restore",
             ].includes(action)
@@ -3679,6 +3721,7 @@
     globalSearch();
     searchPage();
     recurringControls();
+    recurringClassification();
     dashboardBalanceSwitcher();
     periodControls();
     settingsForms();

@@ -123,6 +123,13 @@
       actionIcon: "ph-bank"
     }) %>
 
+    <% if (typeof insightsStale !== "undefined" && insightsStale) { %>
+      <aside class="card insight-empty-state" role="status">
+        <h2>Insights are paused</h2>
+        <p>Your last successful insights remain available on the Insights page, but none are promoted here until every finance connection is fresh.</p>
+      </aside>
+    <% } %>
+
     <% if (typeof planning !== "undefined" && planning?.safeToSpend) { %>
       <%- include("partials/safe-to-spend-card", {
         safeToSpend: planning.safeToSpend

@@ -29,6 +29,12 @@ const MANUAL_ASSET_TYPES = new Set([
   "collectible",
   "other",
 ]);
+const INSIGHT_REASON_CODES = new Set([
+  "not_subscription",
+  "wrong_data",
+  "wrong_interpretation",
+  "other_false_positive",
+]);
 
 function unavailable(response, capability) {
   response.status(503).json({
@@ -1244,8 +1250,10 @@ export function createApiRouter({
           "mark_expected",
           "confirm",
           "dismiss",
+          "ignore",
           "archive",
           "mark_bad",
+          "report_incorrect",
           "restore",
         ].includes(action)
       ) {
@@ -1255,12 +1263,27 @@ export function createApiRouter({
         });
         return;
       }
+      const reasonCode =
+        action === "report_incorrect"
+          ? stringValue(request.body?.reason_code, 40)
+          : undefined;
+      if (
+        action === "report_incorrect" &&
+        !INSIGHT_REASON_CODES.has(reasonCode)
+      ) {
+        response.status(400).json({
+          error: "invalid_reason_code",
+          message: "Choose a supported incorrect-insight reason.",
+        });
+        return;
+      }
       invokeWithActor(
         financeService,
         "actOnFinding",
         {
           finding_id: request.params.findingId,
           action,
+          ...(reasonCode ? { reason_code: reasonCode } : {}),
         },
         request.user,
         response,
@@ -1280,6 +1303,25 @@ export function createApiRouter({
         {
           finding_id: request.params.findingId,
           action: "delete",
+        },
+        request.user,
+        response,
+        next,
+      );
+    },
+  );
+
+  router.put(
+    "/api/v1/recurring/:streamId/classification",
+    requireAdmin,
+    requireCsrf,
+    (request, response, next) => {
+      invokeWithActor(
+        financeService,
+        "updateRecurringClassification",
+        {
+          stream_id: request.params.streamId,
+          type: stringValue(request.body?.type, 40),
         },
         request.user,
         response,

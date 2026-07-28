@@ -9,6 +9,7 @@ import {
 import {
   buildCreditScoreSummary,
 } from "./creditScoreTracking.js";
+import { DEMO_IDS } from "../demo/fixtureIds.js";
 
 const money = (amountMinor, currency = "USD") => ({
   amount_minor: amountMinor,
@@ -137,9 +138,9 @@ const weeklyFindings = [
     evidence: [
       evidence(
         "transaction",
-        "txn_delta_1",
+        DEMO_IDS.transactions.delta,
         "Delta Air Lines",
-        "/transactions?transaction=txn_delta_1",
+        `/transactions?transaction=${DEMO_IDS.transactions.delta}`,
       ),
     ],
     actions: ["review", "recategorize", "mark_expected", "dismiss"],
@@ -190,7 +191,7 @@ const investmentFindings = [
     evidence: [
       evidence(
         "holding",
-        "holding_vti",
+        DEMO_IDS.holdings.vti,
         "VTI holding",
         "/portfolio?holding=holding_vti",
       ),
@@ -217,15 +218,15 @@ const subscriptionFindings = [
     evidence: [
       evidence(
         "recurring_stream",
-        "rec_apple_services",
+        DEMO_IDS.recurring.appleServices,
         "Apple Services",
-        "/recurring?item=rec_apple_services",
+        `/recurring?item=${DEMO_IDS.recurring.appleServices}`,
       ),
       evidence(
         "recurring_stream",
-        "rec_icloud",
+        DEMO_IDS.recurring.iCloud,
         "iCloud+",
-        "/recurring?item=rec_icloud",
+        `/recurring?item=${DEMO_IDS.recurring.iCloud}`,
       ),
     ],
     actions: ["confirm", "dismiss"],
@@ -247,9 +248,9 @@ const subscriptionFindings = [
     evidence: [
       evidence(
         "recurring_stream",
-        "rec_google_workspace",
+        DEMO_IDS.recurring.googleWorkspace,
         "Google Workspace",
-        "/recurring?item=rec_google_workspace",
+        `/recurring?item=${DEMO_IDS.recurring.googleWorkspace}`,
       ),
     ],
     actions: ["review", "dismiss"],
@@ -430,7 +431,7 @@ function analyticsAccount(account) {
 
 const portfolioHoldings = [
   {
-    id: "holding_vti",
+    id: DEMO_IDS.holdings.vti,
     security_id: "security_vti",
     account_id: "account_brokerage",
     ticker_symbol: "VTI",
@@ -511,7 +512,7 @@ const contributionsByAccount = new Map([
 
 const transactions = [
   {
-    id: "txn_whole_foods",
+    id: DEMO_IDS.transactions.wholeFoods,
     date: "2026-07-25",
     merchant: "Whole Foods Market",
     description: "Whole Foods Market",
@@ -529,7 +530,7 @@ const transactions = [
     pending: false,
   },
   {
-    id: "txn_con_edison",
+    id: DEMO_IDS.transactions.conEdison,
     date: "2026-07-25",
     merchant: "Con Edison",
     description: "Con Edison",
@@ -544,7 +545,7 @@ const transactions = [
     pending: true,
   },
   {
-    id: "txn_apple_services",
+    id: DEMO_IDS.transactions.appleServices,
     date: "2026-07-24",
     merchant: "Apple Services",
     description: "AAPL SRV 0042",
@@ -559,7 +560,7 @@ const transactions = [
     pending: false,
   },
   {
-    id: "txn_payroll",
+    id: DEMO_IDS.transactions.payroll,
     date: "2026-07-23",
     merchant: "Acme Payroll",
     description: "Payroll deposit",
@@ -833,7 +834,7 @@ function transactionMatchRow(
 
 const recurring = [
   {
-    id: "rec_google_workspace",
+    id: DEMO_IDS.recurring.googleWorkspace,
     service: "Google Workspace",
     service_family: "google_workspace",
     type: "subscription",
@@ -850,7 +851,7 @@ const recurring = [
     },
   },
   {
-    id: "rec_fidelis",
+    id: DEMO_IDS.recurring.fidelis,
     service: "Fidelis Care",
     service_family: "fidelis_care",
     type: "bill",
@@ -2283,6 +2284,29 @@ export class DemoFinanceService {
 
   async actOnFinding(input) {
     return { updated: true, finding: input };
+  }
+
+  async updateRecurringClassification(input) {
+    const streamId = input.streamId ?? input.stream_id;
+    const type = input.type;
+    if (
+      !["subscription", "bill", "frequent_spending"].includes(type)
+    ) {
+      throw new TypeError("Invalid recurring classification");
+    }
+    const stream = recurring.find((candidate) => candidate.id === streamId);
+    if (!stream) {
+      const error = new Error("Recurring stream not found");
+      error.statusCode = 404;
+      throw error;
+    }
+    stream.type = type;
+    return {
+      updated: true,
+      demo: true,
+      stream_id: streamId,
+      type,
+    };
   }
 
   async updateInsightRule(input) {

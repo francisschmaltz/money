@@ -686,6 +686,8 @@ export class FinanceService {
     const status = options.status ?? "active";
     const includeInactive =
       booleanOption(options.includeInactive, status !== "active");
+    const includeFrequentSpending =
+      options.includeFrequentSpending === true;
     const limit = bounded(options.limit, 50, 100);
     const offset = decodeOffsetCursor(options.cursor, "recurring");
     const [streams, freshness] = await Promise.all([
@@ -696,18 +698,23 @@ export class FinanceService {
     ]);
     const filtered = streams.filter(
       (stream) =>
+        (includeFrequentSpending ||
+          stream.stream_type !== "frequent_spending") &&
         (type === "all" || stream.stream_type === type) &&
         (cadence === "all" || stream.cadence === cadence) &&
         recurringStatusMatches(stream.status, status),
     );
     const page = filtered.slice(offset, offset + limit);
-    const totalMonthly = filtered
+    const paymentStreams = filtered.filter(
+      (stream) => stream.stream_type !== "frequent_spending",
+    );
+    const totalMonthly = paymentStreams
       .filter((stream) =>
         stream.currency_code === this.#currency &&
         ["active", "resumed", "irregular"].includes(stream.status),
       )
       .reduce((sum, stream) => sum + stream.monthly_equivalent_minor, 0);
-    const excludedCurrencyCount = filtered.filter(
+    const excludedCurrencyCount = paymentStreams.filter(
       (stream) => stream.currency_code !== this.#currency,
     ).length;
     const hasMore = offset + limit < filtered.length;
@@ -1715,6 +1722,7 @@ export class FinanceService {
   async actOnFinding(input, actor = null) {
     const findingId = input.findingId ?? input.finding_id;
     const action = input.action;
+    const reasonCode = input.reasonCode ?? input.reason_code ?? null;
     const finding = await this.#repository.getInsightFinding?.(
       this.#workspaceId,
       findingId,
@@ -1724,20 +1732,33 @@ export class FinanceService {
       error.statusCode = 404;
       throw error;
     }
-    if (action === "dismiss") {
-      if (finding.type === "possible_duplicate") {
-        const streamIds = finding.evidence
-          .filter((entry) =>
-            ["recurring", "recurring_stream"].includes(entry.entity_type),
-          )
-          .map((entry) => entry.entity_id);
-        if (streamIds.length) {
-          await this.#repository.updateRecurringDuplicateState(
-            this.#workspaceId,
-            streamIds,
-            "not_duplicate",
-          );
-        }
+    if (["report_incorrect", "mark_bad"].includes(action)) {
+      const streamIds = finding.evidence
+        .filter((entry) =>
+          ["recurring", "recurring_stream"].includes(entry.entity_type),
+        )
+        .map((entry) => entry.entity_id);
+      if (finding.type === "possible_duplicate" && streamIds.length) {
+        await this.#repository.updateRecurringDuplicateState(
+          this.#workspaceId,
+          streamIds,
+          "not_duplicate",
+        );
+      }
+      if (reasonCode === "not_subscription") {
+        await Promise.all(
+          streamIds.map((streamId) =>
+            this.#repository.updateRecurringClassification(
+              this.#workspaceId,
+              streamId,
+              {
+                type: "frequent_spending",
+                actorId: actor?.id ?? input.user_id ?? null,
+                sourceFindingId: findingId,
+              },
+            ),
+          ),
+        );
       }
     } else if (action === "confirm") {
       if (finding.type === "possible_duplicate") {
@@ -1761,6 +1782,9 @@ export class FinanceService {
         "mark_expected",
         "archive",
         "mark_bad",
+        "dismiss",
+        "ignore",
+        "report_incorrect",
         "restore",
         "delete",
       ].includes(action)
@@ -1779,12 +1803,19 @@ export class FinanceService {
         {
           action,
           actorId: actor?.id ?? input.user_id ?? null,
+          ...(reasonCode ? { reasonCode } : {}),
         },
       );
     if (!updated) {
       const error = new Error("Insight finding not found");
       error.statusCode = 404;
       throw error;
+    }
+    if (action === "restore") {
+      await this.#repository.clearRecurringClassificationFromFinding?.(
+        this.#workspaceId,
+        findingId,
+      );
     }
     await this.#repository.rebuildSearchDocuments?.(this.#workspaceId);
     return {
@@ -1794,6 +1825,36 @@ export class FinanceService {
       finding_key: finding.finding_key,
       state: action === "delete" ? "deleted" : updated.state,
       action,
+    };
+  }
+
+  async updateRecurringClassification(input, actor = null) {
+    const streamId = requiredId(
+      input.streamId ?? input.stream_id,
+      "stream_id",
+    );
+    const type = input.type;
+    if (
+      !["subscription", "bill", "frequent_spending"].includes(type)
+    ) {
+      throw new TypeError("Invalid recurring classification");
+    }
+    const updated =
+      await this.#repository.updateRecurringClassification?.(
+        this.#workspaceId,
+        streamId,
+        {
+          type,
+          actorId: actor?.id ?? input.user_id ?? null,
+          sourceFindingId: null,
+        },
+      );
+    if (!updated) throw notFound("Recurring stream not found");
+    await this.#repository.rebuildSearchDocuments?.(this.#workspaceId);
+    return {
+      updated: true,
+      stream_id: streamId,
+      type: updated.stream_type,
     };
   }
 
@@ -2039,7 +2100,11 @@ export class FinanceService {
     if (view === "recurring") {
       const [overview, recurring] = await Promise.all([
         this.getFinanceOverview(),
-        this.listRecurringPayments({ status: "all", limit: 100 }),
+        this.listRecurringPayments({
+          status: "all",
+          limit: 100,
+          includeFrequentSpending: true,
+        }),
       ]);
       const streams = recurring.data.recurring_payments;
       const activeStreams = streams.filter((stream) =>
@@ -2049,6 +2114,15 @@ export class FinanceService {
         (stream) =>
           stream.id === (query.item ?? query.stream),
       );
+      const selectedTransactions = selectedRecurring
+        ? await optionalRepositoryCall(
+            this.#repository,
+            "getTransactionsByIds",
+            [],
+            this.#workspaceId,
+            selectedRecurring.transaction_ids ?? [],
+          )
+        : [];
       return {
         ...base,
         overview: webOverview(overview.data),
@@ -2058,6 +2132,9 @@ export class FinanceService {
         bills: activeStreams
           .filter((stream) => stream.type === "bill")
           .map(webRecurring),
+        frequentSpending: activeStreams
+          .filter((stream) => stream.type === "frequent_spending")
+          .map(webRecurring),
         inactiveRecurring: streams
           .filter(
             (stream) =>
@@ -2065,8 +2142,28 @@ export class FinanceService {
           )
           .map(webRecurring),
         selectedRecurring: selectedRecurring
-          ? webRecurring(selectedRecurring)
+          ? {
+              ...webRecurring(selectedRecurring),
+              detectedType: selectedRecurring.detected_type,
+              typeOverride: selectedRecurring.type_override,
+              classificationSignals:
+                selectedRecurring.classification_signals ?? {},
+              transactions: selectedTransactions
+                .sort((left, right) =>
+                  right.posted_on.localeCompare(left.posted_on),
+                )
+                .slice(0, 8)
+                .map((transaction) =>
+                  webTransaction(transactionCard(transaction)),
+                ),
+            }
           : null,
+        selectedRecurringQueryKey:
+          query.item != null
+            ? "item"
+            : query.stream != null
+              ? "stream"
+              : "item",
       };
     }
     if (view === "credit") {
@@ -2166,10 +2263,14 @@ export class FinanceService {
       return {
         ...base,
         insights: mappedInsights,
+        insightsStale: insights.partial,
         insightView,
         insightData: {
           ...insights.data,
           view: insights.data.view ?? insightView,
+          partial: insights.partial,
+          warnings: insights.warnings,
+          dataAsOf: insights.data_as_of,
         },
         selectedInsight:
           Object.values(mappedInsights)
@@ -2246,7 +2347,10 @@ export class FinanceService {
         overview.data.manual_asset_count > 0,
       overview: webOverviewData,
       categories: spending.data.segments.map(webCategory),
-      insights: webInsights(insights.data),
+      insights: insights.partial
+        ? { weekly: [], investments: [], subscriptions: [] }
+        : webInsights(insights.data),
+      insightsStale: insights.partial,
       transactions: transactions.data.transactions.map(webTransaction),
       netWorthSeries: displayedWealthHistory.map(
         (point) => point.net_worth.amount_minor,
@@ -2442,6 +2546,11 @@ function recurringCard(stream) {
     service: stream.display_name,
     service_family: stream.service_family,
     type: stream.stream_type,
+    detected_type: stream.detected_stream_type ?? stream.stream_type,
+    type_override: stream.stream_type_override ?? null,
+    classification_signals: stream.classification_signals ?? {},
+    override_source_finding_id:
+      stream.override_source_finding_id ?? null,
     cadence: stream.cadence,
     expected_amount: money(
       stream.expected_amount_minor,
@@ -2466,6 +2575,7 @@ function recurringCard(stream) {
     account: stream.account_id
       ? { id: stream.account_id, name: stream.account_name }
       : null,
+    transaction_ids: [...(stream.transaction_ids ?? [])],
   };
 }
 
@@ -3524,6 +3634,7 @@ function webRecurring(stream) {
     icon: "ph-repeat",
     state: stream.status,
     next: stream.next_estimated_date ?? "unknown",
+    type: stream.type,
   };
 }
 

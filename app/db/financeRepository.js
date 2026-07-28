@@ -3237,6 +3237,17 @@ export class PgFinanceRepository {
     return result.rows[0] ? mapTransaction(result.rows[0]) : null;
   }
 
+  async getTransactionsByIds(
+    workspaceId = DEFAULT_WORKSPACE_ID,
+    transactionIds = [],
+  ) {
+    const ids = [...new Set(transactionIds)].slice(0, 200);
+    const transactions = await Promise.all(
+      ids.map((id) => this.getTransaction(workspaceId, id)),
+    );
+    return transactions.filter(Boolean);
+  }
+
   async listTransactionCleanupRules(
     workspaceId = DEFAULT_WORKSPACE_ID,
     { includeDisabled = true, limit = 200 } = {},
@@ -4383,6 +4394,42 @@ export class PgFinanceRepository {
         [workspaceId, activeIds],
       );
       for (const stream of streams) {
+        const inheritedOverride = await client.query(
+          `
+            SELECT
+              r.stream_type_override,
+              r.override_source_finding_id,
+              r.override_updated_by,
+              r.override_updated_at
+            FROM recurring_streams r
+            WHERE r.workspace_id = $1
+              AND r.stream_type_override IS NOT NULL
+              AND (
+                r.id = $2
+                OR (
+                  r.account_id IS NOT DISTINCT FROM $3
+                  AND EXISTS (
+                    SELECT 1
+                    FROM recurring_stream_transactions rst
+                    WHERE rst.stream_id = r.id
+                      AND rst.transaction_id = ANY($4::text[])
+                  )
+                )
+              )
+            ORDER BY
+              (r.id = $2) DESC,
+              r.override_updated_at DESC NULLS LAST,
+              r.updated_at DESC
+            LIMIT 1
+          `,
+          [
+            workspaceId,
+            stream.id,
+            stream.account_id,
+            stream.transaction_ids ?? [],
+          ],
+        );
+        const override = inheritedOverride.rows[0] ?? {};
         await client.query(
           `
             INSERT INTO recurring_streams (
@@ -4390,11 +4437,14 @@ export class PgFinanceRepository {
               cadence, account_id, expected_amount_minor, min_amount_minor,
               max_amount_minor, monthly_equivalent_minor, currency_code,
               first_seen_on, last_seen_on, next_expected_on,
-              confidence_basis_points, status
+              confidence_basis_points, status, classification_signals,
+              stream_type_override, override_source_finding_id,
+              override_updated_by, override_updated_at
             )
             VALUES (
               $1, $2, $3, $4, $5, $6, $7, $8, $9,
-              $10, $11, $12, $13, $14, $15, $16, $17
+              $10, $11, $12, $13, $14, $15, $16, $17, $18::jsonb,
+              $19, $20, $21, $22
             )
             ON CONFLICT (id) DO UPDATE SET
               display_name = EXCLUDED.display_name,
@@ -4408,6 +4458,7 @@ export class PgFinanceRepository {
               last_seen_on = EXCLUDED.last_seen_on,
               next_expected_on = EXCLUDED.next_expected_on,
               confidence_basis_points = EXCLUDED.confidence_basis_points,
+              classification_signals = EXCLUDED.classification_signals,
               status = CASE
                 WHEN recurring_streams.status = 'canceled'
                   AND EXCLUDED.status IN ('active', 'irregular')
@@ -4434,6 +4485,11 @@ export class PgFinanceRepository {
             stream.next_expected_on,
             stream.confidence_basis_points,
             stream.status,
+            JSON.stringify(stream.classification_signals ?? {}),
+            override.stream_type_override ?? null,
+            override.override_source_finding_id ?? null,
+            override.override_updated_by ?? null,
+            override.override_updated_at ?? null,
           ],
         );
         await client.query(
@@ -4462,13 +4518,17 @@ export class PgFinanceRepository {
       `
         SELECT r.*, a.name AS account_name,
           COALESCE(
-            jsonb_agg(rst.transaction_id)
+            jsonb_agg(
+              rst.transaction_id
+              ORDER BY t.posted_on, rst.transaction_id
+            )
               FILTER (WHERE rst.transaction_id IS NOT NULL),
             '[]'::jsonb
           ) AS transaction_ids
         FROM recurring_streams r
         LEFT JOIN accounts a ON a.id = r.account_id
         LEFT JOIN recurring_stream_transactions rst ON rst.stream_id = r.id
+        LEFT JOIN transactions t ON t.id = rst.transaction_id
         WHERE r.workspace_id = $1
           AND (
             $2::boolean
@@ -4482,6 +4542,57 @@ export class PgFinanceRepository {
     return result.rows.map(mapRecurring);
   }
 
+  async updateRecurringClassification(
+    workspaceId = DEFAULT_WORKSPACE_ID,
+    streamId,
+    {
+      type,
+      actorId = null,
+      sourceFindingId = null,
+    } = {},
+  ) {
+    if (
+      !["subscription", "bill", "frequent_spending"].includes(type)
+    ) {
+      throw new TypeError("Invalid recurring classification");
+    }
+    const result = await this.#pool.query(
+      `
+        UPDATE recurring_streams
+        SET stream_type_override = $3,
+            override_source_finding_id = $4,
+            override_updated_by = $5,
+            override_updated_at = now(),
+            updated_at = now()
+        WHERE workspace_id = $1 AND id = $2
+        RETURNING *
+      `,
+      [workspaceId, streamId, type, sourceFindingId, actorId],
+    );
+    return result.rows[0] ? mapRecurring(result.rows[0]) : null;
+  }
+
+  async clearRecurringClassificationFromFinding(
+    workspaceId = DEFAULT_WORKSPACE_ID,
+    findingId,
+  ) {
+    const result = await this.#pool.query(
+      `
+        UPDATE recurring_streams
+        SET stream_type_override = NULL,
+            override_source_finding_id = NULL,
+            override_updated_by = NULL,
+            override_updated_at = NULL,
+            updated_at = now()
+        WHERE workspace_id = $1
+          AND override_source_finding_id = $2
+        RETURNING id
+      `,
+      [workspaceId, findingId],
+    );
+    return result.rows.map((row) => row.id);
+  }
+
   async replaceInsightFindings(
     workspaceId = DEFAULT_WORKSPACE_ID,
     family,
@@ -4490,7 +4601,7 @@ export class PgFinanceRepository {
     await withTransaction(this.#pool, async (client) => {
       const preferenceResult = await client.query(
         `
-          SELECT finding_key, disposition, updated_by, updated_at
+          SELECT finding_key, disposition, reason_code, updated_by, updated_at
           FROM insight_finding_preferences
           WHERE workspace_id = $1
         `,
@@ -4791,18 +4902,33 @@ export class PgFinanceRepository {
   async transitionInsightFinding(
     workspaceId = DEFAULT_WORKSPACE_ID,
     findingId,
-    { action, actorId = null } = {},
+    { action, actorId = null, reasonCode = null } = {},
   ) {
     const targetStates = {
       archive: "archived",
       mark_bad: "bad",
+      report_incorrect: "bad",
       restore: "active",
       dismiss: "dismissed",
+      ignore: "dismissed",
       mark_expected: "resolved",
       confirm: "resolved",
     };
     if (action !== "delete" && !targetStates[action]) {
       throw new TypeError("Unsupported insight transition");
+    }
+    const allowedReasons = new Set([
+      "not_subscription",
+      "wrong_data",
+      "wrong_interpretation",
+      "other_false_positive",
+    ]);
+    const normalizedReason =
+      ["mark_bad", "report_incorrect"].includes(action)
+        ? reasonCode ?? "other_false_positive"
+        : null;
+    if (normalizedReason && !allowedReasons.has(normalizedReason)) {
+      throw new TypeError("Unsupported insight feedback reason");
     }
 
     return withTransaction(this.#pool, async (client) => {
@@ -4824,9 +4950,12 @@ export class PgFinanceRepository {
         `
           INSERT INTO insight_finding_events (
             id, workspace_id, finding_id, finding_key, family,
-            finding_type, action, from_state, to_state, actor_id
+            finding_type, action, from_state, to_state, actor_id,
+            reason_code
           )
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+          VALUES (
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
+          )
         `,
         [
           randomUUID(),
@@ -4839,6 +4968,7 @@ export class PgFinanceRepository {
           row.state,
           targetState,
           actorId,
+          normalizedReason,
         ],
       );
 
@@ -4882,18 +5012,25 @@ export class PgFinanceRepository {
           [workspaceId, row.finding_key ?? row.id],
         );
       } else if (
-        ["mark_bad", "dismiss", "mark_expected", "confirm"].includes(
-          action,
-        )
+        [
+          "mark_bad",
+          "report_incorrect",
+          "dismiss",
+          "ignore",
+          "mark_expected",
+          "confirm",
+        ].includes(action)
       ) {
         await client.query(
           `
             INSERT INTO insight_finding_preferences (
-              workspace_id, finding_key, disposition, updated_by
+              workspace_id, finding_key, disposition, reason_code,
+              updated_by
             )
-            VALUES ($1, $2, $3, $4)
+            VALUES ($1, $2, $3, $4, $5)
             ON CONFLICT (workspace_id, finding_key) DO UPDATE SET
               disposition = EXCLUDED.disposition,
+              reason_code = EXCLUDED.reason_code,
               updated_by = EXCLUDED.updated_by,
               updated_at = now()
           `,
@@ -4901,6 +5038,7 @@ export class PgFinanceRepository {
             workspaceId,
             row.finding_key ?? row.id,
             targetState,
+            normalizedReason,
             actorId,
           ],
         );
@@ -4949,8 +5087,16 @@ export class PgFinanceRepository {
             COUNT(*) AS count,
             array_agg(
               DISTINCT CASE e.action
-                WHEN 'mark_bad' THEN 'marked_bad'
-                WHEN 'dismiss' THEN 'dismissed'
+                WHEN 'mark_bad' THEN COALESCE(
+                  e.reason_code,
+                  'other_false_positive'
+                )
+                WHEN 'report_incorrect' THEN COALESCE(
+                  e.reason_code,
+                  'other_false_positive'
+                )
+                WHEN 'dismiss' THEN 'ignored'
+                WHEN 'ignore' THEN 'ignored'
                 WHEN 'mark_expected' THEN 'expected'
                 WHEN 'confirm' THEN 'confirmed'
               END
@@ -4963,7 +5109,9 @@ export class PgFinanceRepository {
             AND ($2::text IS NULL OR e.family = $2)
             AND e.action IN (
               'mark_bad',
+              'report_incorrect',
               'dismiss',
+              'ignore',
               'mark_expected',
               'confirm'
             )
@@ -5447,13 +5595,35 @@ export class PgFinanceRepository {
           )
           SELECT
             'recurring:' || r.id, r.workspace_id, 'recurring', r.id,
-            r.display_name, concat_ws(' · ', r.cadence, r.stream_type),
-            concat_ws(' ', r.display_name, r.service_family, r.cadence, r.stream_type),
+            r.display_name,
+            concat_ws(
+              ' · ',
+              r.cadence,
+              COALESCE(r.stream_type_override, r.stream_type)
+            ),
+            concat_ws(
+              ' ',
+              r.display_name,
+              r.service_family,
+              r.cadence,
+              COALESCE(r.stream_type_override, r.stream_type)
+            ),
             lower(regexp_replace(
-              concat_ws(' ', r.display_name, r.service_family, r.cadence, r.stream_type),
+              concat_ws(
+                ' ',
+                r.display_name,
+                r.service_family,
+                r.cadence,
+                COALESCE(r.stream_type_override, r.stream_type)
+              ),
               '[^[:alnum:]]+', ' ', 'g'
             )),
-            jsonb_build_object('monthly_equivalent_minor', r.monthly_equivalent_minor)
+            jsonb_build_object(
+              'monthly_equivalent_minor',
+              r.monthly_equivalent_minor,
+              'type',
+              COALESCE(r.stream_type_override, r.stream_type)
+            )
           FROM recurring_streams r
           WHERE r.workspace_id = $1
             AND r.status IN ('active', 'resumed', 'irregular')
@@ -5775,11 +5945,18 @@ function mapInsightFinding(row) {
 }
 
 function mapRecurring(row) {
+  const detectedType = row.stream_type;
+  const effectiveType = row.stream_type_override ?? detectedType;
   return {
     id: row.id,
     service_family: row.service_family,
     display_name: row.display_name,
-    stream_type: row.stream_type,
+    stream_type: effectiveType,
+    detected_stream_type: detectedType,
+    stream_type_override: row.stream_type_override ?? null,
+    classification_signals: row.classification_signals ?? {},
+    override_source_finding_id:
+      row.override_source_finding_id ?? null,
     cadence: row.cadence,
     account_id: row.account_id,
     account_name: row.account_name,

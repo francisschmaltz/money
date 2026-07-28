@@ -84,6 +84,6 @@ test("subscription and lifecycle language stays direct", () => {
     "Check whether you need both Apple subscriptions",
   );
   assert.equal(duplicate.bucket, "review_now");
-  assert.equal(duplicate.lifecycleLabel, "Marked bad");
+  assert.equal(duplicate.lifecycleLabel, "Incorrect");
   assert.equal(lifecycleLabel("archived"), "Archived");
 });

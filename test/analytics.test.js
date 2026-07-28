@@ -168,6 +168,34 @@ test("weekly spend-less hits its exact boundary and excludes fixed categories", 
   );
 });
 
+test("single-transaction insight review opens that transaction", () => {
+  const findings = detectWeeklyInsights(
+    [
+      transaction({
+        id: "transaction-needs-review",
+        date: "2026-07-22",
+        amount: -20_000,
+        category: null,
+        merchant: "Mystery charge",
+      }),
+    ],
+    {
+      asOf: new Date("2026-07-26T12:00:00Z"),
+      baseUrl: "https://money.test",
+    },
+  );
+  const finding = findings.find(
+    (candidate) => candidate.type === "needs_review",
+  );
+
+  assert.ok(finding);
+  assert.equal(finding.evidence.length, 1);
+  assert.equal(
+    finding.actions.find((action) => action.type === "review").web_url,
+    "https://money.test/transactions?transaction=transaction-needs-review",
+  );
+});
+
 test("the same insight pattern keeps its finding key across periods", () => {
   const rows = [
     transaction({
@@ -287,6 +315,15 @@ test("single-security concentration starts above, not at, 25 percent", () => {
         finding.metrics.allocation_basis_points === 7_500,
     ),
     true,
+  );
+  const concentrated = concentrations.find(
+    (finding) =>
+      finding.metrics.allocation_basis_points === 7_500,
+  );
+  assert.equal(
+    concentrated.actions.find((action) => action.type === "review")
+      .web_url,
+    "https://money.example.com/portfolio?holding=Holding%201",
   );
 });
 
@@ -624,6 +661,49 @@ test("worker shutdown waits for the active job before returning", async () => {
   await Promise.all([startPromise, stopPromise]);
   assert.equal(completed, true);
   assert.equal(stopped, true);
+});
+
+test("insight jobs wait while a workspace still has Plaid sync work", async () => {
+  const events = [];
+  const worker = new FinanceWorker({
+    queue: {
+      async claim() {
+        return {
+          id: "insight-job",
+          type: "finance.generate_insights",
+          payload: { workspaceId: "shared" },
+        };
+      },
+      async hasPendingPlaidSyncs(workspaceId) {
+        events.push(`pending:${workspaceId}`);
+        return true;
+      },
+      async enqueue(type, payload, options) {
+        events.push({ type, payload, options });
+      },
+      async complete(id) {
+        events.push(`complete:${id}`);
+      },
+      async fail() {
+        assert.fail("deferred insight generation should not fail");
+      },
+    },
+    plaidSyncService: {},
+    recurringService: {},
+    insightService: {
+      async generateAll() {
+        assert.fail("the model path must not run before syncs settle");
+      },
+    },
+  });
+
+  assert.equal(await worker.runOnce(), true);
+  assert.equal(events[0], "pending:shared");
+  assert.equal(events[2], "complete:insight-job");
+  assert.deepEqual(events[1].type, "finance.generate_insights");
+  assert.deepEqual(events[1].payload, { workspaceId: "shared" });
+  assert.equal(events[1].options.dedupeKey, "shared");
+  assert.ok(events[1].options.runAt instanceof Date);
 });
 
 test("in-process worker reuses the application runtime and leaves its pool open", async () => {

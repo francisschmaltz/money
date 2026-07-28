@@ -4,7 +4,7 @@ import { presentInsightForWeb } from "./insightPresentation.js";
 export const NARRATIVE_PROMPT_VERSION = 1;
 
 const MAX_RANKED_FINDINGS = 3;
-const MAX_CANDIDATE_FINDINGS = 24;
+const MAX_CANDIDATE_FINDINGS = 12;
 const MAX_FEEDBACK_ENTRIES = 12;
 const RESPONSE_KEYS = [
   "finding_ids",
@@ -158,7 +158,7 @@ function presentNarrativeSelection(selection, findings) {
 }
 
 function rankingFacts(findings) {
-  return prioritizedFindings(findings)
+  return deduplicateFindings(prioritizedFindings(findings))
     .slice(0, MAX_CANDIDATE_FINDINGS)
     .map((finding) => ({
       id: String(finding.id),
@@ -187,6 +187,18 @@ function rankingFacts(findings) {
             .slice(0, 5)
         : [],
     }));
+}
+
+function deduplicateFindings(findings) {
+  const seen = new Set();
+  return findings.filter((finding) => {
+    const key = String(
+      finding.finding_key ?? finding.feedback_key ?? finding.id,
+    );
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function prioritizedFindings(findings) {

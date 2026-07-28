@@ -660,6 +660,76 @@ test("insight lifecycle routes keep mutations admin-only and use DELETE for dele
   ]);
 });
 
+test("quality feedback and recurring classification routes validate structured admin input", async () => {
+  const calls = [];
+  const actor = { id: "user-admin", is_admin: true };
+  const app = express();
+  app.use(express.json());
+  app.use((request, _response, next) => {
+    request.user = actor;
+    next();
+  });
+  app.use(
+    createApiRouter({
+      requireAdmin: (_request, _response, next) => next(),
+      requireCsrf: (_request, _response, next) => next(),
+      financeService: {
+        actOnFinding(input, routeActor) {
+          calls.push(["insight", input, routeActor]);
+          return { updated: true };
+        },
+        updateRecurringClassification(input, routeActor) {
+          calls.push(["recurring", input, routeActor]);
+          return { updated: true };
+        },
+      },
+    }),
+  );
+
+  await request(app)
+    .post("/api/v1/insights/finding-1/actions/ignore")
+    .send({})
+    .expect(200);
+  await request(app)
+    .post(
+      "/api/v1/insights/finding-1/actions/report_incorrect",
+    )
+    .send({ reason_code: "not_subscription" })
+    .expect(200);
+  await request(app)
+    .post(
+      "/api/v1/insights/finding-1/actions/report_incorrect",
+    )
+    .send({ reason_code: "freeform_nonsense" })
+    .expect(400);
+  await request(app)
+    .put("/api/v1/recurring/stream-1/classification")
+    .send({ type: "frequent_spending" })
+    .expect(200);
+
+  assert.deepEqual(calls, [
+    [
+      "insight",
+      { finding_id: "finding-1", action: "ignore" },
+      actor,
+    ],
+    [
+      "insight",
+      {
+        finding_id: "finding-1",
+        action: "report_incorrect",
+        reason_code: "not_subscription",
+      },
+      actor,
+    ],
+    [
+      "recurring",
+      { stream_id: "stream-1", type: "frequent_spending" },
+      actor,
+    ],
+  ]);
+});
+
 test("global search passes entity filters and demo search honors them", async () => {
   let captured;
   const production = express();

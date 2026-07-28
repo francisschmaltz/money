@@ -77,6 +77,13 @@
       </a>
     </nav>
 
+    <% if (typeof insightData !== "undefined" && insightData.partial) { %>
+      <aside class="card insight-empty-state" role="status">
+        <h2>Insights are paused</h2>
+        <p>The last successful findings are shown below, but they are not promoted on the dashboard until every finance connection is fresh again.</p>
+      </aside>
+    <% } %>
+
     <% if (typeof selectedInsight !== "undefined" && selectedInsight) { %>
       <section class="card selected-detail selected-detail--insight" aria-labelledby="selected-insight-heading" data-insight-card>
         <div>
@@ -85,6 +92,19 @@
             <p class="insight-timeframe"><%= selectedInsight.timeframe %></p>
           <% } %>
           <p><%= selectedInsight.detail || selectedInsight.copy %></p>
+          <% if (selectedInsight.evidence?.length) { %>
+            <div class="recurring-list" aria-label="Insight evidence">
+              <% selectedInsight.evidence.forEach((entry) => { %>
+                <a class="recurring-row" href="<%= entry.web_url %>">
+                  <span class="recurring-row__main">
+                    <strong><%= entry.label %></strong>
+                    <span><%= String(entry.entity_type || "item").replaceAll("_", " ") %></span>
+                  </span>
+                  <i class="ph ph-arrow-up-right" aria-hidden="true"></i>
+                </a>
+              <% }) %>
+            </div>
+          <% } %>
         </div>
         <div class="selected-detail__actions">
           <% if (selectedInsight.solveAction?.webUrl) { %>
@@ -96,7 +116,11 @@
           <% if (viewer?.is_admin) { %>
             <% if (selectedInsight.state === "active") { %>
               <button class="button button--ghost" type="button" data-insight-action="archive" data-finding-id="<%= selectedInsight.id %>">Archive</button>
-              <button class="button button--ghost" type="button" data-insight-action="mark_bad" data-finding-id="<%= selectedInsight.id %>">Bad insight</button>
+              <button class="button button--ghost" type="button" data-insight-action="ignore" data-finding-id="<%= selectedInsight.id %>">Ignore similar</button>
+              <% if (selectedInsight.family === "subscriptions") { %>
+                <button class="button button--ghost" type="button" data-insight-action="report_incorrect" data-reason-code="not_subscription" data-finding-id="<%= selectedInsight.id %>">Not a subscription</button>
+              <% } %>
+              <button class="button button--ghost" type="button" data-insight-action="report_incorrect" data-reason-code="other_false_positive" data-finding-id="<%= selectedInsight.id %>">Incorrect</button>
             <% } else { %>
               <button class="button button--ghost" type="button" data-insight-action="restore" data-finding-id="<%= selectedInsight.id %>">Restore</button>
             <% } %>

@@ -3,7 +3,8 @@ import test from "node:test";
 import path from "node:path";
 import ejs from "ejs";
 
-import { buildDemoModel, formatMoney } from "../app/routes/web.js";
+import { buildDemoModel } from "../app/demo/webFixtures.js";
+import { formatMoney } from "../app/routes/web.js";
 import { buildPortfolioSummary } from "../app/services/analytics.js";
 import { createFinanceService } from "../app/services/financeService.js";
 import { detectInvestmentInsights } from "../app/services/insightDetectors.js";

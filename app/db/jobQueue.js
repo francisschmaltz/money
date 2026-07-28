@@ -89,6 +89,24 @@ export class PgJobQueue {
     });
   }
 
+  async hasPendingPlaidSyncs(workspaceId) {
+    const result = await this.#pool.query(
+      `
+        SELECT EXISTS (
+          SELECT 1
+          FROM jobs j
+          JOIN finance_connections c
+            ON c.id = j.payload->>'itemId'
+          WHERE c.workspace_id = $1
+            AND j.job_type = 'plaid.sync_item'
+            AND j.status = ANY(ARRAY['queued', 'running']::text[])
+        ) AS pending
+      `,
+      [workspaceId],
+    );
+    return Boolean(result.rows[0]?.pending);
+  }
+
   async complete(jobId) {
     await this.#pool.query(
       `

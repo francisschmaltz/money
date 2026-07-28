@@ -5,10 +5,8 @@ import { readFile } from "node:fs/promises";
 
 import ejs from "ejs";
 
-import {
-  buildDemoModel,
-  formatMoney,
-} from "../app/routes/web.js";
+import { buildDemoModel } from "../app/demo/webFixtures.js";
+import { formatMoney } from "../app/routes/web.js";
 
 const creditView = path.resolve("app/views/credit.ejs");
 

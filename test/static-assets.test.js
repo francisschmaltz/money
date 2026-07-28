@@ -23,7 +23,7 @@ test("first-party asset revisions change with the current deployment", async () 
   );
   assert.match(head, /\/css\/money\.css\?v=24/);
   assert.match(head, /\/js\/charts\.js\?v=5/);
-  assert.match(head, /\/js\/money\.js\?v=19/);
+  assert.match(head, /\/js\/money\.js\?v=20/);
 });
 
 test("manual asset entry accepts formatted money and refreshes saved production data", async () => {

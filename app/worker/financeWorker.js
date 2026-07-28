@@ -42,10 +42,25 @@ export class FinanceWorker {
       ],
       [
         "finance.generate_insights",
-        (payload) =>
-          insightService.generateAll({
+        async (payload) => {
+          if (
+            typeof this.#queue.hasPendingPlaidSyncs === "function" &&
+            (await this.#queue.hasPendingPlaidSyncs(payload.workspaceId))
+          ) {
+            await this.#queue.enqueue(
+              "finance.generate_insights",
+              { workspaceId: payload.workspaceId },
+              {
+                dedupeKey: payload.workspaceId,
+                runAt: new Date(Date.now() + 15_000),
+              },
+            );
+            return;
+          }
+          return insightService.generateAll({
             workspaceId: payload.workspaceId,
-          }),
+          });
+        },
       ],
       [
         "finance.nightly_refresh",

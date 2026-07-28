@@ -249,10 +249,24 @@ test("LM ranking context is bounded and keeps actionable important findings ahea
   const result = await service.generate("investments", [
     ...background,
     concentration,
+    { ...concentration },
   ]);
 
-  assert.equal(prompt.findings.length, 24);
+  assert.equal(prompt.findings.length, 12);
   assert.equal(prompt.findings[0].id, concentration.id);
+  assert.equal(
+    prompt.findings.filter((finding) => finding.id === concentration.id)
+      .length,
+    1,
+  );
+  assert.ok(
+    prompt.findings.every(
+      (finding) =>
+        !Object.hasOwn(finding, "evidence") &&
+        !Object.hasOwn(finding, "transactions") &&
+        !Object.hasOwn(finding, "transaction_ids"),
+    ),
+  );
   assert.equal(result.headline, "Review VTI concentration");
 });
 

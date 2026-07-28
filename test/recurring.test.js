@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { detectRecurringStreams } from "../app/services/recurringDetector.js";
+import {
+  detectRecurringStreams,
+  RecurringService,
+} from "../app/services/recurringDetector.js";
 import { detectSubscriptionInsights } from "../app/services/insightDetectors.js";
 
 function charge({
@@ -9,6 +12,8 @@ function charge({
   amount = -1_999,
   merchant = "Disney Plus",
   account = "account_card",
+  category = "ENTERTAINMENT",
+  detailed = "ENTERTAINMENT_TV",
 }) {
   return {
     id,
@@ -20,14 +25,127 @@ function charge({
     name: merchant,
     account_id: account,
     account_name: account,
-    category_primary: "ENTERTAINMENT",
-    category_detailed: "ENTERTAINMENT_TV",
+    category_primary: category,
+    category_detailed: detailed,
     pending: false,
     excluded_from_spending: false,
   };
 }
 
-test("detects monthly and biweekly streams from three occurrences", () => {
+test("classifies repeated discretionary merchants as frequent spending", () => {
+  const merchants = [
+    ["IHOP", "FOOD_AND_DRINK", "FOOD_AND_DRINK_RESTAURANT"],
+    ["Shell Oil", "TRANSPORTATION", "TRANSPORTATION_GAS"],
+    ["DoorDash", "FOOD_AND_DRINK", "FOOD_AND_DRINK_DELIVERY_SERVICES"],
+    ["Harbor Hotel", "TRAVEL", "TRAVEL_LODGING"],
+    ["Target", "GENERAL_MERCHANDISE", "GENERAL_MERCHANDISE_DEPARTMENT_STORES"],
+  ];
+  const transactions = merchants.flatMap(
+    ([merchant, category, detailed], merchantIndex) =>
+      ["2026-01-01", "2026-02-01", "2026-03-01", "2026-04-01"].map(
+        (date, index) =>
+          charge({
+            id: `${merchantIndex}-${index}`,
+            date,
+            merchant,
+            category,
+            detailed,
+          }),
+      ),
+  );
+  const streams = detectRecurringStreams(transactions, {
+    now: new Date("2026-04-05T00:00:00Z"),
+  });
+
+  assert.equal(streams.length, merchants.length);
+  assert.ok(
+    streams.every(
+      (stream) => stream.stream_type === "frequent_spending",
+    ),
+  );
+  assert.deepEqual(
+    detectSubscriptionInsights(streams, transactions, {
+      asOf: new Date("2026-04-05T00:00:00Z"),
+    }),
+    [],
+  );
+});
+
+test("recurring detection reads exactly 400 local calendar days", async () => {
+  let query;
+  const service = new RecurringService({
+    repository: {
+      async getTransactionsForPeriod(_workspaceId, options) {
+        query = options;
+        return [];
+      },
+      async replaceRecurringStreams() {},
+      async rebuildSearchDocuments() {},
+    },
+    now: () => new Date("2026-07-26T12:00:00Z"),
+  });
+
+  await service.detectAndStore();
+
+  assert.deepEqual(query, {
+    startOn: "2025-06-22",
+    endOn: "2026-07-27",
+    activeAccountsOnly: true,
+  });
+});
+
+test("keeps strong subscription and bill signals conservative but useful", () => {
+  const netflix = ["2026-01-01", "2026-02-01", "2026-03-01"].map(
+    (date, index) =>
+      charge({
+        id: `netflix-${index}`,
+        date,
+        merchant: "Netflix",
+      }),
+  );
+  const rent = ["2026-01-02", "2026-02-02", "2026-03-02"].map(
+    (date, index) =>
+      charge({
+        id: `rent-${index}`,
+        date,
+        merchant: "Apartment Rent",
+        amount: -150_000,
+        category: "RENT_AND_UTILITIES",
+        detailed: "RENT_AND_UTILITIES_RENT",
+      }),
+  );
+  const annual = ["2025-03-15", "2026-03-15"].map((date, index) =>
+    charge({
+      id: `annual-${index}`,
+      date,
+      merchant: "Squarespace",
+      amount: -20_000,
+      category: "GENERAL_SERVICES",
+      detailed: "GENERAL_SERVICES_OTHER_GENERAL_SERVICES",
+    }),
+  );
+  const streams = detectRecurringStreams([...netflix, ...rent, ...annual], {
+    now: new Date("2026-03-20T00:00:00Z"),
+  });
+
+  assert.equal(
+    streams.find((stream) => stream.service_family === "netflix")
+      .stream_type,
+    "subscription",
+  );
+  assert.equal(
+    streams.find((stream) => stream.service_family === "apartment rent")
+      .stream_type,
+    "bill",
+  );
+  assert.equal(
+    streams.find((stream) => stream.service_family === "squarespace")
+      .cadence,
+    "annual",
+  );
+});
+
+test("detects recurrence separately while six biweekly charges are required for subscription classification", () => {
   const monthly = [
     charge({ id: "m1", date: "2026-01-31" }),
     charge({ id: "m2", date: "2026-02-28" }),
@@ -65,6 +183,64 @@ test("detects monthly and biweekly streams from three occurrences", () => {
   const gym = streams.find((stream) => stream.service_family === "gym");
   assert.equal(gym.cadence, "biweekly");
   assert.equal(gym.monthly_equivalent_minor, 5_417);
+  assert.equal(gym.stream_type, "frequent_spending");
+
+  const qualifiedGym = detectRecurringStreams(
+    [
+      "2026-01-01",
+      "2026-01-15",
+      "2026-01-29",
+      "2026-02-12",
+      "2026-02-26",
+      "2026-03-12",
+    ].map((date, index) =>
+      charge({
+        id: `qualified-gym-${index}`,
+        date,
+        merchant: "Gym",
+        amount: -2_500,
+      }),
+    ),
+    { now: new Date("2026-03-20T00:00:00Z") },
+  )[0];
+  assert.equal(qualifiedGym.stream_type, "subscription");
+});
+
+test("unknown merchants need four stable monthly-or-slower occurrences and 75 percent interval fit", () => {
+  const stable = detectRecurringStreams(
+    ["2026-01-01", "2026-02-01", "2026-03-01", "2026-04-01"].map(
+      (date, index) =>
+        charge({
+          id: `stable-${index}`,
+          date,
+          merchant: "Acme Service",
+          category: "OTHER",
+          detailed: "OTHER",
+        }),
+    ),
+    { now: new Date("2026-04-05T00:00:00Z") },
+  )[0];
+  const poorFit = detectRecurringStreams(
+    ["2026-01-01", "2026-01-31", "2026-03-02", "2026-04-11"].map(
+      (date, index) =>
+        charge({
+          id: `poor-fit-${index}`,
+          date,
+          merchant: "Mystery Service",
+          category: "OTHER",
+          detailed: "OTHER",
+        }),
+    ),
+    { now: new Date("2026-04-15T00:00:00Z") },
+  )[0];
+
+  assert.equal(stable.stream_type, "subscription");
+  assert.ok(stable.confidence_basis_points >= 8_500);
+  assert.equal(poorFit.cadence, "monthly");
+  assert.ok(
+    poorFit.classification_signals.interval_fit_basis_points < 7_500,
+  );
+  assert.equal(poorFit.stream_type, "frequent_spending");
 });
 
 test("separates same-merchant amount clusters instead of merging Apple charges", () => {
@@ -221,6 +397,11 @@ test("duplicate evidence includes charged accounts, recent amounts, annual cost,
         entry.entity_id === "one-charge",
     ),
   );
+  assert.match(
+    duplicate.actions.find((action) => action.type === "confirm")
+      .web_url,
+    /^https:\/\/money\.example\.com\/insights\?finding=/,
+  );
 });
 
 test("subscription price increase triggers only at both $5 and 10 percent", () => {
@@ -255,6 +436,15 @@ test("subscription price increase triggers only at both $5 and 10 percent", () =
   );
   assert.ok(increase);
   assert.equal(increase.metrics.change.amount_minor, 500);
+  assert.equal(
+    increase.actions.find((action) => action.type === "review").web_url,
+    "https://money.example.com/recurring?item=stream",
+  );
+  assert.equal(
+    increase.evidence.find((entry) => entry.entity_type === "recurring")
+      .web_url,
+    "https://money.example.com/recurring?item=stream",
+  );
 });
 
 test("subscription lifecycle ignores bills and non-USD streams", () => {

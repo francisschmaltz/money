@@ -47,9 +47,27 @@
                 <i class="ph ph-archive" aria-hidden="true"></i>
                 Archive
               </button>
-              <button type="button" data-insight-action="mark_bad" data-finding-id="<%= insight.id %>">
+              <button type="button" data-insight-action="ignore" data-finding-id="<%= insight.id %>">
+                <i class="ph ph-eye-slash" aria-hidden="true"></i>
+                Ignore similar
+              </button>
+              <% if (insight.family === "subscriptions") { %>
+                <button type="button" data-insight-action="report_incorrect" data-reason-code="not_subscription" data-finding-id="<%= insight.id %>">
+                  <i class="ph ph-x-circle" aria-hidden="true"></i>
+                  Not a subscription
+                </button>
+              <% } %>
+              <button type="button" data-insight-action="report_incorrect" data-reason-code="wrong_data" data-finding-id="<%= insight.id %>">
+                <i class="ph ph-warning" aria-hidden="true"></i>
+                Incorrect data
+              </button>
+              <button type="button" data-insight-action="report_incorrect" data-reason-code="wrong_interpretation" data-finding-id="<%= insight.id %>">
+                <i class="ph ph-brain" aria-hidden="true"></i>
+                Wrong interpretation
+              </button>
+              <button type="button" data-insight-action="report_incorrect" data-reason-code="other_false_positive" data-finding-id="<%= insight.id %>">
                 <i class="ph ph-thumbs-down" aria-hidden="true"></i>
-                Bad insight
+                Other false positive
               </button>
             <% } else { %>
               <button type="button" data-insight-action="restore" data-finding-id="<%= insight.id %>">
@@ -57,9 +75,9 @@
                 Restore
               </button>
               <% if (state !== "bad") { %>
-                <button type="button" data-insight-action="mark_bad" data-finding-id="<%= insight.id %>">
+                <button type="button" data-insight-action="report_incorrect" data-reason-code="other_false_positive" data-finding-id="<%= insight.id %>">
                   <i class="ph ph-thumbs-down" aria-hidden="true"></i>
-                  Bad insight
+                  Incorrect
                 </button>
               <% } %>
             <% } %>

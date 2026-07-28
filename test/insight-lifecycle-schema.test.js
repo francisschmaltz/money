@@ -55,3 +55,35 @@ test("insight lifecycle migration preserves history and detached delete events",
     /WHERE is_current = true AND state = 'active'/,
   );
 });
+
+test("insight quality migration preserves feedback reasons and recurring overrides", async () => {
+  const migration = await readFile(
+    fileURLToPath(
+      new URL(
+        "../migrations/019_insight_quality.sql",
+        import.meta.url,
+      ),
+    ),
+    "utf8",
+  );
+
+  assert.match(migration, /'frequent_spending'/);
+  assert.match(
+    migration,
+    /ADD COLUMN IF NOT EXISTS stream_type_override text/,
+  );
+  assert.match(
+    migration,
+    /ADD COLUMN IF NOT EXISTS classification_signals jsonb/,
+  );
+  assert.match(
+    migration,
+    /ADD COLUMN IF NOT EXISTS override_source_finding_id text/,
+  );
+  assert.match(
+    migration,
+    /ADD COLUMN IF NOT EXISTS reason_code text/,
+  );
+  assert.match(migration, /'report_incorrect'/);
+  assert.match(migration, /'ignore'/);
+});

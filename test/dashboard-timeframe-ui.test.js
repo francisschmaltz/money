@@ -4,10 +4,8 @@ import path from "node:path";
 
 import ejs from "ejs";
 
-import {
-  buildDemoModel,
-  formatMoney,
-} from "../app/routes/web.js";
+import { buildDemoModel } from "../app/demo/webFixtures.js";
+import { formatMoney } from "../app/routes/web.js";
 
 const dashboardView = path.resolve("app/views/dashboard.ejs");
 
