@@ -40,7 +40,8 @@ test(
         CREATE TEMP TABLE transaction_splits (
           workspace_id text NOT NULL,
           transaction_id text NOT NULL,
-          category text NOT NULL
+          category text NOT NULL,
+          category_id text
         ) ON COMMIT DROP
       `);
       await client.query(
