@@ -153,7 +153,6 @@ test("batch metadata edits lock exact posted rows and refresh search once", asyn
       categoryPrimary: "Groceries",
       tags: ["Household", "Reimbursable"],
       excludedFromSpending: true,
-      isFixed: false,
     },
     userId: "user-1",
   });
@@ -183,9 +182,7 @@ test("batch metadata edits lock exact posted rows and refresh search once", asyn
   assert.ok(classificationOverride);
   assert.deepEqual(classificationOverride.params.slice(2), [
     true,
-    false,
     "user-1",
-    true,
     true,
   ]);
   assert.ok(

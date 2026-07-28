@@ -36,10 +36,21 @@ export class InsightService {
     // otherwise unchanged balances would leave holes and make performance
     // calculations look incomplete forever.
     await this.#repository.takeDailySnapshots(workspaceId, dateOnly(now));
-    const [freshness, rules, streams, holdings, snapshots, investmentTransactions] =
+    const [
+      freshness,
+      rules,
+      categories,
+      streams,
+      holdings,
+      snapshots,
+      investmentTransactions,
+    ] =
       await Promise.all([
         this.#repository.getDataFreshness(workspaceId),
         this.#repository.getInsightRules(workspaceId),
+        typeof this.#repository.listSpendingCategories === "function"
+          ? this.#repository.listSpendingCategories(workspaceId)
+          : [],
         this.#repository.listRecurringStreams(workspaceId, {
           includeInactive: true,
         }),
@@ -98,6 +109,13 @@ export class InsightService {
     const fixedCategoriesRule = rules["weekly.fixed_categories"] ?? {};
     const investmentRule = rules["investments.concentration"] ?? {};
     const subscriptionRule = rules["subscriptions.expensive"] ?? {};
+    const fixedCategories = categories.length
+      ? categories
+          .filter((category) => category.classification === "fixed")
+          .map((category) => category.path)
+      : fixedCategoriesRule.enabled === false
+        ? []
+        : fixedCategoriesRule.categories ?? [];
 
     const detectedFamilies = {
       weekly: detectWeeklyInsights(weeklyTransactions, {
@@ -109,10 +127,7 @@ export class InsightService {
           weeklyRule.minimum_change_minor ?? 2_500,
         minimumChangeBasisPoints:
           weeklyRule.minimum_change_basis_points ?? 1_500,
-        fixedCategories:
-          fixedCategoriesRule.enabled === false
-            ? []
-            : fixedCategoriesRule.categories ?? [],
+        fixedCategories,
         spendLessEnabled: weeklyRule.enabled !== false,
       }),
       investments: detectInvestmentInsights({

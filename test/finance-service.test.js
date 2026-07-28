@@ -94,3 +94,135 @@ test("enabled-only public rule updates preserve stored settings", async () => {
     },
   ]);
 });
+
+test("spending categories create nested paths and update by optimistic version", async () => {
+  const calls = [];
+  const repository = {
+    async createSpendingCategory(workspaceId, input) {
+      calls.push(["create", workspaceId, input]);
+      return {
+        id: "category-gas",
+        name: "Gas",
+        path: "Car / Gas",
+        classification: "flexible",
+        parent_category_id: "category-car",
+        version: 1,
+      };
+    },
+    async updateSpendingCategory(workspaceId, input) {
+      calls.push(["update", workspaceId, input]);
+      return {
+        id: input.categoryId,
+        name: input.name,
+        path: `Car / ${input.name}`,
+        classification: input.classification,
+        parent_category_id: input.parentCategoryId,
+        version: input.expectedVersion + 1,
+      };
+    },
+  };
+  const service = createFinanceService({ repository });
+  const actor = { id: "user-admin" };
+
+  const created = await service.createSpendingCategory(
+    {
+      name: "Gas",
+      classification: "flexible",
+      parent_category_id: "category-car",
+    },
+    actor,
+  );
+  const updated = await service.updateSpendingCategory(
+    {
+      category_id: "category-gas",
+      name: "Fuel",
+      classification: "flexible",
+      parent_category_id: "category-car",
+      expected_version: 1,
+    },
+    actor,
+  );
+
+  assert.equal(created.category.path, "Car / Gas");
+  assert.equal(updated.category.path, "Car / Fuel");
+  assert.deepEqual(calls, [
+    [
+      "create",
+      "shared",
+      {
+        name: "Gas",
+        classification: "flexible",
+        parentCategoryId: "category-car",
+        userId: "user-admin",
+      },
+    ],
+    [
+      "update",
+      "shared",
+      {
+        categoryId: "category-gas",
+        name: "Fuel",
+        classification: "flexible",
+        parentCategoryId: "category-car",
+        expectedVersion: 1,
+        userId: "user-admin",
+      },
+    ],
+  ]);
+});
+
+test("category merges carry exact versions and a nested new destination", async () => {
+  let captured;
+  const service = createFinanceService({
+    repository: {
+      async mergeSpendingCategories(workspaceId, input) {
+        captured = { workspaceId, ...input };
+        return {
+          id: "category-gas",
+          path: "Car / Gas",
+          classification: "flexible",
+          version: 1,
+        };
+      },
+    },
+  });
+
+  const result = await service.mergeSpendingCategories(
+    {
+      source_category_ids: [
+        "category-transportation",
+        "category-tolls",
+      ],
+      destination: {
+        name: "Gas",
+        classification: "flexible",
+        parent_category_id: "category-car",
+      },
+      expected_versions: {
+        "category-transportation": 2,
+        "category-tolls": 4,
+      },
+    },
+    { id: "user-admin" },
+  );
+
+  assert.equal(result.category.path, "Car / Gas");
+  assert.deepEqual(captured, {
+    workspaceId: "shared",
+    sourceCategoryIds: [
+      "category-transportation",
+      "category-tolls",
+    ],
+    destinationCategoryId: null,
+    destination: {
+      name: "Gas",
+      classification: "flexible",
+      parentCategoryId: "category-car",
+    },
+    expectedVersions: {
+      "category-transportation": 2,
+      "category-tolls": 4,
+    },
+    userId: "user-admin",
+  });
+});

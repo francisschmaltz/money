@@ -63,7 +63,7 @@ const querySchema = z
   .max(200)
   .refine((value) => !/[\u0000-\u001f\u007f]/.test(value));
 
-const categorySchema = z.string().trim().min(1).max(100);
+const categorySchema = z.string().trim().min(1).max(500);
 const financeGoalPurposeSchema = z.enum([
   "vacation",
   "home",

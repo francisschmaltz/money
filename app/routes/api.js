@@ -1125,10 +1125,6 @@ export function createApiRouter({
             request.body?.excluded_from_spending === undefined
               ? undefined
               : booleanValue(request.body.excluded_from_spending),
-          is_fixed:
-            request.body?.is_fixed === undefined
-              ? undefined
-              : booleanValue(request.body.is_fixed),
           user_id: request.user?.id,
         },
         response,
@@ -1330,6 +1326,74 @@ export function createApiRouter({
     },
   );
 
+  router.get(
+    "/api/v1/categories",
+    requireAdmin,
+    (request, response, next) => {
+      invoke(
+        financeService,
+        "listSpendingCategories",
+        {
+          include_merged: booleanValue(request.query.include_merged),
+        },
+        response,
+        next,
+      );
+    },
+  );
+
+  router.post(
+    "/api/v1/categories",
+    requireAdmin,
+    requireCsrf,
+    (request, response, next) => {
+      invokeWithActorAndStatus(
+        financeService,
+        "createSpendingCategory",
+        request.body ?? {},
+        request.user,
+        201,
+        response,
+        next,
+      );
+    },
+  );
+
+  router.patch(
+    "/api/v1/categories/:categoryId",
+    requireAdmin,
+    requireCsrf,
+    (request, response, next) => {
+      invokeWithActor(
+        financeService,
+        "updateSpendingCategory",
+        {
+          ...(request.body ?? {}),
+          category_id: request.params.categoryId,
+        },
+        request.user,
+        response,
+        next,
+      );
+    },
+  );
+
+  router.post(
+    "/api/v1/categories/merge",
+    requireAdmin,
+    requireCsrf,
+    (request, response, next) => {
+      invokeWithActor(
+        financeService,
+        "mergeSpendingCategories",
+        request.body ?? {},
+        request.user,
+        response,
+        next,
+      );
+    },
+  );
+
   router.put(
     "/api/v1/settings/insight-rules/:ruleId",
     requireAdmin,
@@ -1399,7 +1463,7 @@ function transactionBatchEditInput(body = {}) {
     if (!value || value.length > 100) return null;
     changes.category_primary = value;
   }
-  for (const field of ["excluded_from_spending", "is_fixed"]) {
+  for (const field of ["excluded_from_spending"]) {
     if (!Object.hasOwn(body.changes, field)) continue;
     if (typeof body.changes[field] !== "boolean") return null;
     changes[field] = body.changes[field];

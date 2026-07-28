@@ -489,7 +489,6 @@ test("transaction cleanup routes enforce admin mutations and preserve omitted ch
         display_name: "  Whole Foods  ",
         tags: ["Groceries", "Reimbursable"],
         excluded_from_spending: true,
-        is_fixed: false,
       },
     })
     .expect(200);
@@ -517,7 +516,6 @@ test("transaction cleanup routes enforce admin mutations and preserve omitted ch
           display_name: "Whole Foods",
           tags: ["Groceries", "Reimbursable"],
           excluded_from_spending: true,
-          is_fixed: false,
         },
       },
       actor,
@@ -727,6 +725,106 @@ test("quality feedback and recurring classification routes validate structured a
       { stream_id: "stream-1", type: "frequent_spending" },
       actor,
     ],
+  ]);
+});
+
+test("spending category routes are admin-only, CSRF-protected, and preserve merge input", async () => {
+  const calls = [];
+  const middleware = [];
+  const actor = { id: "user-admin", is_admin: true };
+  const app = express();
+  app.use(express.json());
+  app.use((request, _response, next) => {
+    request.user = actor;
+    next();
+  });
+  app.use(
+    createApiRouter({
+      requireAdmin: (request, _response, next) => {
+        middleware.push(`admin:${request.method}`);
+        next();
+      },
+      requireCsrf: (request, _response, next) => {
+        middleware.push(`csrf:${request.method}`);
+        next();
+      },
+      financeService: {
+        listSpendingCategories(input) {
+          calls.push(["list", input]);
+          return { categories: [] };
+        },
+        createSpendingCategory(input, routeActor) {
+          calls.push(["create", input, routeActor]);
+          return { created: true };
+        },
+        updateSpendingCategory(input, routeActor) {
+          calls.push(["update", input, routeActor]);
+          return { updated: true };
+        },
+        mergeSpendingCategories(input, routeActor) {
+          calls.push(["merge", input, routeActor]);
+          return { merged: true };
+        },
+      },
+    }),
+  );
+
+  await request(app).get("/api/v1/categories").expect(200);
+  await request(app)
+    .post("/api/v1/categories")
+    .send({
+      name: "Gas",
+      classification: "flexible",
+      parent_category_id: "category-car",
+    })
+    .expect(201);
+  await request(app)
+    .patch("/api/v1/categories/category-gas")
+    .send({ name: "Fuel", expected_version: 1 })
+    .expect(200);
+  const mergeBody = {
+    source_category_ids: ["category-tolls"],
+    destination: { category_id: "category-gas" },
+    expected_versions: {
+      "category-tolls": 1,
+      "category-gas": 2,
+    },
+  };
+  await request(app)
+    .post("/api/v1/categories/merge")
+    .send(mergeBody)
+    .expect(200);
+
+  assert.deepEqual(calls, [
+    ["list", { include_merged: false }],
+    [
+      "create",
+      {
+        name: "Gas",
+        classification: "flexible",
+        parent_category_id: "category-car",
+      },
+      actor,
+    ],
+    [
+      "update",
+      {
+        name: "Fuel",
+        expected_version: 1,
+        category_id: "category-gas",
+      },
+      actor,
+    ],
+    ["merge", mergeBody, actor],
+  ]);
+  assert.deepEqual(middleware, [
+    "admin:GET",
+    "admin:POST",
+    "csrf:POST",
+    "admin:PATCH",
+    "csrf:PATCH",
+    "admin:POST",
+    "csrf:POST",
   ]);
 });
 

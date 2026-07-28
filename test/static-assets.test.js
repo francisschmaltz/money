@@ -137,7 +137,7 @@ test("transaction bulk editing sends only selected override fields", async () =>
   assert.match(bulkEdit, /data-bulk-transaction-select/);
   assert.match(bulkEdit, /data-bulk-change/);
   assert.match(bulkEdit, /excluded_from_spending/);
-  assert.match(bulkEdit, /is_fixed/);
+  assert.doesNotMatch(bulkEdit, /is_fixed/);
   assert.match(bulkEdit, /\/api\/v1\/transactions\/batch-edit/);
   assert.match(bulkEdit, /transaction_ids: transactionIds/);
   assert.match(bulkEdit, /window\.location\.reload\(\)/);

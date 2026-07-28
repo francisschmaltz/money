@@ -1040,12 +1040,24 @@ export class PlanningService {
     const currentMonth = monthStart(
       workspaceDate(this.#now(), timeZone),
     );
+    const requestedCategory = requiredText(
+      input.category,
+      500,
+      "category",
+    );
+    const resolvedCategory =
+      typeof this.#financeRepository.resolveSpendingCategory === "function"
+        ? await this.#financeRepository.resolveSpendingCategory(
+            this.#workspaceId,
+            requestedCategory,
+          )
+        : null;
     const changed = await this.#repository.setBudgetLine(
       this.#workspaceId,
       {
         monthOn: currentMonth,
         effectiveMonthOn: currentMonth,
-        category: requiredText(input.category, 100, "category"),
+        category: resolvedCategory?.path ?? requestedCategory,
         amountMinor: nonnegativeMinor(
           input.amount_minor,
           "amount_minor",
@@ -1100,7 +1112,7 @@ export class PlanningService {
       throw badRequest("Use at least two split lines or clear the split.");
     }
     const sign = Math.sign(transaction.amount_minor);
-    const lines = input.lines.map((line, index) => {
+    const requestedLines = input.lines.map((line, index) => {
       const amount = nonzeroMinor(line.amount_minor, "line.amount_minor");
       if (Math.sign(amount) !== sign) {
         throw badRequest(
@@ -1110,11 +1122,27 @@ export class PlanningService {
       return {
         id: `split_${randomUUID()}`,
         line_index: index,
-        category: requiredText(line.category, 100, "line.category"),
+        category: requiredText(line.category, 500, "line.category"),
         amount_minor: amount,
         note: optionalText(line.note, 240, "line.note"),
       };
     });
+    const lines = await Promise.all(
+      requestedLines.map(async (line) => {
+        const resolved =
+          typeof this.#financeRepository.resolveSpendingCategory ===
+          "function"
+            ? await this.#financeRepository.resolveSpendingCategory(
+                this.#workspaceId,
+                line.category,
+              )
+            : null;
+        return {
+          ...line,
+          category: resolved?.path ?? line.category,
+        };
+      }),
+    );
     const total = lines.reduce(
       (sum, line) => sum + line.amount_minor,
       0,

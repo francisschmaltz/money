@@ -667,7 +667,9 @@ function groupSpendingTransactions(transactions, groupBy) {
   for (const transaction of transactions) {
     const key =
       groupBy === "category"
-        ? transaction.category_primary ?? "Uncategorized"
+        ? topLevelCategory(
+            transaction.category_primary ?? "Uncategorized",
+          )
         : groupBy === "merchant"
           ? transaction.merchant_name ?? transaction.name ?? "Unknown"
           : transaction.account_name ?? "Account";
@@ -681,6 +683,10 @@ function groupSpendingTransactions(transactions, groupBy) {
     grouped.set(key, entry);
   }
   return grouped;
+}
+
+function topLevelCategory(category) {
+  return String(category).split(/\s+\/\s+/, 1)[0];
 }
 
 function uniqueSpendingTransactionCount(transactions) {

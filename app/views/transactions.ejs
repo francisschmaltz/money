@@ -30,7 +30,7 @@
       <% } %>
       <select name="category" aria-label="Category">
         <option value="">All categories</option>
-        <% categories.forEach((category) => { %><option value="<%= category.value ?? category.label %>" <%= query.category === (category.value ?? category.label) ? "selected" : "" %>><%= category.label %></option><% }) %>
+        <% categories.forEach((category) => { %><option value="<%= category.value ?? category.label %>" <%= (query.category_id || query.category) === (category.value ?? category.label) ? "selected" : "" %>><%= category.label %></option><% }) %>
       </select>
       <select name="account" aria-label="Account">
         <option value="">All accounts</option>
@@ -69,8 +69,9 @@
             <div><dt>Statement description</dt><dd><%= selectedTransaction.rawName || "—" %></dd></div>
             <div><dt>Account</dt><dd><%= selectedTransaction.account %><%= selectedTransaction.accountMask ? ` · ••••${selectedTransaction.accountMask}` : "" %></dd></div>
             <div><dt>Institution</dt><dd><%= selectedTransaction.institution || "—" %></dd></div>
-            <div><dt>Category</dt><dd><%= selectedTransaction.categoryValue || selectedTransaction.category %></dd></div>
-            <div><dt>Detailed category</dt><dd><%= selectedTransaction.detailedCategoryValue || "—" %></dd></div>
+            <div><dt>Current category</dt><dd><%= selectedTransaction.categoryValue || selectedTransaction.category %></dd></div>
+            <div><dt>Source category</dt><dd><%= selectedTransaction.originalCategoryValue || "—" %></dd></div>
+            <div><dt>Source detail</dt><dd><%= selectedTransaction.originalDetailedCategoryValue || selectedTransaction.detailedCategoryValue || "—" %></dd></div>
             <div><dt>Provider amount</dt><dd><%= formatMoney(selectedTransaction.providerAmount || selectedTransaction.amount) %></dd></div>
             <div><dt>Status</dt><dd><%= selectedTransaction.status %></dd></div>
             <div><dt>Authorized</dt><dd><%= selectedTransaction.authorizedAt || selectedTransaction.authorizedOn || "—" %></dd></div>
@@ -463,16 +464,6 @@
                 </select>
               </label>
 
-              <label class="cleanup-edit-field">
-                <span class="cleanup-edit-field__toggle">
-                  <input type="checkbox" data-bulk-change="is_fixed">
-                  Expense type
-                </span>
-                <select disabled data-bulk-fixed>
-                  <option value="false">Flexible expense</option>
-                  <option value="true">Fixed expense</option>
-                </select>
-              </label>
             </fieldset>
 
             <footer class="transaction-bulk-dialog__footer">

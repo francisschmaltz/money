@@ -498,6 +498,49 @@ test("invalidated split sets fall back to the corrected provider transaction", (
   );
 });
 
+test("valid split lines use their category classification", () => {
+  const parent = {
+    id: "purchase",
+    posted_on: "2026-07-03",
+    amount_minor: -12_000,
+    currency_code: "USD",
+    category_primary: "Shopping",
+    pending: false,
+    excluded_from_spending: false,
+    is_fixed: false,
+  };
+  const expanded = expandTransactionsWithSplits(
+    [parent],
+    [
+      {
+        id: "split-1",
+        transaction_id: "purchase",
+        category: "Car / Auto Loan",
+        amount_minor: -8_000,
+        is_fixed: true,
+      },
+      {
+        id: "split-2",
+        transaction_id: "purchase",
+        category: "Car / Gas",
+        amount_minor: -4_000,
+        is_fixed: false,
+      },
+    ],
+  );
+
+  assert.deepEqual(
+    expanded.map((transaction) => [
+      transaction.category_primary,
+      transaction.is_fixed,
+    ]),
+    [
+      ["Car / Auto Loan", true],
+      ["Car / Gas", false],
+    ],
+  );
+});
+
 test("scenario market shocks reduce effective goal funding while Safe to Spend stays unchanged", () => {
   const snapshot = buildPlanningSnapshot({
     accounts: [

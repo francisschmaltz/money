@@ -120,6 +120,41 @@ test("refunds reduce spending while payroll is income and transfers stay exclude
   assert.equal(cashFlow.net.amount_minor, 92_000);
 });
 
+test("category visualizations roll nested categories into their top-level group", () => {
+  const period = { start_on: "2026-07-01", end_on: "2026-08-01" };
+  const spending = buildSpendingSummary({
+    transactions: [
+      transaction({
+        id: "gas",
+        date: "2026-07-20",
+        amount: -5_000,
+        category: "Car / Gas",
+      }),
+      transaction({
+        id: "parking",
+        date: "2026-07-21",
+        amount: -2_000,
+        category: "Car / Parking",
+      }),
+    ],
+    currentPeriod: period,
+    previousPeriod: {
+      start_on: "2026-06-01",
+      end_on: "2026-07-01",
+    },
+    currency,
+  });
+
+  assert.deepEqual(
+    spending.segments.map((segment) => [
+      segment.label,
+      segment.amount.amount_minor,
+      segment.count,
+    ]),
+    [["Car", 7_000, 2]],
+  );
+});
+
 test("weekly spend-less hits its exact boundary and excludes fixed categories", () => {
   const rows = [
     transaction({

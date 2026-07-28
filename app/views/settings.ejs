@@ -28,6 +28,27 @@
     const classificationCategories = [...new Set([
       ...availableCategories, ...configuredFixed
     ])];
+    const settingsCategories =
+      typeof spendingCategories !== "undefined" &&
+      Array.isArray(spendingCategories)
+        ? spendingCategories
+        : classificationCategories.map((label, index) => ({
+            id: `legacy-category-${index}`,
+            name: label,
+            path: label,
+            depth: 0,
+            classification: configuredFixed.includes(label)
+              ? "fixed"
+              : "flexible",
+            parent_category_id: null,
+            version: 1,
+            transaction_count: 0,
+            budget_line_count: 0,
+            aliases: [],
+          }));
+    const settingsCategoryPaths = settingsCategories.map(
+      (category) => category.path
+    );
     const cleanup =
       typeof transactionCleanup !== "undefined" && transactionCleanup
         ? transactionCleanup
@@ -49,7 +70,7 @@
     ].filter(Boolean))].sort((left, right) => left.localeCompare(right));
     const cleanupCategories = [...new Set([
       cleanupSource?.category_primary,
-      ...classificationCategories,
+      ...settingsCategoryPaths,
     ].filter(Boolean))];
     const settingsTransactionRules =
       typeof transactionRules !== "undefined" &&
@@ -139,7 +160,7 @@
       <a href="#account-groups">Account groups</a>
       <a href="#manual-assets">Manual assets</a>
       <a href="#transaction-cleanup">Transaction cleanup</a>
-      <a href="#classifications">Classifications</a>
+      <a href="#spending-categories">Spending categories</a>
       <a href="#insight-rules">Insight rules</a>
       <a href="#access">Access</a>
     </nav>
@@ -712,21 +733,138 @@
       </div>
     </section>
 
-    <section id="classifications" class="card settings-card">
+    <section id="spending-categories" class="card settings-card">
       <div class="settings-card__heading">
-        <div><h2>Classifications</h2><p>Fixed categories stay out of “spend less” findings.</p></div>
+        <div>
+          <h2>Spending categories</h2>
+          <p>One category tree drives spending, budgets, filters, and insights. Fixed categories stay visible but are excluded from “spend less” findings.</p>
+        </div>
       </div>
-      <form data-classification-form>
-      <% classificationCategories.forEach((label) => { const checked = configuredFixed.includes(label); %>
-        <label class="setting-row setting-row--toggle">
-          <span class="list-icon"><i class="ph ph-tag"></i></span>
-          <span><strong><%= label %></strong><small><%= checked ? "Fixed obligation" : "Flexible spending" %></small></span>
-          <input type="checkbox" class="switch" name="fixed_category" value="<%= label %>" <%= checked ? "checked" : "" %>>
+
+      <form class="category-create-form" data-category-create-form>
+        <label>
+          <span>Name</span>
+          <input name="name" maxlength="100" placeholder="e.g. Car" required>
         </label>
-      <% }) %>
+        <label>
+          <span>Parent</span>
+          <select name="parent_category_id">
+            <option value="">Top level</option>
+            <% settingsCategories.forEach((category) => { %>
+              <option value="<%= category.id %>"><%= category.path %></option>
+            <% }) %>
+          </select>
+        </label>
+        <label>
+          <span>Classification</span>
+          <select name="classification">
+            <option value="flexible">Flexible</option>
+            <option value="fixed">Fixed</option>
+          </select>
+        </label>
         <div class="form-actions">
           <span class="save-status" role="status" data-save-status></span>
-          <button class="button button--dark" type="submit">Save classifications</button>
+          <button class="button button--dark" type="submit">Create category</button>
+        </div>
+      </form>
+
+      <div class="category-manager-list" data-category-manager-list>
+        <% settingsCategories.forEach((category) => { %>
+          <article
+            class="category-manager-row"
+            data-category-row
+            data-category-id="<%= category.id %>"
+            data-category-version="<%= category.version %>"
+            data-category-transaction-count="<%= category.transaction_count %>"
+            data-category-budget-count="<%= category.budget_line_count %>"
+          >
+            <label class="category-manager-row__select">
+              <input type="checkbox" data-category-select>
+              <span class="sr-only">Select <%= category.path %> for merging</span>
+            </label>
+            <span class="list-icon"><i class="ph ph-tag"></i></span>
+            <form
+              class="category-edit-form"
+              data-category-edit-form
+              data-endpoint="/api/v1/categories/<%= encodeURIComponent(category.id) %>"
+            >
+              <label>
+                <span class="sr-only">Category name</span>
+                <input name="name" maxlength="100" value="<%= category.name %>" required>
+              </label>
+              <label>
+                <span class="sr-only">Parent category</span>
+                <select name="parent_category_id">
+                  <option value="">Top level</option>
+                  <% settingsCategories.filter((candidate) => candidate.id !== category.id).forEach((candidate) => { %>
+                    <option value="<%= candidate.id %>" <%= candidate.id === category.parent_category_id ? "selected" : "" %>><%= candidate.path %></option>
+                  <% }) %>
+                </select>
+              </label>
+              <label>
+                <span class="sr-only">Spending classification</span>
+                <select name="classification">
+                  <option value="flexible" <%= category.classification === "flexible" ? "selected" : "" %>>Flexible</option>
+                  <option value="fixed" <%= category.classification === "fixed" ? "selected" : "" %>>Fixed</option>
+                </select>
+              </label>
+              <button class="button button--quiet" type="submit">Save</button>
+              <span class="save-status" role="status" data-save-status></span>
+            </form>
+            <div class="category-manager-row__meta">
+              <strong><%= category.path %></strong>
+              <small><%= category.transaction_count %> transaction<%= category.transaction_count === 1 ? "" : "s" %> · <%= category.budget_line_count %> budget line<%= category.budget_line_count === 1 ? "" : "s" %></small>
+              <% const sourceLabels = (category.aliases || []).map((alias) => alias.label).filter((label) => label !== category.path && label !== category.name); %>
+              <% if (sourceLabels.length) { %>
+                <details>
+                  <summary>Source and former labels</summary>
+                  <span><%= sourceLabels.join(" · ") %></span>
+                </details>
+              <% } %>
+            </div>
+          </article>
+        <% }) %>
+      </div>
+
+      <form class="category-merge-form" data-category-merge-form>
+        <div>
+          <h3>Merge selected categories</h3>
+          <p>The originals remain in the audit trail; old and future transactions resolve to the destination.</p>
+        </div>
+        <label>
+          <span>Destination</span>
+          <select name="destination_category_id" data-category-merge-destination>
+            <option value="__new__">Create a new destination</option>
+            <% settingsCategories.forEach((category) => { %>
+              <option value="<%= category.id %>"><%= category.path %></option>
+            <% }) %>
+          </select>
+        </label>
+        <div class="category-merge-form__new" data-category-merge-new>
+          <label>
+            <span>New name</span>
+            <input name="name" maxlength="100" placeholder="e.g. Gas" required>
+          </label>
+          <label>
+            <span>Parent</span>
+            <select name="parent_category_id">
+              <option value="">Top level</option>
+              <% settingsCategories.forEach((category) => { %>
+                <option value="<%= category.id %>"><%= category.path %></option>
+              <% }) %>
+            </select>
+          </label>
+          <label>
+            <span>Classification</span>
+            <select name="classification">
+              <option value="flexible">Flexible</option>
+              <option value="fixed">Fixed</option>
+            </select>
+          </label>
+        </div>
+        <div class="form-actions">
+          <span class="save-status" role="status" data-save-status></span>
+          <button class="button button--dark" type="submit">Merge selected</button>
         </div>
       </form>
     </section>

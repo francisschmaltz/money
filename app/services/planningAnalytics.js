@@ -479,6 +479,7 @@ export function expandTransactionsWithSplits(transactions, splits) {
       category_primary: line.category,
       category_detailed: null,
       amount_minor: Number(line.amount_minor),
+      is_fixed: Boolean(line.is_fixed),
       split_parent_id: transaction.id,
     }));
   });

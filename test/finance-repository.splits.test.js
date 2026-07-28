@@ -36,11 +36,11 @@ test("transaction category and text filters include split categories", async () 
   );
   assert.match(
     db.calls[0].sql,
-    /split_filter\.category = \$5/,
+    /active_spending_category_id\( split_filter\.workspace_id, split_filter\.category_id \) IN/,
   );
   assert.match(
     db.calls[0].sql,
-    /GROUP BY split_filter\.category/,
+    /GROUP BY 1, 2/,
   );
   assert.match(
     db.calls[0].sql,
@@ -56,11 +56,11 @@ test("transaction category and text filters include split categories", async () 
   );
   assert.match(
     db.calls[0].sql,
-    /split_search\.category ILIKE '%' \|\| \$7 \|\| '%'/,
+    /spending_category_name_for_id\( split_search\.workspace_id, split_search\.category_id \)/,
   );
   assert.match(
     db.calls[0].sql,
-    /OR split_search\.category = \$5/,
+    /spending_category_descendant_ids\( split_search\.workspace_id/,
   );
   assert.equal(
     (
@@ -120,10 +120,10 @@ test("observed categories include split-only categories", async () => {
 
   await repository.listTransactionCategories("shared");
 
-  assert.match(db.calls[0].sql, /WITH base_categories AS/);
+  assert.match(db.calls[0].sql, /WITH category_transactions AS/);
   assert.match(
     db.calls[0].sql,
-    /UNION SELECT split\.category FROM transaction_splits split/,
+    /UNION SELECT active_spending_category_id\( split\.workspace_id, split\.category_id \) AS category_id, split\.transaction_id FROM transaction_splits split/,
   );
 });
 
@@ -153,8 +153,9 @@ test("finance repository returns typed split lines for analytics", async () => {
   assert.equal(result[0].amount_minor, -2_500);
   assert.match(
     db.calls[0].sql,
-    /SELECT split\.\*, transaction\.split_version/,
+    /SELECT split\.\*, active_spending_category_id\(/,
   );
+  assert.match(db.calls[0].sql, /transaction\.split_version/);
   assert.deepEqual(db.calls[0].params, [
     "shared",
     null,

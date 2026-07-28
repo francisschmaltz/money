@@ -448,14 +448,8 @@ export class PgFinanceRepository {
             ' · ',
             a.name,
             COALESCE(
-              transaction_override.category_primary,
-              cleanup_rule.category_primary,
-              merchant_override.category_primary,
-              original_transaction_override.category_primary,
-              original_cleanup_rule.category_primary,
-              original_merchant_override.category_primary,
-              original.category_primary,
-              t.category_primary
+              effective_category.category_name,
+              effective_category.source_category_label
             ),
             t.posted_on::text
           ),
@@ -466,15 +460,11 @@ export class PgFinanceRepository {
             t.merchant_name,
             t.name,
             COALESCE(
-              transaction_override.category_primary,
-              cleanup_rule.category_primary,
-              merchant_override.category_primary,
-              original_transaction_override.category_primary,
-              original_cleanup_rule.category_primary,
-              original_merchant_override.category_primary,
-              original.category_primary,
-              t.category_primary
+              effective_category.category_name,
+              effective_category.source_category_label
             ),
+            split_categories.names,
+            t.category_primary,
             COALESCE(
               transaction_override.category_detailed,
               merchant_override.category_detailed,
@@ -495,15 +485,11 @@ export class PgFinanceRepository {
               t.merchant_name,
               t.name,
               COALESCE(
-                transaction_override.category_primary,
-                cleanup_rule.category_primary,
-                merchant_override.category_primary,
-                original_transaction_override.category_primary,
-                original_cleanup_rule.category_primary,
-                original_merchant_override.category_primary,
-                original.category_primary,
-                t.category_primary
+                effective_category.category_name,
+                effective_category.source_category_label
               ),
+              split_categories.names,
+              t.category_primary,
               COALESCE(
                 transaction_override.category_detailed,
                 merchant_override.category_detailed,
@@ -526,11 +512,41 @@ export class PgFinanceRepository {
               'amount_minor', t.amount_minor,
               'raw_merchant', t.merchant_name,
               'raw_name', t.name,
+              'category_id', effective_category.category_id,
+              'category', COALESCE(
+                effective_category.category_name,
+                effective_category.source_category_label
+              ),
+              'original_category', t.category_primary,
               'tags', effective_tags.tags
             )
           )
         FROM transactions t
         JOIN accounts a ON a.id = t.account_id
+        LEFT JOIN transaction_effective_spending_categories
+          effective_category
+          ON effective_category.workspace_id = t.workspace_id
+         AND effective_category.transaction_id = t.id
+        LEFT JOIN LATERAL (
+          SELECT string_agg(
+            category_label.label,
+            ' '
+            ORDER BY category_label.label
+          ) AS names
+          FROM (
+            SELECT DISTINCT concat_ws(
+              ' ',
+              spending_category_name_for_id(
+                split.workspace_id,
+                split.category_id
+              ),
+              split.category
+            ) AS label
+            FROM transaction_splits split
+            WHERE split.workspace_id = t.workspace_id
+              AND split.transaction_id = t.id
+          ) category_label
+        ) split_categories ON true
         LEFT JOIN transaction_metadata metadata
           ON metadata.workspace_id = t.workspace_id
          AND metadata.transaction_id = t.id
@@ -2731,11 +2747,28 @@ export class PgFinanceRepository {
   ) {
     const result = await this.#pool.query(
       `
-        SELECT split.*, transaction.split_version
+        SELECT
+          split.*,
+          active_spending_category_id(
+            split.workspace_id,
+            split.category_id
+          ) AS resolved_category_id,
+          spending_category_name_for_id(
+            split.workspace_id,
+            split.category_id
+          ) AS resolved_category,
+          category.classification = 'fixed' AS is_fixed,
+          transaction.split_version
         FROM transaction_splits split
         JOIN transactions transaction
           ON transaction.workspace_id = split.workspace_id
          AND transaction.id = split.transaction_id
+        JOIN spending_categories category
+          ON category.workspace_id = split.workspace_id
+         AND category.id = active_spending_category_id(
+           split.workspace_id,
+           split.category_id
+         )
         WHERE split.workspace_id = $1
           AND ($2::text[] IS NULL OR split.transaction_id = ANY($2))
           AND ($3::date IS NULL OR transaction.posted_on >= $3)
@@ -2778,17 +2811,13 @@ export class PgFinanceRepository {
             cleanup_rule.display_name
           ) AS display_name,
           effective_tags.tags,
+          effective_category.category_id,
           COALESCE(
-            transaction_override.category_primary,
-            cleanup_rule.category_primary,
-            merchant_override.category_primary,
-            original_override.category_primary,
-            original_cleanup_rule.category_primary,
-            original_merchant_override.category_primary,
-            original_transaction.category_primary,
-            t.category_primary
+            effective_category.category_name,
+            effective_category.source_category_label
           ) AS effective_category_primary,
           category_split.category AS split_category,
+          category_split.category_id AS split_category_id,
           category_split.amount_minor AS split_category_amount_minor,
           category_split.line_count AS split_category_line_count,
           COALESCE(
@@ -2809,15 +2838,20 @@ export class PgFinanceRepository {
           )
             AS effective_excluded_from_spending,
           COALESCE(
-            transaction_override.is_fixed,
-            merchant_override.is_fixed,
-            original_override.is_fixed,
-            original_merchant_override.is_fixed,
-            false
-          ) AS is_fixed
+            split_category_definition.classification,
+            effective_category_definition.classification
+          ) = 'fixed' AS is_fixed
         FROM transactions t
         JOIN accounts a ON a.id = t.account_id
         JOIN finance_connections i ON i.id = a.connection_id
+        LEFT JOIN transaction_effective_spending_categories
+          effective_category
+          ON effective_category.workspace_id = t.workspace_id
+         AND effective_category.transaction_id = t.id
+        LEFT JOIN spending_categories effective_category_definition
+          ON effective_category_definition.workspace_id = t.workspace_id
+         AND effective_category_definition.id =
+           effective_category.category_id
         LEFT JOIN transaction_metadata metadata
           ON metadata.workspace_id = t.workspace_id
          AND metadata.transaction_id = t.id
@@ -2921,15 +2955,37 @@ export class PgFinanceRepository {
              original_transaction.normalized_merchant
         LEFT JOIN LATERAL (
           SELECT
-            split_filter.category,
+            spending_category_name_for_id(
+              split_filter.workspace_id,
+              split_filter.category_id
+            ) AS category,
+            active_spending_category_id(
+              split_filter.workspace_id,
+              split_filter.category_id
+            ) AS category_id,
             SUM(split_filter.amount_minor)::bigint AS amount_minor,
             COUNT(*)::integer AS line_count
           FROM transaction_splits split_filter
           WHERE split_filter.workspace_id = t.workspace_id
             AND split_filter.transaction_id = t.id
-            AND split_filter.category = $5
-          GROUP BY split_filter.category
+            AND active_spending_category_id(
+              split_filter.workspace_id,
+              split_filter.category_id
+            ) IN (
+              SELECT category_id
+              FROM spending_category_descendant_ids(
+                t.workspace_id,
+                COALESCE(
+                  active_spending_category_id(t.workspace_id, $5),
+                  spending_category_id_for_label(t.workspace_id, $5)
+                )
+              )
+            )
+          GROUP BY 1, 2
         ) category_split ON true
+        LEFT JOIN spending_categories split_category_definition
+          ON split_category_definition.workspace_id = t.workspace_id
+         AND split_category_definition.id = category_split.category_id
         WHERE t.workspace_id = $1
           AND ($2::date IS NULL OR t.posted_on >= $2)
           AND ($3::date IS NULL OR t.posted_on < $3)
@@ -2937,16 +2993,16 @@ export class PgFinanceRepository {
           AND (
             $5::text IS NULL
             OR (
-              COALESCE(
-                transaction_override.category_primary,
-                cleanup_rule.category_primary,
-                merchant_override.category_primary,
-                original_override.category_primary,
-                original_cleanup_rule.category_primary,
-                original_merchant_override.category_primary,
-                original_transaction.category_primary,
-                t.category_primary
-              ) = $5
+              effective_category.category_id IN (
+                SELECT category_id
+                FROM spending_category_descendant_ids(
+                  t.workspace_id,
+                  COALESCE(
+                    active_spending_category_id(t.workspace_id, $5),
+                    spending_category_id_for_label(t.workspace_id, $5)
+                  )
+                )
+              )
               AND NOT EXISTS (
                 SELECT 1
                 FROM transaction_splits split_override
@@ -2987,16 +3043,8 @@ export class PgFinanceRepository {
                  t.merchant_name,
                  t.name,
                  effective_tags.tag_names,
-                 COALESCE(
-                   transaction_override.category_primary,
-                   cleanup_rule.category_primary,
-                   merchant_override.category_primary,
-                   original_override.category_primary,
-                   original_cleanup_rule.category_primary,
-                   original_merchant_override.category_primary,
-                   original_transaction.category_primary,
-                   t.category_primary
-                 )
+                 effective_category.category_name,
+                 effective_category.source_category_label
                  )
                ILIKE '%' || $7 || '%'
             OR EXISTS (
@@ -3004,10 +3052,35 @@ export class PgFinanceRepository {
               FROM transaction_splits split_search
               WHERE split_search.workspace_id = t.workspace_id
                 AND split_search.transaction_id = t.id
-                AND split_search.category ILIKE '%' || $7 || '%'
+                AND concat_ws(
+                  ' ',
+                  spending_category_name_for_id(
+                    split_search.workspace_id,
+                    split_search.category_id
+                  ),
+                  split_search.category
+                ) ILIKE '%' || $7 || '%'
                 AND (
                   $5::text IS NULL
-                  OR split_search.category = $5
+                  OR active_spending_category_id(
+                    split_search.workspace_id,
+                    split_search.category_id
+                  ) IN (
+                    SELECT category_id
+                    FROM spending_category_descendant_ids(
+                      split_search.workspace_id,
+                      COALESCE(
+                        active_spending_category_id(
+                          split_search.workspace_id,
+                          $5
+                        ),
+                        spending_category_id_for_label(
+                          split_search.workspace_id,
+                          $5
+                        )
+                      )
+                    )
+                  )
                 )
             )
           )
@@ -3110,17 +3183,11 @@ export class PgFinanceRepository {
               THEN cleanup_rule.tags
             ELSE COALESCE(tag_data.tags, '[]'::jsonb)
           END AS tags,
+          effective_category.category_id,
           COALESCE(
-            transaction_override.category_primary,
-            cleanup_rule.category_primary,
-            merchant_override.category_primary,
-            original_transaction_override.category_primary,
-            original_cleanup_rule.category_primary,
-            original_merchant_override.category_primary,
-            original_transaction.category_primary,
-            t.category_primary
-          )
-            AS effective_category_primary,
+            effective_category.category_name,
+            effective_category.source_category_label
+          ) AS effective_category_primary,
           COALESCE(
             transaction_override.category_detailed,
             merchant_override.category_detailed,
@@ -3139,15 +3206,18 @@ export class PgFinanceRepository {
             t.excluded_from_spending
           )
             AS effective_excluded_from_spending,
-          COALESCE(
-            transaction_override.is_fixed,
-            merchant_override.is_fixed,
-            original_transaction_override.is_fixed,
-            original_merchant_override.is_fixed,
-            false
-          ) AS is_fixed
+          effective_category_definition.classification = 'fixed'
+            AS is_fixed
         FROM transactions t
         JOIN accounts a ON a.id = t.account_id
+        LEFT JOIN transaction_effective_spending_categories
+          effective_category
+          ON effective_category.workspace_id = t.workspace_id
+         AND effective_category.transaction_id = t.id
+        LEFT JOIN spending_categories effective_category_definition
+          ON effective_category_definition.workspace_id = t.workspace_id
+         AND effective_category_definition.id =
+           effective_category.category_id
         LEFT JOIN transaction_metadata metadata
           ON metadata.workspace_id = t.workspace_id
          AND metadata.transaction_id = t.id
@@ -3286,6 +3356,14 @@ export class PgFinanceRepository {
         )
         SELECT
           rule.*,
+          spending_category_name_for_id(
+            rule.workspace_id,
+            rule.category_id
+          ) AS resolved_category,
+          active_spending_category_id(
+            rule.workspace_id,
+            rule.category_id
+          ) AS resolved_category_id,
           count(winning.transaction_id)::integer
             AS matched_transaction_count
         FROM transaction_cleanup_rules rule
@@ -3584,15 +3662,10 @@ export class PgFinanceRepository {
                 THEN cleanup_rule.tags
               ELSE COALESCE(tag_data.tags, '[]'::jsonb)
             END AS tags,
+            effective_category.category_id,
             COALESCE(
-              transaction_override.category_primary,
-              cleanup_rule.category_primary,
-              merchant_override.category_primary,
-              original_transaction_override.category_primary,
-              original_cleanup_rule.category_primary,
-              original_merchant_override.category_primary,
-              original_transaction.category_primary,
-              t.category_primary
+              effective_category.category_name,
+              effective_category.source_category_label
             ) AS effective_category_primary,
             COALESCE(
               transaction_override.category_detailed,
@@ -3610,13 +3683,8 @@ export class PgFinanceRepository {
               original_transaction.excluded_from_spending,
               t.excluded_from_spending
             ) AS effective_excluded_from_spending,
-            COALESCE(
-              transaction_override.is_fixed,
-              merchant_override.is_fixed,
-              original_transaction_override.is_fixed,
-              original_merchant_override.is_fixed,
-              false
-            ) AS is_fixed,
+            effective_category_definition.classification = 'fixed'
+              AS is_fixed,
             GREATEST(
               similarity(COALESCE(t.normalized_merchant, ''), $3),
               similarity(COALESCE(t.normalized_name, ''), $3),
@@ -3636,6 +3704,14 @@ export class PgFinanceRepository {
             ) AS similarity_score
           FROM transactions t
           JOIN accounts a ON a.id = t.account_id
+          LEFT JOIN transaction_effective_spending_categories
+            effective_category
+            ON effective_category.workspace_id = t.workspace_id
+           AND effective_category.transaction_id = t.id
+          LEFT JOIN spending_categories effective_category_definition
+            ON effective_category_definition.workspace_id = t.workspace_id
+           AND effective_category_definition.id =
+             effective_category.category_id
           LEFT JOIN transaction_metadata metadata
             ON metadata.workspace_id = t.workspace_id
            AND metadata.transaction_id = t.id
@@ -3805,7 +3881,6 @@ export class PgFinanceRepository {
       changes,
       "excludedFromSpending",
     );
-    const hasIsFixed = Object.hasOwn(changes, "isFixed");
     const normalizedTags = hasTags
       ? [
           ...new Map(
@@ -3910,7 +3985,7 @@ export class PgFinanceRepository {
         );
       }
 
-      if (hasExcludedFromSpending || hasIsFixed) {
+      if (hasExcludedFromSpending) {
         const overrideRows = ids.map((transactionId) => ({
           id: randomUUID(),
           transaction_id: transactionId,
@@ -3919,10 +3994,10 @@ export class PgFinanceRepository {
           `
             INSERT INTO categorization_overrides (
               id, workspace_id, transaction_id,
-              excluded_from_spending, is_fixed, created_by
+              excluded_from_spending, created_by
             )
             SELECT
-              row.id, $1, row.transaction_id, $3, $4, $5
+              row.id, $1, row.transaction_id, $3, $4
             FROM jsonb_to_recordset($2::jsonb) AS row(
               id text,
               transaction_id text
@@ -3931,14 +4006,9 @@ export class PgFinanceRepository {
               WHERE transaction_id IS NOT NULL
             DO UPDATE SET
               excluded_from_spending = CASE
-                WHEN $6::boolean
+                WHEN $5::boolean
                   THEN EXCLUDED.excluded_from_spending
                 ELSE categorization_overrides.excluded_from_spending
-              END,
-              is_fixed = CASE
-                WHEN $7::boolean
-                  THEN EXCLUDED.is_fixed
-                ELSE categorization_overrides.is_fixed
               END,
               updated_at = now()
           `,
@@ -3948,10 +4018,8 @@ export class PgFinanceRepository {
             hasExcludedFromSpending
               ? changes.excludedFromSpending
               : null,
-            hasIsFixed ? changes.isFixed : null,
             userId,
             hasExcludedFromSpending,
-            hasIsFixed,
           ],
         );
       }
@@ -4062,10 +4130,1061 @@ export class PgFinanceRepository {
     return result.rows[0] ?? null;
   }
 
+  async listSpendingCategories(
+    workspaceId = DEFAULT_WORKSPACE_ID,
+    { includeMerged = false } = {},
+  ) {
+    const result = await this.#pool.query(
+      `
+        WITH category_transactions AS (
+          SELECT
+            effective.category_id,
+            effective.transaction_id
+          FROM transaction_effective_spending_categories effective
+          WHERE effective.workspace_id = $1
+            AND effective.category_id IS NOT NULL
+            AND NOT EXISTS (
+              SELECT 1
+              FROM transaction_splits split
+              WHERE split.workspace_id = effective.workspace_id
+                AND split.transaction_id = effective.transaction_id
+            )
+          UNION
+          SELECT
+            active_spending_category_id(
+              split.workspace_id,
+              split.category_id
+            ) AS category_id,
+            split.transaction_id
+          FROM transaction_splits split
+          WHERE split.workspace_id = $1
+        ),
+        transaction_counts AS (
+          SELECT category_id, COUNT(DISTINCT transaction_id)::integer AS count
+          FROM category_transactions
+          GROUP BY category_id
+        ),
+        budget_counts AS (
+          SELECT
+            active_spending_category_id(
+              budget.workspace_id,
+              budget.category_id
+            ) AS category_id,
+            COUNT(*)::integer AS count
+          FROM budget_lines budget
+          WHERE budget.workspace_id = $1
+          GROUP BY 1
+        )
+        SELECT
+          category.*,
+          spending_category_name_for_id(
+            category.workspace_id,
+            category.id
+          ) AS path,
+          COALESCE(transaction_counts.count, 0) AS transaction_count,
+          COALESCE(budget_counts.count, 0) AS budget_line_count,
+          COALESCE(alias_data.aliases, '[]'::jsonb) AS aliases
+        FROM spending_categories category
+        LEFT JOIN transaction_counts
+          ON transaction_counts.category_id = category.id
+        LEFT JOIN budget_counts
+          ON budget_counts.category_id = category.id
+        LEFT JOIN LATERAL (
+          SELECT jsonb_agg(
+            jsonb_build_object(
+              'label', alias.alias,
+              'type', alias.alias_type
+            )
+            ORDER BY alias.alias
+          ) AS aliases
+          FROM spending_category_aliases alias
+          WHERE alias.workspace_id = category.workspace_id
+            AND active_spending_category_id(
+              alias.workspace_id,
+              alias.category_id
+            ) = category.id
+        ) alias_data ON true
+        WHERE category.workspace_id = $1
+          AND ($2::boolean OR category.merged_into_category_id IS NULL)
+        ORDER BY
+          category.merged_into_category_id IS NOT NULL,
+          path,
+          category.id
+      `,
+      [workspaceId, includeMerged],
+    );
+    return result.rows.map(mapSpendingCategory);
+  }
+
+  async resolveSpendingCategory(
+    workspaceId = DEFAULT_WORKSPACE_ID,
+    value,
+  ) {
+    const result = await this.#pool.query(
+      `
+        SELECT
+          category.id,
+          category.name,
+          category.classification,
+          category.parent_category_id,
+          category.version,
+          spending_category_name_for_id(
+            category.workspace_id,
+            category.id
+          ) AS path
+        FROM spending_categories category
+        WHERE category.workspace_id = $1
+          AND category.id = COALESCE(
+            active_spending_category_id($1, $2),
+            spending_category_id_for_label($1, $2)
+          )
+      `,
+      [workspaceId, value],
+    );
+    return result.rows[0] ? mapSpendingCategory(result.rows[0]) : null;
+  }
+
+  async createSpendingCategory(
+    workspaceId = DEFAULT_WORKSPACE_ID,
+    {
+      name,
+      classification,
+      parentCategoryId = null,
+      userId = null,
+    },
+  ) {
+    const categoryId = stableId("category", randomUUID());
+    try {
+      await withTransaction(this.#pool, async (client) => {
+        if (parentCategoryId) {
+          const parent = await client.query(
+            `
+              SELECT id
+              FROM spending_categories
+              WHERE workspace_id = $1
+                AND id = $2
+                AND merged_into_category_id IS NULL
+              FOR UPDATE
+            `,
+            [workspaceId, parentCategoryId],
+          );
+          if (!parent.rows[0]) {
+            const error = new Error("Parent category not found");
+            error.code = "CATEGORY_PARENT_NOT_FOUND";
+            throw error;
+          }
+        }
+        const aliasConflict = await client.query(
+          `
+            SELECT active_spending_category_id(
+              alias.workspace_id,
+              alias.category_id
+            ) AS category_id
+            FROM spending_category_aliases alias
+            WHERE alias.workspace_id = $1
+              AND alias.normalized_alias =
+                normalize_spending_category_name($2)
+          `,
+          [workspaceId, name],
+        );
+        if (aliasConflict.rows[0]) {
+          const error = new Error("Category name already exists");
+          error.code = "CATEGORY_NAME_CONFLICT";
+          throw error;
+        }
+        await client.query(
+          `
+            INSERT INTO spending_categories (
+              id, workspace_id, name, normalized_name, classification,
+              parent_category_id, created_by, updated_by
+            )
+            VALUES (
+              $1, $2, $3, normalize_spending_category_name($3), $4,
+              $5, $6, $6
+            )
+          `,
+          [
+            categoryId,
+            workspaceId,
+            name,
+            classification,
+            parentCategoryId,
+            userId,
+          ],
+        );
+        const pathResult = await client.query(
+          `
+            SELECT spending_category_name_for_id($1, $2) AS path
+          `,
+          [workspaceId, categoryId],
+        );
+        const path = pathResult.rows[0].path;
+        for (const [alias, aliasType] of [
+          [name, "name"],
+          [path, "name"],
+        ]) {
+          const conflict = await client.query(
+            `
+              SELECT active_spending_category_id(
+                workspace_id,
+                category_id
+              ) AS category_id
+              FROM spending_category_aliases
+              WHERE workspace_id = $1
+                AND normalized_alias =
+                  normalize_spending_category_name($2)
+            `,
+            [workspaceId, alias],
+          );
+          if (
+            conflict.rows[0] &&
+            conflict.rows[0].category_id !== categoryId
+          ) {
+            const error = new Error("Category alias already exists");
+            error.code = "CATEGORY_NAME_CONFLICT";
+            throw error;
+          }
+          await client.query(
+            `
+              INSERT INTO spending_category_aliases (
+                workspace_id, normalized_alias, alias, category_id,
+                alias_type
+              )
+              VALUES (
+                $1, normalize_spending_category_name($2), $2, $3, $4
+              )
+              ON CONFLICT (workspace_id, normalized_alias) DO NOTHING
+            `,
+            [workspaceId, alias, categoryId, aliasType],
+          );
+        }
+        await client.query(
+          `
+            INSERT INTO spending_category_events (
+              id, workspace_id, category_id, event_type, actor_id,
+              after_value
+            )
+            VALUES (
+              $1, $2, $3, 'create', $4,
+              jsonb_build_object(
+                'name', $5::text,
+                'path', $6::text,
+                'classification', $7::text,
+                'parent_category_id', $8::text
+              )
+            )
+          `,
+          [
+            stableId("category-event", randomUUID()),
+            workspaceId,
+            categoryId,
+            userId,
+            name,
+            path,
+            classification,
+            parentCategoryId,
+          ],
+        );
+      });
+    } catch (error) {
+      if (error?.code === "23505") {
+        error.code = "CATEGORY_NAME_CONFLICT";
+      }
+      throw error;
+    }
+    const categories = await this.listSpendingCategories(workspaceId);
+    return categories.find((category) => category.id === categoryId);
+  }
+
+  async updateSpendingCategory(
+    workspaceId = DEFAULT_WORKSPACE_ID,
+    {
+      categoryId,
+      name,
+      classification,
+      parentCategoryId,
+      expectedVersion,
+      userId = null,
+    },
+  ) {
+    let changed = false;
+    try {
+      changed = await withTransaction(this.#pool, async (client) => {
+        const currentResult = await client.query(
+          `
+            SELECT
+              category.*,
+              spending_category_name_for_id(
+                category.workspace_id,
+                category.id
+              ) AS path
+            FROM spending_categories category
+            WHERE category.workspace_id = $1
+              AND category.id = $2
+            FOR UPDATE
+          `,
+          [workspaceId, categoryId],
+        );
+        const current = currentResult.rows[0];
+        if (!current || current.merged_into_category_id) return null;
+        if (Number(current.version) !== Number(expectedVersion)) {
+          return "stale";
+        }
+        const nextName = name ?? current.name;
+        const nextClassification =
+          classification ?? current.classification;
+        const nextParentCategoryId =
+          parentCategoryId === undefined
+            ? current.parent_category_id
+            : parentCategoryId;
+        if (nextParentCategoryId) {
+          const invalidParent = await client.query(
+            `
+              SELECT 1
+              WHERE NOT EXISTS (
+                SELECT 1
+                FROM spending_categories parent
+                WHERE parent.workspace_id = $1
+                  AND parent.id = $3
+                  AND parent.merged_into_category_id IS NULL
+              )
+              OR EXISTS (
+                SELECT 1
+                FROM spending_category_descendant_ids($1, $2)
+                WHERE category_id = $3
+              )
+              LIMIT 1
+            `,
+            [workspaceId, categoryId, nextParentCategoryId],
+          );
+          if (invalidParent.rows[0]) return "invalid_parent";
+        }
+
+        const descendantsBefore = await client.query(
+          `
+            SELECT
+              category_id,
+              spending_category_name_for_id($1, category_id) AS path
+            FROM spending_category_descendant_ids($1, $2)
+          `,
+          [workspaceId, categoryId],
+        );
+        const aliasConflict = await client.query(
+          `
+            SELECT active_spending_category_id(
+              alias.workspace_id,
+              alias.category_id
+            ) AS category_id
+            FROM spending_category_aliases alias
+            WHERE alias.workspace_id = $1
+              AND alias.normalized_alias =
+                normalize_spending_category_name($2)
+              AND active_spending_category_id(
+                alias.workspace_id,
+                alias.category_id
+              ) <> $3
+          `,
+          [workspaceId, nextName, categoryId],
+        );
+        if (aliasConflict.rows[0]) return "conflict";
+
+        const updated = await client.query(
+          `
+            UPDATE spending_categories
+            SET name = $3,
+                normalized_name = normalize_spending_category_name($3),
+                classification = $4,
+                parent_category_id = $5,
+                version = version + 1,
+                updated_by = $6,
+                updated_at = now()
+            WHERE workspace_id = $1
+              AND id = $2
+            RETURNING *
+          `,
+          [
+            workspaceId,
+            categoryId,
+            nextName,
+            nextClassification,
+            nextParentCategoryId,
+            userId,
+          ],
+        );
+        const next = updated.rows[0];
+        const descendantsAfter = await client.query(
+          `
+            SELECT
+              category_id,
+              spending_category_name_for_id($1, category_id) AS path
+            FROM spending_category_descendant_ids($1, $2)
+          `,
+          [workspaceId, categoryId],
+        );
+        for (const entry of descendantsAfter.rows) {
+          const pathConflict = await client.query(
+            `
+              SELECT active_spending_category_id(
+                workspace_id,
+                category_id
+              ) AS category_id
+              FROM spending_category_aliases
+              WHERE workspace_id = $1
+                AND normalized_alias =
+                  normalize_spending_category_name($2)
+            `,
+            [workspaceId, entry.path],
+          );
+          if (
+            pathConflict.rows[0] &&
+            pathConflict.rows[0].category_id !== entry.category_id
+          ) {
+            const error = new Error("Category alias already exists");
+            error.code = "CATEGORY_NAME_CONFLICT";
+            throw error;
+          }
+        }
+        for (const entry of descendantsBefore.rows) {
+          await client.query(
+            `
+              INSERT INTO spending_category_aliases (
+                workspace_id, normalized_alias, alias, category_id,
+                alias_type
+              )
+              VALUES (
+                $1, normalize_spending_category_name($2), $2, $3,
+                'former_name'
+              )
+              ON CONFLICT (workspace_id, normalized_alias) DO NOTHING
+            `,
+            [workspaceId, entry.path, entry.category_id],
+          );
+        }
+        for (const entry of descendantsAfter.rows) {
+          await client.query(
+            `
+              INSERT INTO spending_category_aliases (
+                workspace_id, normalized_alias, alias, category_id,
+                alias_type
+              )
+              VALUES (
+                $1, normalize_spending_category_name($2), $2, $3, 'name'
+              )
+              ON CONFLICT (workspace_id, normalized_alias) DO UPDATE SET
+                alias = EXCLUDED.alias,
+                alias_type = CASE
+                  WHEN spending_category_aliases.category_id =
+                    EXCLUDED.category_id
+                    THEN 'name'
+                  ELSE spending_category_aliases.alias_type
+                END
+              WHERE spending_category_aliases.category_id =
+                EXCLUDED.category_id
+            `,
+            [workspaceId, entry.path, entry.category_id],
+          );
+        }
+        await client.query(
+          `
+            INSERT INTO spending_category_aliases (
+              workspace_id, normalized_alias, alias, category_id, alias_type
+            )
+            VALUES (
+              $1, normalize_spending_category_name($2), $2, $3, 'name'
+            )
+            ON CONFLICT (workspace_id, normalized_alias) DO NOTHING
+          `,
+          [workspaceId, nextName, categoryId],
+        );
+        if (
+          nextName !== current.name ||
+          nextParentCategoryId !== current.parent_category_id
+        ) {
+          await client.query(
+            `
+              INSERT INTO spending_category_events (
+                id, workspace_id, category_id, event_type, actor_id,
+                before_value, after_value
+              )
+              VALUES (
+                $1, $2, $3, 'rename', $4,
+                jsonb_build_object(
+                  'name', $5::text,
+                  'path', $6::text,
+                  'parent_category_id', $7::text
+                ),
+                jsonb_build_object(
+                  'name', $8::text,
+                  'path', spending_category_name_for_id($2, $3),
+                  'parent_category_id', $9::text
+                )
+              )
+            `,
+            [
+              stableId("category-event", randomUUID()),
+              workspaceId,
+              categoryId,
+              userId,
+              current.name,
+              current.path,
+              current.parent_category_id,
+              next.name,
+              next.parent_category_id,
+            ],
+          );
+        }
+        if (nextClassification !== current.classification) {
+          await client.query(
+            `
+              INSERT INTO spending_category_events (
+                id, workspace_id, category_id, event_type, actor_id,
+                before_value, after_value
+              )
+              VALUES (
+                $1, $2, $3, 'reclassify', $4,
+                jsonb_build_object('classification', $5::text),
+                jsonb_build_object('classification', $6::text)
+              )
+            `,
+            [
+              stableId("category-event", randomUUID()),
+              workspaceId,
+              categoryId,
+              userId,
+              current.classification,
+              nextClassification,
+            ],
+          );
+        }
+
+        for (const table of [
+          "categorization_overrides",
+          "transaction_cleanup_rules",
+        ]) {
+          await client.query(
+            `
+              UPDATE ${table}
+              SET category_primary =
+                spending_category_name_for_id(workspace_id, category_id),
+                  updated_at = now()
+              WHERE workspace_id = $1
+                AND category_id IN (
+                  SELECT category_id
+                  FROM spending_category_descendant_ids($1, $2)
+                )
+            `,
+            [workspaceId, categoryId],
+          );
+        }
+        for (const table of [
+          "transaction_splits",
+          "budget_lines",
+          "budget_default_revisions",
+          "budget_category_versions",
+        ]) {
+          await client.query(
+            `
+              UPDATE ${table}
+              SET category =
+                spending_category_name_for_id(workspace_id, category_id),
+                  updated_at = now()
+              WHERE workspace_id = $1
+                AND category_id IN (
+                  SELECT category_id
+                  FROM spending_category_descendant_ids($1, $2)
+                )
+            `,
+            [workspaceId, categoryId],
+          );
+        }
+        const affected = await client.query(
+          `
+            SELECT transaction_id
+            FROM transaction_effective_spending_categories
+            WHERE workspace_id = $1
+              AND category_id = ANY(
+                ARRAY(
+                  SELECT category_id
+                  FROM spending_category_descendant_ids($1, $2)
+                )
+              )
+          `,
+          [workspaceId, categoryId],
+        );
+        await this.#refreshTransactionSearchDocuments(
+          client,
+          workspaceId,
+          affected.rows.map((row) => row.transaction_id),
+        );
+        return true;
+      });
+    } catch (error) {
+      if (error?.code === "23505") return { conflict: true };
+      throw error;
+    }
+    if (changed === "stale") return { stale: true };
+    if (changed === "conflict") return { conflict: true };
+    if (changed === "invalid_parent") return { invalidParent: true };
+    if (!changed) return null;
+    const categories = await this.listSpendingCategories(workspaceId);
+    return categories.find((category) => category.id === categoryId);
+  }
+
+  async mergeSpendingCategories(
+    workspaceId = DEFAULT_WORKSPACE_ID,
+    {
+      sourceCategoryIds,
+      destinationCategoryId = null,
+      destination = null,
+      expectedVersions,
+      userId = null,
+    },
+  ) {
+    let result;
+    try {
+      result = await withTransaction(this.#pool, async (client) => {
+        const locked = await client.query(
+          `
+            SELECT *
+            FROM spending_categories
+            WHERE workspace_id = $1
+              AND id = ANY($2::text[])
+            ORDER BY id
+            FOR UPDATE
+          `,
+          [
+            workspaceId,
+            [
+              ...sourceCategoryIds,
+              ...(destinationCategoryId ? [destinationCategoryId] : []),
+            ],
+          ],
+        );
+        const byId = new Map(locked.rows.map((row) => [row.id, row]));
+        if (
+          sourceCategoryIds.some(
+            (id) => !byId.has(id) || byId.get(id).merged_into_category_id,
+          ) ||
+          (destinationCategoryId &&
+            (!byId.has(destinationCategoryId) ||
+              byId.get(destinationCategoryId).merged_into_category_id))
+        ) {
+          return "not_found";
+        }
+        for (const [id, version] of Object.entries(expectedVersions)) {
+          if (!byId.has(id) || Number(byId.get(id).version) !== Number(version)) {
+            return "stale";
+          }
+        }
+        const childCheck = await client.query(
+          `
+            SELECT parent_category_id
+            FROM spending_categories
+            WHERE workspace_id = $1
+              AND parent_category_id = ANY($2::text[])
+              AND merged_into_category_id IS NULL
+            LIMIT 1
+          `,
+          [workspaceId, sourceCategoryIds],
+        );
+        if (childCheck.rows[0]) return "has_children";
+
+        let targetId = destinationCategoryId;
+        let mergeSourceIds = [...sourceCategoryIds];
+        if (!targetId) {
+          let createdNewTarget = false;
+          targetId = stableId("category", randomUUID());
+          const parentCategoryId = destination.parentCategoryId ?? null;
+          if (
+            parentCategoryId &&
+            sourceCategoryIds.includes(parentCategoryId)
+          ) {
+            return "invalid_parent";
+          }
+          if (parentCategoryId) {
+            const parent = await client.query(
+              `
+                SELECT id
+                FROM spending_categories
+                WHERE workspace_id = $1
+                  AND id = $2
+                  AND merged_into_category_id IS NULL
+              `,
+              [workspaceId, parentCategoryId],
+            );
+            if (!parent.rows[0]) return "invalid_parent";
+          }
+          const conflict = await client.query(
+            `
+              SELECT active_spending_category_id(
+                workspace_id,
+                category_id
+              ) AS category_id
+              FROM spending_category_aliases
+              WHERE workspace_id = $1
+                AND normalized_alias =
+                  normalize_spending_category_name($2)
+            `,
+            [workspaceId, destination.name],
+          );
+          const conflictingCategoryId = conflict.rows[0]?.category_id ?? null;
+          if (
+            conflictingCategoryId &&
+            !sourceCategoryIds.includes(conflictingCategoryId)
+          ) {
+            return "conflict";
+          }
+          if (conflictingCategoryId) {
+            targetId = conflictingCategoryId;
+            mergeSourceIds = mergeSourceIds.filter((id) => id !== targetId);
+            const previousTarget = byId.get(targetId);
+            await client.query(
+              `
+                UPDATE spending_categories
+                SET name = $3,
+                    normalized_name =
+                      normalize_spending_category_name($3),
+                    classification = $4,
+                    parent_category_id = $5,
+                    version = version + 1,
+                    updated_by = $6,
+                    updated_at = now()
+                WHERE workspace_id = $1 AND id = $2
+              `,
+              [
+                workspaceId,
+                targetId,
+                destination.name,
+                destination.classification,
+                parentCategoryId,
+                userId,
+              ],
+            );
+            await client.query(
+              `
+                INSERT INTO spending_category_events (
+                  id, workspace_id, category_id, event_type, actor_id,
+                  before_value, after_value
+                )
+                VALUES (
+                  $1, $2, $3, 'merge', $4,
+                  jsonb_build_object(
+                    'name', $5::text,
+                    'classification', $6::text,
+                    'parent_category_id', $7::text
+                  ),
+                  jsonb_build_object(
+                    'name', $8::text,
+                    'classification', $9::text,
+                    'parent_category_id', $10::text,
+                    'promoted_to_destination', true
+                  )
+                )
+              `,
+              [
+                stableId("category-event", randomUUID()),
+                workspaceId,
+                targetId,
+                userId,
+                previousTarget.name,
+                previousTarget.classification,
+                previousTarget.parent_category_id,
+                destination.name,
+                destination.classification,
+                parentCategoryId,
+              ],
+            );
+          } else {
+            createdNewTarget = true;
+            await client.query(
+              `
+                INSERT INTO spending_categories (
+                  id, workspace_id, name, normalized_name, classification,
+                  parent_category_id, created_by, updated_by
+                )
+                VALUES (
+                  $1, $2, $3, normalize_spending_category_name($3), $4,
+                  $5, $6, $6
+                )
+              `,
+              [
+                targetId,
+                workspaceId,
+                destination.name,
+                destination.classification,
+                parentCategoryId,
+                userId,
+              ],
+            );
+          }
+          const path = await client.query(
+            `SELECT spending_category_name_for_id($1, $2) AS path`,
+            [workspaceId, targetId],
+          );
+          for (const alias of new Set([destination.name, path.rows[0].path])) {
+            const insertedAlias = await client.query(
+              `
+                INSERT INTO spending_category_aliases (
+                  workspace_id, normalized_alias, alias, category_id,
+                  alias_type
+                )
+                VALUES (
+                  $1, normalize_spending_category_name($2), $2, $3, 'name'
+                )
+                ON CONFLICT (workspace_id, normalized_alias) DO NOTHING
+                RETURNING category_id
+              `,
+              [workspaceId, alias, targetId],
+            );
+            if (!insertedAlias.rows[0]) {
+              const existingAlias = await client.query(
+                `
+                  SELECT active_spending_category_id(
+                    workspace_id,
+                    category_id
+                  ) AS category_id
+                  FROM spending_category_aliases
+                  WHERE workspace_id = $1
+                    AND normalized_alias =
+                      normalize_spending_category_name($2)
+                `,
+                [workspaceId, alias],
+              );
+              if (existingAlias.rows[0]?.category_id !== targetId) {
+                const aliasConflict = new Error("Category alias conflict");
+                aliasConflict.code = "23505";
+                throw aliasConflict;
+              }
+            }
+          }
+          if (createdNewTarget) {
+            await client.query(
+              `
+                INSERT INTO spending_category_events (
+                  id, workspace_id, category_id, event_type, actor_id,
+                  after_value
+                )
+                VALUES (
+                  $1, $2, $3, 'create', $4,
+                  jsonb_build_object(
+                    'name', $5::text,
+                    'path', $6::text,
+                    'classification', $7::text,
+                    'parent_category_id', $8::text,
+                    'created_as_merge_destination', true
+                  )
+                )
+              `,
+              [
+                stableId("category-event", randomUUID()),
+                workspaceId,
+                targetId,
+                userId,
+                destination.name,
+                path.rows[0].path,
+                destination.classification,
+                parentCategoryId,
+              ],
+            );
+          }
+        }
+        if (destinationCategoryId && sourceCategoryIds.includes(targetId)) {
+          return "self_merge";
+        }
+
+        const target = await client.query(
+          `
+            SELECT
+              category.*,
+              spending_category_name_for_id(
+                category.workspace_id,
+                category.id
+              ) AS path
+            FROM spending_categories category
+            WHERE category.workspace_id = $1 AND category.id = $2
+          `,
+          [workspaceId, targetId],
+        );
+        const targetRow = target.rows[0];
+        const allCategoryIds = [...mergeSourceIds, targetId];
+
+        const defaults = await client.query(
+          `
+            SELECT
+              category_id,
+              effective_month_on::text AS effective_month_on,
+              amount_minor,
+              currency_code,
+              updated_by
+            FROM budget_default_revisions
+            WHERE workspace_id = $1
+              AND category_id = ANY($2::text[])
+            ORDER BY effective_month_on, category_id
+          `,
+          [workspaceId, allCategoryIds],
+        );
+        const timeline = mergedBudgetTimeline(
+          allCategoryIds,
+          defaults.rows,
+        );
+
+        await client.query(
+          `
+            WITH moved AS (
+              DELETE FROM budget_lines
+              WHERE workspace_id = $1
+                AND category_id = ANY($2::text[])
+              RETURNING *
+            )
+            INSERT INTO budget_lines (
+              workspace_id, month_on, category, category_id, amount_minor,
+              currency_code, updated_by, updated_at
+            )
+            SELECT
+              $1,
+              month_on,
+              $3,
+              $4,
+              SUM(amount_minor),
+              currency_code,
+              $5,
+              now()
+            FROM moved
+            GROUP BY month_on, currency_code
+          `,
+          [workspaceId, allCategoryIds, targetRow.path, targetId, userId],
+        );
+        await client.query(
+          `
+            DELETE FROM budget_default_revisions
+            WHERE workspace_id = $1
+              AND category_id = ANY($2::text[])
+          `,
+          [workspaceId, allCategoryIds],
+        );
+        for (const revision of timeline) {
+          await client.query(
+            `
+              INSERT INTO budget_default_revisions (
+                workspace_id, category, category_id, effective_month_on,
+                amount_minor, currency_code, updated_by, updated_at
+              )
+              VALUES ($1, $2, $3, $4, $5, $6, $7, now())
+            `,
+            [
+              workspaceId,
+              targetRow.path,
+              targetId,
+              revision.effectiveMonthOn,
+              revision.amountMinor,
+              revision.currencyCode,
+              userId,
+            ],
+          );
+        }
+        const versions = await client.query(
+          `
+            DELETE FROM budget_category_versions
+            WHERE workspace_id = $1
+              AND category_id = ANY($2::text[])
+            RETURNING version
+          `,
+          [workspaceId, allCategoryIds],
+        );
+        const nextBudgetVersion =
+          Math.max(0, ...versions.rows.map((row) => Number(row.version))) + 1;
+        await client.query(
+          `
+            INSERT INTO budget_category_versions (
+              workspace_id, category, category_id, version, updated_at
+            )
+            VALUES ($1, $2, $3, $4, now())
+          `,
+          [workspaceId, targetRow.path, targetId, nextBudgetVersion],
+        );
+
+        await client.query(
+          `
+            UPDATE spending_categories
+            SET merged_into_category_id = $3,
+                version = version + 1,
+                updated_by = $4,
+                updated_at = now()
+            WHERE workspace_id = $1
+              AND id = ANY($2::text[])
+          `,
+          [workspaceId, mergeSourceIds, targetId, userId],
+        );
+        for (const sourceCategoryId of mergeSourceIds) {
+          await client.query(
+            `
+              INSERT INTO spending_category_events (
+                id, workspace_id, category_id, event_type, actor_id,
+                before_value, after_value
+              )
+              VALUES (
+                $1, $2, $3, 'merge', $4,
+                jsonb_build_object(
+                  'name', $5::text,
+                  'classification', $6::text
+                ),
+                jsonb_build_object(
+                  'merged_into_category_id', $7::text,
+                  'merged_into_path', $8::text
+                )
+              )
+            `,
+            [
+              stableId("category-event", randomUUID()),
+              workspaceId,
+              sourceCategoryId,
+              userId,
+              byId.get(sourceCategoryId).name,
+              byId.get(sourceCategoryId).classification,
+              targetId,
+              targetRow.path,
+            ],
+          );
+        }
+        const affected = await client.query(
+          `
+            SELECT transaction_id
+            FROM transaction_effective_spending_categories
+            WHERE workspace_id = $1 AND category_id = $2
+          `,
+          [workspaceId, targetId],
+        );
+        await this.#refreshTransactionSearchDocuments(
+          client,
+          workspaceId,
+          affected.rows.map((row) => row.transaction_id),
+        );
+        return targetId;
+      });
+    } catch (error) {
+      if (error?.code === "23505") return { conflict: true };
+      throw error;
+    }
+    if (result === "not_found") return null;
+    if (result === "stale") return { stale: true };
+    if (result === "has_children") return { hasChildren: true };
+    if (result === "invalid_parent") return { invalidParent: true };
+    if (result === "conflict") return { conflict: true };
+    if (result === "self_merge") return { selfMerge: true };
+    const categories = await this.listSpendingCategories(workspaceId);
+    return categories.find((category) => category.id === result);
+  }
+
   async listTransactionCategories(
     workspaceId = DEFAULT_WORKSPACE_ID,
     { limit = 100 } = {},
   ) {
+    const categories = await this.listSpendingCategories(workspaceId);
+    return categories
+      .slice(0, Math.max(1, Math.min(250, Number(limit) || 100)))
+      .map((category) => category.path);
+
+    /* c8 ignore start -- retained for old-schema test doubles */
     const result = await this.#pool.query(
       `
         WITH base_categories AS (
@@ -4183,6 +5302,7 @@ export class PgFinanceRepository {
       [workspaceId, Math.max(1, Math.min(250, Number(limit) || 100))],
     );
     return result.rows.map((row) => row.category);
+    /* c8 ignore stop */
   }
 
   async getAccountSnapshots(
@@ -4792,7 +5912,6 @@ export class PgFinanceRepository {
       categoryPrimary = null,
       categoryDetailed = null,
       excludedFromSpending = null,
-      isFixed = null,
       userId = null,
     },
   ) {
@@ -4811,16 +5930,15 @@ export class PgFinanceRepository {
         `
           INSERT INTO categorization_overrides (
             id, workspace_id, transaction_id, category_primary,
-            category_detailed, excluded_from_spending, is_fixed, created_by
+            category_detailed, excluded_from_spending, created_by
           )
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+          VALUES ($1, $2, $3, $4, $5, $6, $7)
           ON CONFLICT (workspace_id, transaction_id)
             WHERE transaction_id IS NOT NULL
           DO UPDATE SET
             category_primary = EXCLUDED.category_primary,
             category_detailed = EXCLUDED.category_detailed,
             excluded_from_spending = EXCLUDED.excluded_from_spending,
-            is_fixed = EXCLUDED.is_fixed,
             updated_at = now()
           RETURNING *
         `,
@@ -4831,7 +5949,6 @@ export class PgFinanceRepository {
           categoryPrimary,
           categoryDetailed,
           excludedFromSpending,
-          isFixed,
           userId,
         ],
       );
@@ -5397,7 +6514,14 @@ export class PgFinanceRepository {
           FROM transaction_splits split
           WHERE split.workspace_id = $1
             AND lower(regexp_replace(
-              split.category,
+              concat_ws(
+                ' ',
+                spending_category_name_for_id(
+                  split.workspace_id,
+                  split.category_id
+                ),
+                split.category
+              ),
               '[^[:alnum:]]+',
               ' ',
               'g'
@@ -5795,6 +6919,10 @@ function mapTransaction(row) {
     display_name:
       row.display_name ?? row.merchant_name ?? row.name,
     tags: Array.isArray(row.tags) ? row.tags : [],
+    category_id:
+      row.split_category_id ??
+      row.category_id ??
+      null,
     category_primary:
       projectedSplitCategory ??
       row.effective_category_primary ??
@@ -5804,6 +6932,8 @@ function mapTransaction(row) {
       projectedSplitCategory == null
         ? row.effective_category_detailed ?? row.category_detailed ?? null
         : null,
+    original_category_primary: row.category_primary ?? null,
+    original_category_detailed: row.category_detailed ?? null,
     amount_minor:
       integer(row.split_category_amount_minor) ?? providerAmountMinor,
     provider_amount_minor: providerAmountMinor,
@@ -5835,13 +6965,87 @@ function mapTransactionSplit(row) {
     transaction_id: row.transaction_id,
     split_version: Number(row.split_version ?? 0),
     line_index: Number(row.line_index),
-    category: row.category,
+    category_id:
+      row.resolved_category_id ??
+      row.category_id ??
+      null,
+    category:
+      row.resolved_category ??
+      row.category,
     amount_minor: integer(row.amount_minor),
     note: row.note ?? null,
+    is_fixed: Boolean(row.is_fixed),
     created_by: row.created_by ?? null,
     created_at: dateValue(row.created_at),
     updated_at: dateValue(row.updated_at),
   };
+}
+
+function mapSpendingCategory(row) {
+  const aliases = Array.isArray(row.aliases)
+    ? row.aliases
+    : typeof row.aliases === "string"
+      ? JSON.parse(row.aliases)
+      : [];
+  const path = row.path ?? row.name;
+  return {
+    id: row.id,
+    name: row.name,
+    path,
+    depth: Math.max(0, String(path).split(" / ").length - 1),
+    classification: row.classification,
+    parent_category_id: row.parent_category_id ?? null,
+    merged_into_category_id: row.merged_into_category_id ?? null,
+    status: row.merged_into_category_id ? "merged" : "active",
+    version: Number(row.version),
+    transaction_count: Number(row.transaction_count ?? 0),
+    budget_line_count: Number(row.budget_line_count ?? 0),
+    aliases,
+    created_at: dateValue(row.created_at),
+    updated_at: dateValue(row.updated_at),
+  };
+}
+
+function mergedBudgetTimeline(categoryIds, rows) {
+  const ids = new Set(categoryIds);
+  const byDate = new Map();
+  for (const row of rows) {
+    if (!ids.has(row.category_id)) continue;
+    const date = String(row.effective_month_on);
+    const entries = byDate.get(date) ?? [];
+    entries.push(row);
+    byDate.set(date, entries);
+  }
+  const current = new Map();
+  const timeline = [];
+  for (const date of [...byDate.keys()].sort()) {
+    for (const row of byDate.get(date)) {
+      current.set(row.category_id, {
+        amountMinor: Number(row.amount_minor),
+        currencyCode: row.currency_code,
+      });
+    }
+    const values = [...current.values()];
+    const currencyCode = values[0]?.currencyCode ?? "USD";
+    const amountMinor = values.reduce(
+      (sum, value) => sum + value.amountMinor,
+      0,
+    );
+    const previous = timeline.at(-1);
+    if (
+      previous &&
+      previous.amountMinor === amountMinor &&
+      previous.currencyCode === currencyCode
+    ) {
+      continue;
+    }
+    timeline.push({
+      effectiveMonthOn: date,
+      amountMinor,
+      currencyCode,
+    });
+  }
+  return timeline;
 }
 
 function mapTransactionCleanupRule(row) {
@@ -5851,7 +7055,14 @@ function mapTransactionCleanupRule(row) {
     match_value: row.match_value,
     normalized_match_value: row.normalized_match_value,
     display_name: row.display_name ?? null,
-    category_primary: row.category_primary ?? null,
+    category_id:
+      row.resolved_category_id ??
+      row.category_id ??
+      null,
+    category_primary:
+      row.resolved_category ??
+      row.category_primary ??
+      null,
     tags: row.tags == null
       ? null
       : Array.isArray(row.tags)

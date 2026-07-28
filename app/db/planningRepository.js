@@ -958,25 +958,50 @@ export class PgPlanningRepository {
   ) {
     const result = await (client ?? this.#client()).query(
       `
-        WITH defaults AS (
-          SELECT DISTINCT ON (category)
-            category,
+        WITH default_candidates AS (
+          SELECT
+            active_spending_category_id(
+              workspace_id,
+              category_id
+            ) AS category_id,
+            spending_category_name_for_id(
+              workspace_id,
+              category_id
+            ) AS category,
             amount_minor,
             currency_code,
             effective_month_on
           FROM budget_default_revisions
           WHERE workspace_id = $1
             AND effective_month_on <= $2
-          ORDER BY category, effective_month_on DESC
+        ),
+        defaults AS (
+          SELECT DISTINCT ON (category_id) *
+          FROM default_candidates
+          ORDER BY category_id, effective_month_on DESC
         ),
         overrides AS (
-          SELECT category, amount_minor, currency_code
+          SELECT
+            active_spending_category_id(
+              workspace_id,
+              category_id
+            ) AS category_id,
+            spending_category_name_for_id(
+              workspace_id,
+              category_id
+            ) AS category,
+            amount_minor,
+            currency_code
           FROM budget_lines
           WHERE workspace_id = $1
             AND month_on = $2
             AND $3::boolean
         )
         SELECT
+          COALESCE(
+            overrides.category_id,
+            defaults.category_id
+          ) AS category_id,
           COALESCE(overrides.category, defaults.category) AS category,
           COALESCE(overrides.amount_minor, defaults.amount_minor) AS amount_minor,
           COALESCE(overrides.currency_code, defaults.currency_code) AS currency_code,
@@ -984,11 +1009,16 @@ export class PgPlanningRepository {
           defaults.effective_month_on,
           COALESCE(category_version.version, 0) AS version
         FROM defaults
-        FULL OUTER JOIN overrides USING (category)
+        FULL OUTER JOIN overrides USING (category_id)
         LEFT JOIN budget_category_versions category_version
           ON category_version.workspace_id = $1
-         AND category_version.category =
-            COALESCE(overrides.category, defaults.category)
+         AND active_spending_category_id(
+           category_version.workspace_id,
+           category_version.category_id
+         ) = COALESCE(
+           overrides.category_id,
+           defaults.category_id
+         )
         ORDER BY category
       `,
       [workspaceId, monthOn, includeExact],
@@ -1001,7 +1031,16 @@ export class PgPlanningRepository {
   ) {
     const result = await this.#client().query(
       `
-        SELECT category, version
+        SELECT
+          active_spending_category_id(
+            workspace_id,
+            category_id
+          ) AS category_id,
+          spending_category_name_for_id(
+            workspace_id,
+            category_id
+          ) AS category,
+          version
         FROM budget_category_versions
         WHERE workspace_id = $1
         ORDER BY category
@@ -1009,6 +1048,7 @@ export class PgPlanningRepository {
       [workspaceId],
     );
     return result.rows.map((row) => ({
+      category_id: row.category_id,
       category: row.category,
       version: Number(row.version),
     }));
@@ -1091,7 +1131,8 @@ export class PgPlanningRepository {
         `
           SELECT version
           FROM budget_category_versions
-          WHERE workspace_id = $1 AND category = $2
+          WHERE workspace_id = $1
+            AND category_id = spending_category_id_for_label($1, $2)
           FOR UPDATE
         `,
         [workspaceId, category],
@@ -1111,6 +1152,7 @@ export class PgPlanningRepository {
           current:
             currentLines.find((line) => line.category === category) ?? {
               category,
+              category_id: null,
               amount_minor: null,
               currency_code: "USD",
               version: currentVersion,
@@ -1144,11 +1186,22 @@ export class PgPlanningRepository {
       } else {
         const before = await client.query(
           `
-            SELECT category, amount_minor, currency_code
+            SELECT
+              spending_category_name_for_id(
+                workspace_id,
+                category_id
+              ) AS category,
+              active_spending_category_id(
+                workspace_id,
+                category_id
+              ) AS category_id,
+              amount_minor,
+              currency_code
             FROM ${table}
             WHERE workspace_id = $1
               AND ${dateColumn} = $2
-              AND category = $3
+              AND category_id =
+                spending_category_id_for_label($1, $3)
           `,
           [workspaceId, dateValueInput, category],
         );
@@ -1175,7 +1228,17 @@ export class PgPlanningRepository {
             amount_minor = EXCLUDED.amount_minor,
             updated_by = EXCLUDED.updated_by,
             updated_at = now()
-          RETURNING category, amount_minor, currency_code
+          RETURNING
+            spending_category_name_for_id(
+              workspace_id,
+              category_id
+            ) AS category,
+            active_spending_category_id(
+              workspace_id,
+              category_id
+            ) AS category_id,
+            amount_minor,
+            currency_code
         `,
         [workspaceId, dateValueInput, category, amountMinor, actor.id],
       );
@@ -1191,7 +1254,7 @@ export class PgPlanningRepository {
           DO UPDATE SET
             version = budget_category_versions.version + 1,
             updated_at = now()
-          RETURNING version
+          RETURNING category_id, version
         `,
         [workspaceId, category],
       );
@@ -1797,7 +1860,17 @@ export class PgPlanningRepository {
   ) {
     const result = await this.#client().query(
       `
-        SELECT split.*, transaction.split_version
+        SELECT
+          split.*,
+          active_spending_category_id(
+            split.workspace_id,
+            split.category_id
+          ) AS resolved_category_id,
+          spending_category_name_for_id(
+            split.workspace_id,
+            split.category_id
+          ) AS resolved_category,
+          transaction.split_version
         FROM transaction_splits split
         JOIN transactions transaction
           ON transaction.workspace_id = split.workspace_id
@@ -1840,7 +1913,17 @@ export class PgPlanningRepository {
       if (!parent) return null;
       const beforeResult = await client.query(
         `
-          SELECT * FROM transaction_splits
+          SELECT
+            split.*,
+            active_spending_category_id(
+              split.workspace_id,
+              split.category_id
+            ) AS resolved_category_id,
+            spending_category_name_for_id(
+              split.workspace_id,
+              split.category_id
+            ) AS resolved_category
+          FROM transaction_splits split
           WHERE workspace_id = $1 AND transaction_id = $2
           ORDER BY line_index
         `,
@@ -1922,7 +2005,17 @@ export class PgPlanningRepository {
       }
       const afterResult = await client.query(
         `
-          SELECT * FROM transaction_splits
+          SELECT
+            split.*,
+            active_spending_category_id(
+              split.workspace_id,
+              split.category_id
+            ) AS resolved_category_id,
+            spending_category_name_for_id(
+              split.workspace_id,
+              split.category_id
+            ) AS resolved_category
+          FROM transaction_splits split
           WHERE workspace_id = $1 AND transaction_id = $2
           ORDER BY line_index
         `,
@@ -2166,6 +2259,7 @@ function mapSchedule(row) {
 
 function mapBudgetLine(row) {
   return {
+    category_id: row.category_id ?? null,
     category: row.category,
     amount_minor: integer(row.amount_minor),
     currency_code: row.currency_code ?? "USD",
@@ -2183,7 +2277,11 @@ function mapSplit(row) {
     transaction_id: row.transaction_id,
     split_version: Number(row.split_version ?? 0),
     line_index: Number(row.line_index),
-    category: row.category,
+    category_id:
+      row.resolved_category_id ??
+      row.category_id ??
+      null,
+    category: row.resolved_category ?? row.category,
     amount_minor: integer(row.amount_minor),
     note: row.note ?? null,
   };

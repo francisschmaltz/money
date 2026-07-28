@@ -235,7 +235,6 @@ test("demo batch edits are atomic and immediately affect transactions and search
       category_primary: "Household",
       tags: ["Reimbursable", "Shared"],
       excluded_from_spending: true,
-      is_fixed: true,
     },
   });
 
@@ -254,7 +253,6 @@ test("demo batch edits are atomic and immediately affect transactions and search
         transaction.display_name === "Household purchase" &&
         transaction.category_primary === "Household" &&
         transaction.excluded_from_spending === true &&
-        transaction.is_fixed === true &&
         transaction.raw_merchant !== "Household purchase",
     ),
   );

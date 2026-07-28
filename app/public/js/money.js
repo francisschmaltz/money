@@ -1093,24 +1093,172 @@
       });
     });
 
-    document.querySelector("[data-classification-form]")?.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      const form = event.currentTarget;
-      const status = form.querySelector("[data-save-status]");
-      const submit = form.querySelector('button[type="submit"]');
-      const categories = new FormData(form).getAll("fixed_category").map(String);
-      submit?.setAttribute("disabled", "");
-      if (status) status.textContent = "Saving…";
-      try {
-        await saveRule("weekly.fixed_categories", { categories });
-        form.querySelectorAll('input[name="fixed_category"]').forEach((input) => {
-          const copy = input.closest(".setting-row")?.querySelector("small");
-          if (copy) copy.textContent = input.checked ? "Fixed obligation" : "Flexible spending";
+    document
+      .querySelector("[data-category-create-form]")
+      ?.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const form = event.currentTarget;
+        const status = form.querySelector("[data-save-status]");
+        const submit = form.querySelector('button[type="submit"]');
+        const values = new FormData(form);
+        submit?.setAttribute("disabled", "");
+        if (status) status.textContent = "Creating…";
+        try {
+          await requestJson("/api/v1/categories", {
+            body: {
+              name: values.get("name"),
+              classification: values.get("classification"),
+              parent_category_id:
+                values.get("parent_category_id") || null,
+            },
+          });
+          if (status) status.textContent = "Category created";
+          window.location.reload();
+        } catch (error) {
+          if (status) status.textContent = error.message;
+          submit?.removeAttribute("disabled");
+        }
+      });
+
+    document
+      .querySelectorAll("[data-category-edit-form]")
+      .forEach((form) => {
+        form.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          const row = form.closest("[data-category-row]");
+          const status = form.querySelector("[data-save-status]");
+          const submit = form.querySelector('button[type="submit"]');
+          const values = new FormData(form);
+          submit?.setAttribute("disabled", "");
+          if (status) status.textContent = "Saving…";
+          try {
+            await requestJson(form.dataset.endpoint, {
+              method: "PATCH",
+              body: {
+                name: values.get("name"),
+                classification: values.get("classification"),
+                parent_category_id:
+                  values.get("parent_category_id") || null,
+                expected_version: Number(row?.dataset.categoryVersion),
+              },
+            });
+            if (status) status.textContent = "Saved";
+            window.location.reload();
+          } catch (error) {
+            if (status) status.textContent = error.message;
+            submit?.removeAttribute("disabled");
+          }
         });
-        if (status) status.textContent = "Classifications saved";
-      } catch {
-        if (status) status.textContent = "Couldn’t save classifications";
-      } finally {
+      });
+
+    const mergeForm = document.querySelector(
+      "[data-category-merge-form]",
+    );
+    const mergeDestination = mergeForm?.querySelector(
+      "[data-category-merge-destination]",
+    );
+    const mergeNewFields = mergeForm?.querySelector(
+      "[data-category-merge-new]",
+    );
+    const updateMergeDestination = () => {
+      const createsNew = mergeDestination?.value === "__new__";
+      mergeNewFields?.toggleAttribute("hidden", !createsNew);
+      mergeNewFields
+        ?.querySelector('input[name="name"]')
+        ?.toggleAttribute("required", createsNew);
+    };
+    mergeDestination?.addEventListener(
+      "change",
+      updateMergeDestination,
+    );
+    updateMergeDestination();
+    const updateMergePreview = () => {
+      if (!mergeForm) return;
+      const selectedRows = [
+        ...document.querySelectorAll(
+          "[data-category-row]:has([data-category-select]:checked)",
+        ),
+      ];
+      const status = mergeForm.querySelector("[data-save-status]");
+      if (!status || !selectedRows.length) {
+        if (status) status.textContent = "";
+        return;
+      }
+      const transactionCount = selectedRows.reduce(
+        (sum, row) =>
+          sum + Number(row.dataset.categoryTransactionCount || 0),
+        0,
+      );
+      const budgetCount = selectedRows.reduce(
+        (sum, row) =>
+          sum + Number(row.dataset.categoryBudgetCount || 0),
+        0,
+      );
+      status.textContent = `${selectedRows.length} selected · ${transactionCount} transactions · ${budgetCount} budget lines`;
+    };
+    document
+      .querySelectorAll("[data-category-select]")
+      .forEach((input) =>
+        input.addEventListener("change", updateMergePreview),
+      );
+    mergeForm?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const selectedRows = [
+        ...document.querySelectorAll(
+          "[data-category-row]:has([data-category-select]:checked)",
+        ),
+      ];
+      const status = mergeForm.querySelector("[data-save-status]");
+      const submit = mergeForm.querySelector('button[type="submit"]');
+      if (!selectedRows.length) {
+        if (status) status.textContent = "Select at least one category";
+        return;
+      }
+      const values = new FormData(mergeForm);
+      const existingDestination =
+        values.get("destination_category_id") !== "__new__"
+          ? String(values.get("destination_category_id"))
+          : null;
+      const sourceCategoryIds = selectedRows.map(
+        (row) => row.dataset.categoryId,
+      );
+      const versionRows = [
+        ...selectedRows,
+        ...(existingDestination
+          ? [
+              document.querySelector(
+                `[data-category-row][data-category-id="${CSS.escape(existingDestination)}"]`,
+              ),
+            ].filter(Boolean)
+          : []),
+      ];
+      const expectedVersions = Object.fromEntries(
+        versionRows.map((row) => [
+          row.dataset.categoryId,
+          Number(row.dataset.categoryVersion),
+        ]),
+      );
+      submit?.setAttribute("disabled", "");
+      if (status) status.textContent = "Merging…";
+      try {
+        await requestJson("/api/v1/categories/merge", {
+          body: {
+            source_category_ids: sourceCategoryIds,
+            destination: existingDestination
+              ? { category_id: existingDestination }
+              : {
+                  name: values.get("name"),
+                  classification: values.get("classification"),
+                  parent_category_id:
+                    values.get("parent_category_id") || null,
+                },
+            expected_versions: expectedVersions,
+          },
+        });
+        if (status) status.textContent = "Categories merged";
+        window.location.reload();
+      } catch (error) {
+        if (status) status.textContent = error.message;
         submit?.removeAttribute("disabled");
       }
     });
@@ -1984,7 +2132,6 @@
         excluded_from_spending: root.querySelector(
           "[data-bulk-excluded]",
         ),
-        is_fixed: root.querySelector("[data-bulk-fixed]"),
       };
       return fields[toggle.dataset.bulkChange];
     };
@@ -2093,10 +2240,6 @@
       ) {
         changes.excluded_from_spending =
           root.querySelector("[data-bulk-excluded]")?.value === "true";
-      }
-      if (root.querySelector('[data-bulk-change="is_fixed"]')?.checked) {
-        changes.is_fixed =
-          root.querySelector("[data-bulk-fixed]")?.value === "true";
       }
       if (!transactionIds.length || !Object.keys(changes).length) {
         if (status) {

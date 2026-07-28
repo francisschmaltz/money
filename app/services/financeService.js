@@ -563,25 +563,34 @@ export class FinanceService {
     );
     const splitAware =
       typeof this.#repository.listTransactionSplits === "function";
-    const [transactions, splits, freshness] = await Promise.all([
-      this.#repository.getTransactionsForPeriod(this.#workspaceId, {
-        startOn: previous.start_on,
-        endOn: current.end_on,
-        accountId,
-        category: splitAware ? null : category,
-      }),
-      optionalRepositoryCall(
-        this.#repository,
-        "listTransactionSplits",
-        [],
-        this.#workspaceId,
-        {
+    const [transactions, splits, freshness, categoryDefinitions] =
+      await Promise.all([
+        this.#repository.getTransactionsForPeriod(this.#workspaceId, {
           startOn: previous.start_on,
           endOn: current.end_on,
-        },
-      ),
-      this.#repository.getDataFreshness(this.#workspaceId),
-    ]);
+          accountId,
+          category: splitAware ? null : category,
+        }),
+        optionalRepositoryCall(
+          this.#repository,
+          "listTransactionSplits",
+          [],
+          this.#workspaceId,
+          {
+            startOn: previous.start_on,
+            endOn: current.end_on,
+          },
+        ),
+        this.#repository.getDataFreshness(this.#workspaceId),
+        groupBy === "category"
+          ? optionalRepositoryCall(
+              this.#repository,
+              "listSpendingCategories",
+              [],
+              this.#workspaceId,
+            )
+          : [],
+      ]);
     const data = buildSpendingSummary({
       transactions: expandAndFilterTransactions(
         transactions,
@@ -593,7 +602,18 @@ export class FinanceService {
       groupBy,
       currency: this.#currency,
     });
-    data.segments = data.segments.slice(0, segmentLimit);
+    data.segments = data.segments
+      .slice(0, segmentLimit)
+      .map((segment) => {
+        if (groupBy !== "category") return segment;
+        const category = categoryDefinitions.find(
+          (candidate) => candidate.path === segment.label,
+        );
+        return {
+          ...segment,
+          category_id: category?.id ?? null,
+        };
+      });
     const spendingSeriesCount = data.series.length;
     data.series = sampleSeries(data.series, 80);
     data.filters = { account_id: accountId, category };
@@ -1258,8 +1278,6 @@ export class FinanceService {
       "tags",
       "excluded_from_spending",
       "excludedFromSpending",
-      "is_fixed",
-      "isFixed",
     ]);
     if (
       Object.keys(rawChanges).some(
@@ -1295,7 +1313,6 @@ export class FinanceService {
     }
     for (const [snakeCase, camelCase] of [
       ["excluded_from_spending", "excludedFromSpending"],
-      ["is_fixed", "isFixed"],
     ]) {
       if (
         !Object.hasOwn(rawChanges, snakeCase) &&
@@ -1334,8 +1351,7 @@ export class FinanceService {
     }
     if (
       Object.hasOwn(changes, "categoryPrimary") ||
-      Object.hasOwn(changes, "excludedFromSpending") ||
-      Object.hasOwn(changes, "isFixed")
+      Object.hasOwn(changes, "excludedFromSpending")
     ) {
       await this.#enqueueRecompute();
     }
@@ -1470,7 +1486,6 @@ export class FinanceService {
             input.excludedFromSpending ??
             input.excluded_from_spending ??
             null,
-          isFixed: input.isFixed ?? input.is_fixed ?? null,
           userId: input.userId ?? input.user_id ?? null,
         },
       );
@@ -1902,6 +1917,216 @@ export class FinanceService {
     return { updated: true, rule: updated };
   }
 
+  async listSpendingCategories(input = {}) {
+    const categories = await this.#repository.listSpendingCategories(
+      this.#workspaceId,
+      {
+        includeMerged: booleanOption(
+          input.includeMerged ?? input.include_merged,
+          false,
+        ),
+      },
+    );
+    return { categories };
+  }
+
+  async createSpendingCategory(input = {}, actor = null) {
+    const name = boundedText(input.name, "name", 100);
+    const classification = spendingClassification(
+      input.classification ?? "flexible",
+    );
+    const parentCategoryId =
+      input.parentCategoryId ?? input.parent_category_id ?? null;
+    let category;
+    try {
+      category = await this.#repository.createSpendingCategory(
+        this.#workspaceId,
+        {
+          name,
+          classification,
+          parentCategoryId:
+            parentCategoryId == null
+              ? null
+              : requiredId(parentCategoryId, "parent_category_id"),
+          userId: actor?.id ?? input.userId ?? input.user_id ?? null,
+        },
+      );
+    } catch (error) {
+      if (
+        error?.code === "CATEGORY_NAME_CONFLICT" ||
+        error?.code === "23505"
+      ) {
+        throw categoryConflict(
+          "That category name or alias already exists. Merge it instead.",
+        );
+      }
+      if (error?.code === "CATEGORY_PARENT_NOT_FOUND") {
+        throw notFound("Parent category not found");
+      }
+      throw error;
+    }
+    await this.#enqueueRecompute();
+    return { created: true, category };
+  }
+
+  async updateSpendingCategory(input = {}, actor = null) {
+    const categoryId = requiredId(
+      input.categoryId ?? input.category_id,
+      "category_id",
+    );
+    const hasName = Object.hasOwn(input, "name");
+    const hasClassification = Object.hasOwn(input, "classification");
+    const hasParent =
+      Object.hasOwn(input, "parentCategoryId") ||
+      Object.hasOwn(input, "parent_category_id");
+    if (!hasName && !hasClassification && !hasParent) {
+      throw badRequest("At least one category field is required");
+    }
+    const expectedVersion = positiveVersion(
+      input.expectedVersion ?? input.expected_version,
+      "expected_version",
+    );
+    const updated = await this.#repository.updateSpendingCategory(
+      this.#workspaceId,
+      {
+        categoryId,
+        name: hasName ? boundedText(input.name, "name", 100) : undefined,
+        classification: hasClassification
+          ? spendingClassification(input.classification)
+          : undefined,
+        parentCategoryId: hasParent
+          ? optionalCategoryId(
+              input.parentCategoryId ?? input.parent_category_id,
+              "parent_category_id",
+            )
+          : undefined,
+        expectedVersion,
+        userId: actor?.id ?? input.userId ?? input.user_id ?? null,
+      },
+    );
+    if (!updated) throw notFound("Category not found");
+    if (updated.stale) {
+      throw categoryConflict(
+        "The category changed before this edit. Refresh and try again.",
+      );
+    }
+    if (updated.conflict) {
+      throw categoryConflict(
+        "That category name or alias already exists. Merge it instead.",
+      );
+    }
+    if (updated.invalidParent) {
+      throw badRequest(
+        "A category cannot be nested under itself, a descendant, or a merged category.",
+      );
+    }
+    await this.#enqueueRecompute();
+    return { updated: true, category: updated };
+  }
+
+  async mergeSpendingCategories(input = {}, actor = null) {
+    const rawSourceIds =
+      input.sourceCategoryIds ?? input.source_category_ids;
+    if (
+      !Array.isArray(rawSourceIds) ||
+      rawSourceIds.length < 1 ||
+      rawSourceIds.length > 100
+    ) {
+      throw badRequest(
+        "source_category_ids must contain between 1 and 100 categories",
+      );
+    }
+    const sourceCategoryIds = [
+      ...new Set(
+        rawSourceIds.map((id) => requiredId(id, "source_category_id")),
+      ),
+    ];
+    if (sourceCategoryIds.length !== rawSourceIds.length) {
+      throw badRequest("source_category_ids must be unique");
+    }
+    const rawDestination = input.destination;
+    if (
+      !rawDestination ||
+      typeof rawDestination !== "object" ||
+      Array.isArray(rawDestination)
+    ) {
+      throw badRequest("destination is required");
+    }
+    const destinationCategoryId =
+      rawDestination.categoryId ??
+      rawDestination.category_id ??
+      null;
+    const newDestination = destinationCategoryId
+      ? null
+      : {
+          name: boundedText(rawDestination.name, "destination.name", 100),
+          classification: spendingClassification(
+            rawDestination.classification,
+          ),
+          parentCategoryId: optionalCategoryId(
+            rawDestination.parentCategoryId ??
+              rawDestination.parent_category_id ??
+              null,
+            "destination.parent_category_id",
+          ),
+        };
+    const rawVersions =
+      input.expectedVersions ?? input.expected_versions;
+    if (
+      !rawVersions ||
+      typeof rawVersions !== "object" ||
+      Array.isArray(rawVersions)
+    ) {
+      throw badRequest("expected_versions is required");
+    }
+    const requiredVersionIds = [
+      ...sourceCategoryIds,
+      ...(destinationCategoryId ? [destinationCategoryId] : []),
+    ];
+    const expectedVersions = Object.fromEntries(
+      requiredVersionIds.map((id) => [
+        id,
+        positiveVersion(rawVersions[id], `expected_versions.${id}`),
+      ]),
+    );
+    const merged = await this.#repository.mergeSpendingCategories(
+      this.#workspaceId,
+      {
+        sourceCategoryIds,
+        destinationCategoryId: destinationCategoryId
+          ? requiredId(destinationCategoryId, "destination.category_id")
+          : null,
+        destination: newDestination,
+        expectedVersions,
+        userId: actor?.id ?? input.userId ?? input.user_id ?? null,
+      },
+    );
+    if (!merged) throw notFound("One or more categories were not found");
+    if (merged.stale) {
+      throw categoryConflict(
+        "A category changed before the merge. Refresh and try again.",
+      );
+    }
+    if (merged.conflict) {
+      throw categoryConflict(
+        "The destination name or alias already belongs to another category.",
+      );
+    }
+    if (merged.selfMerge) {
+      throw badRequest("A category cannot be merged into itself");
+    }
+    if (merged.hasChildren) {
+      throw badRequest(
+        "Move or merge a category's children before merging the parent.",
+      );
+    }
+    if (merged.invalidParent) {
+      throw badRequest("The destination parent category is invalid");
+    }
+    await this.#enqueueRecompute();
+    return { merged: true, category: merged };
+  }
+
   async getPageData(view, request = {}) {
     const query = request.query ?? {};
     const freshness = await this.#repository.getDataFreshness(
@@ -1915,6 +2140,7 @@ export class FinanceService {
         items,
         rules,
         observedCategories,
+        spendingCategories,
         rawManualAssets,
         manualAssetValuations,
         accounts,
@@ -1926,6 +2152,12 @@ export class FinanceService {
           : this.#repository.listPlaidItems(this.#workspaceId),
         this.#repository.getInsightRules(this.#workspaceId),
         this.#repository.listTransactionCategories(this.#workspaceId),
+        optionalRepositoryCall(
+          this.#repository,
+          "listSpendingCategories",
+          [],
+          this.#workspaceId,
+        ),
         optionalRepositoryCall(
           this.#repository,
           "listManualAssets",
@@ -1968,8 +2200,35 @@ export class FinanceService {
         connections: items,
         rules,
         fixedCategories:
-          rules["weekly.fixed_categories"]?.categories ?? [],
+          spendingCategories.length
+            ? spendingCategories
+                .filter(
+                  (category) => category.classification === "fixed",
+                )
+                .map((category) => category.path)
+            : rules["weekly.fixed_categories"]?.categories ?? [],
         observedCategories,
+        spendingCategories:
+          spendingCategories.length
+            ? spendingCategories
+            : transactionCategoryOptions(observedCategories).map(
+                (category, index) => ({
+                  id: `legacy-category-${index}`,
+                  name: category.label,
+                  path: category.label,
+                  depth: 0,
+                  classification: (
+                    rules["weekly.fixed_categories"]?.categories ?? []
+                  ).includes(category.value)
+                    ? "fixed"
+                    : "flexible",
+                  parent_category_id: null,
+                  version: 1,
+                  transaction_count: 0,
+                  budget_line_count: 0,
+                  aliases: [],
+                }),
+              ),
         manualAssets: manualAssets.map(webManualAsset),
         accounts: flattenAccountGroups(
           accounts.data.groups,
@@ -1982,6 +2241,8 @@ export class FinanceService {
     if (view === "transactions") {
       const splitAware =
         typeof this.#repository.listTransactionSplits === "function";
+      const requestedCategory =
+        query.category_id ?? query.category ?? null;
       const periods =
         query.start && query.end
           ? resolvePeriod(
@@ -2015,6 +2276,7 @@ export class FinanceService {
         analysisSplits,
         accounts,
         observedCategories,
+        categoryDefinitions,
         selectedTransaction,
       ] =
         await Promise.all([
@@ -2022,7 +2284,7 @@ export class FinanceService {
             startOn: periods.start_on,
             endOn: periods.end_on,
             search: query.q,
-            category: query.category,
+            category: requestedCategory,
             accountId: query.account,
             cursor: query.cursor,
             limit: 100,
@@ -2033,7 +2295,7 @@ export class FinanceService {
               startOn: previousPeriod.start_on,
               endOn: periods.end_on,
               accountId: query.account,
-              category: splitAware ? null : query.category,
+              category: splitAware ? null : requestedCategory,
               search: query.q,
             },
           ),
@@ -2049,6 +2311,12 @@ export class FinanceService {
           ),
           this.listAccounts({ limit: 100 }),
           this.#repository.listTransactionCategories(this.#workspaceId),
+          optionalRepositoryCall(
+            this.#repository,
+            "listSpendingCategories",
+            [],
+            this.#workspaceId,
+          ),
           query.transaction
             ? this.#repository.getTransaction(
                 this.#workspaceId,
@@ -2056,11 +2324,15 @@ export class FinanceService {
               )
             : null,
         ]);
+      const analysisCategory =
+        categoryDefinitions.find(
+          (category) => category.id === requestedCategory,
+        )?.path ?? requestedCategory;
       const cashFlow = buildCashFlow({
         transactions: expandAndFilterTransactions(
           analysisTransactions,
           analysisSplits,
-          splitAware ? query.category : null,
+          splitAware ? analysisCategory : null,
         ),
         period: periods,
         interval: query.period === "90" ? "week" : "day",
@@ -2070,7 +2342,7 @@ export class FinanceService {
         transactions: expandAndFilterTransactions(
           analysisTransactions,
           analysisSplits,
-          splitAware ? query.category : null,
+          splitAware ? analysisCategory : null,
         ),
         currentPeriod: periods,
         previousPeriod,
@@ -2087,9 +2359,17 @@ export class FinanceService {
         transactions: page.data.transactions.map(webTransaction),
         transactionPageInfo: page.data.page_info,
         overview: webOverviewFromCashFlow(cashFlow),
-        spendingDetails: webSpendingDetails(spending),
+        spendingDetails: webSpendingDetails(
+          spending,
+          categoryDefinitions,
+        ),
         accounts: flattenAccountGroups(accounts.data.groups).map(webAccount),
-        categories: transactionCategoryOptions(observedCategories),
+        categories: categoryDefinitions.length
+          ? categoryDefinitions.map((category) => ({
+              value: category.id,
+              label: category.path,
+            }))
+          : transactionCategoryOptions(observedCategories),
         selectedTransaction: selectedLedgerTransaction
           ? webTransaction(selectedLedgerTransaction)
           : selectedTransaction
@@ -2283,7 +2563,14 @@ export class FinanceService {
       this.#now(),
     );
     const previousMonthToDate = priorMonthToDatePeriod(this.#now());
-    const [overview, spending, insights, transactions, history] =
+    const [
+      overview,
+      spending,
+      insights,
+      transactions,
+      history,
+      categoryDefinitions,
+    ] =
       await Promise.all([
         this.getFinanceOverview(),
         this.getSpendingSummary({
@@ -2300,6 +2587,12 @@ export class FinanceService {
           limit: dashboardPeriod.limit,
           includeComponents: true,
         }),
+        optionalRepositoryCall(
+          this.#repository,
+          "listSpendingCategories",
+          [],
+          this.#workspaceId,
+        ),
       ]);
     const webOverviewData = webOverview(overview.data);
     const currentWealthPoint = {
@@ -2346,7 +2639,9 @@ export class FinanceService {
         overview.data.account_count > 0 ||
         overview.data.manual_asset_count > 0,
       overview: webOverviewData,
-      categories: spending.data.segments.map(webCategory),
+      categories: spending.data.segments.map((segment, index) =>
+        webCategory(segment, index, categoryDefinitions),
+      ),
       insights: insights.partial
         ? { weekly: [], investments: [], subscriptions: [] }
         : webInsights(insights.data),
@@ -2508,8 +2803,17 @@ function transactionCard(transaction) {
     raw_name: transaction.name,
     description: transaction.name,
     tags: Array.isArray(transaction.tags) ? transaction.tags : [],
+    category_id: transaction.category_id ?? null,
     category: transaction.category_primary,
     detailed_category: transaction.category_detailed,
+    original_category:
+      transaction.original_category_primary ??
+      transaction.category_primary ??
+      null,
+    original_detailed_category:
+      transaction.original_category_detailed ??
+      transaction.category_detailed ??
+      null,
     account: {
       id: transaction.account_id,
       name: transaction.account_name,
@@ -3214,6 +3518,33 @@ function cleanupRuleConflict() {
   return error;
 }
 
+function categoryConflict(message) {
+  const error = new Error(message);
+  error.statusCode = 409;
+  error.expose = true;
+  return error;
+}
+
+function spendingClassification(value) {
+  if (!["fixed", "flexible"].includes(value)) {
+    throw badRequest("classification must be fixed or flexible");
+  }
+  return value;
+}
+
+function positiveVersion(value, field) {
+  const version = Number(value);
+  if (!Number.isSafeInteger(version) || version < 1) {
+    throw badRequest(`${field} must be a positive integer`);
+  }
+  return version;
+}
+
+function optionalCategoryId(value, field) {
+  if (value == null || value === "") return null;
+  return requiredId(value, field);
+}
+
 function booleanOption(value, fallback) {
   if (value == null) return fallback;
   if (typeof value === "boolean") return value;
@@ -3389,7 +3720,7 @@ function webOverviewFromCashFlow(data) {
   };
 }
 
-function webSpendingDetails(data) {
+function webSpendingDetails(data, categoryDefinitions = []) {
   const series = sampleSeries(data.series, 90);
   const transactionCount = data.transaction_count;
   return {
@@ -3408,7 +3739,7 @@ function webSpendingDetails(data) {
     periodLabel: formatPeriodRange(data.period),
     previousPeriodLabel: formatPeriodRange(data.previous_period),
     categories: data.segments.map((segment, index) => ({
-      ...webCategory(segment, index),
+      ...webCategory(segment, index, categoryDefinitions),
       count: segment.count,
     })),
     seriesLabels: series.map((point) =>
@@ -3420,9 +3751,12 @@ function webSpendingDetails(data) {
   };
 }
 
-function webCategory(segment, index) {
+function webCategory(segment, index, categoryDefinitions = []) {
+  const category = categoryDefinitions.find(
+    (candidate) => candidate.path === segment.label,
+  );
   return {
-    value: segment.label,
+    value: segment.category_id ?? category?.id ?? segment.label,
     label: transactionCategoryLabel(segment.label),
     amount: segment.amount,
     previousAmount: segment.previous_amount,
@@ -3514,8 +3848,13 @@ function webTransaction(transaction) {
     tags: Array.isArray(transaction.tags) ? transaction.tags : [],
     category,
     categoryValue,
+    categoryId: transaction.category_id ?? null,
     detailedCategoryValue:
       transaction.detailed_category ?? null,
+    originalCategoryValue:
+      transaction.original_category ?? null,
+    originalDetailedCategoryValue:
+      transaction.original_detailed_category ?? null,
     account: transaction.account.name,
     accountId: transaction.account.id,
     accountMask: transaction.account.mask ?? null,
@@ -3772,6 +4111,14 @@ function categoryIcon(category = "") {
   if (value.includes("food") || value.includes("dining")) return "ph-fork-knife";
   if (value.includes("grocer")) return "ph-basket";
   if (value.includes("travel")) return "ph-airplane-tilt";
+  if (
+    value.includes("car") ||
+    value.includes("auto") ||
+    value.includes("parking") ||
+    value.includes("gas")
+  ) {
+    return "ph-car";
+  }
   if (value.includes("transport")) return "ph-train";
   if (value.includes("util")) return "ph-lightning";
   if (value.includes("income")) return "ph-buildings";

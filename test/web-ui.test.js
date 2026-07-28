@@ -323,13 +323,13 @@ test("transaction ledger supports selecting rows and choosing bulk overrides", a
     "category_primary",
     "tags",
     "excluded_from_spending",
-    "is_fixed",
   ]) {
     assert.match(
       html,
       new RegExp(`data-bulk-change="${field}"`),
     );
   }
+  assert.doesNotMatch(html, /data-bulk-change="is_fixed"/);
   assert.match(
     html,
     /Amount, account, and provider dates stay untouched/,
@@ -711,6 +711,62 @@ test("settings exposes account grouping and manual asset CRUD controls", async (
   assert.match(html, /data-transaction-cleanup/);
   assert.match(html, /data-cleanup-search/);
   assert.match(html, /Fuzzy matching suggests candidates/);
+});
+
+test("settings manages nested spending categories without visibility switches", async () => {
+  const html = await render("settings", {
+    pageTitle: "Settings",
+    activePath: "/settings",
+    spendingCategories: [
+      {
+        id: "category-car",
+        name: "Car",
+        path: "Car",
+        depth: 0,
+        classification: "flexible",
+        parent_category_id: null,
+        version: 2,
+        transaction_count: 0,
+        budget_line_count: 0,
+        aliases: [],
+      },
+      {
+        id: "category-gas",
+        name: "Gas",
+        path: "Car / Gas",
+        depth: 1,
+        classification: "flexible",
+        parent_category_id: "category-car",
+        version: 3,
+        transaction_count: 12,
+        budget_line_count: 2,
+        aliases: [{ label: "TRANSPORTATION", type: "observed" }],
+      },
+      {
+        id: "category-loan",
+        name: "Auto Loan",
+        path: "Car / Auto Loan",
+        depth: 1,
+        classification: "fixed",
+        parent_category_id: "category-car",
+        version: 1,
+        transaction_count: 4,
+        budget_line_count: 1,
+        aliases: [],
+      },
+    ],
+  });
+
+  assert.match(html, />Spending categories</);
+  assert.match(html, /data-category-create-form/);
+  assert.match(html, /data-category-edit-form/);
+  assert.match(html, /data-category-merge-form/);
+  assert.match(html, />Car \/ Gas</);
+  assert.match(html, />Car \/ Auto Loan</);
+  assert.match(html, /TRANSPORTATION/);
+  assert.match(html, /value="fixed" selected>Fixed/);
+  assert.doesNotMatch(html, /data-classification-form/);
+  assert.doesNotMatch(html, /name="fixed_category"/);
 });
 
 test("settings exposes Apple Card CSV preview, manual freshness, and card values", async () => {

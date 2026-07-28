@@ -1275,6 +1275,7 @@ function assertPageModel(view, model) {
       "rules",
       "fixedCategories",
       "observedCategories",
+      "spendingCategories",
       "accounts",
       "manualAssets",
       "transactionTags",

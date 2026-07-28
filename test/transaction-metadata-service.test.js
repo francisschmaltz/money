@@ -22,8 +22,11 @@ function transaction(overrides = {}) {
     normalized_name: "wholefds mkt brooklyn",
     display_name: "Whole Foods",
     tags: ["Groceries", "Household"],
+    category_id: "category-groceries",
     category_primary: "Groceries",
     category_detailed: null,
+    original_category_primary: "FOOD_AND_DRINK",
+    original_category_detailed: "FOOD_AND_DRINK_GROCERIES",
     amount_minor: -6_249,
     currency_code: "USD",
     authorized_at: null,
@@ -57,6 +60,13 @@ test("transaction cards expose effective display and tags without losing provide
   assert.equal(card.raw_merchant, "WHOLEFDS MKT 117");
   assert.equal(card.raw_name, "WHOLEFDS MKT 117 BROOKLYN");
   assert.deepEqual(card.tags, ["Groceries", "Household"]);
+  assert.equal(card.category_id, "category-groceries");
+  assert.equal(card.category, "Groceries");
+  assert.equal(card.original_category, "FOOD_AND_DRINK");
+  assert.equal(
+    card.original_detailed_category,
+    "FOOD_AND_DRINK_GROCERIES",
+  );
 });
 
 test("match lookup returns the strict Settings shape and rejects pending anchors", async () => {
@@ -170,7 +180,6 @@ test("one batch service call preserves omitted fields and recomputes only for ca
     changes: {
       category_primary: "Fees & interest",
       excluded_from_spending: true,
-      is_fixed: false,
     },
   });
   assert.equal(
@@ -178,7 +187,6 @@ test("one batch service call preserves omitted fields and recomputes only for ca
     "Fees & Interest",
   );
   assert.equal(calls[1].input.changes.excludedFromSpending, true);
-  assert.equal(calls[1].input.changes.isFixed, false);
   assert.equal(jobs.length, 1);
 
   await assert.rejects(

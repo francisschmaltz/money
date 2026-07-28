@@ -2197,7 +2197,6 @@ export class DemoFinanceService {
       "category_primary",
       "tags",
       "excluded_from_spending",
-      "is_fixed",
     ].filter((field) => Object.hasOwn(changes, field));
     if (recognizedChanges.length === 0) {
       const error = new TypeError("At least one change is required");
@@ -2221,7 +2220,7 @@ export class DemoFinanceService {
         throw error;
       }
     }
-    for (const field of ["excluded_from_spending", "is_fixed"]) {
+    for (const field of ["excluded_from_spending"]) {
       if (
         Object.hasOwn(changes, field) &&
         typeof changes[field] !== "boolean"
@@ -2268,10 +2267,6 @@ export class DemoFinanceService {
         manual.add("excluded_from_spending");
         transaction.excluded_from_spending =
           changes.excluded_from_spending;
-      }
-      if (Object.hasOwn(changes, "is_fixed")) {
-        manual.add("is_fixed");
-        transaction.is_fixed = changes.is_fixed;
       }
     }
     this.#refreshTransactionCleanupRuleApplications();

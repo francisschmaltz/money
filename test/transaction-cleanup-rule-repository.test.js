@@ -286,7 +286,11 @@ test("manual transaction edits beat cleanup output, including empty tags", async
   );
   assert.match(
     effectiveQuery.sql,
-    /COALESCE\( transaction_override\.category_primary, cleanup_rule\.category_primary, merchant_override\.category_primary/,
+    /LEFT JOIN transaction_effective_spending_categories effective_category/,
+  );
+  assert.match(
+    effectiveQuery.sql,
+    /COALESCE\( effective_category\.category_name, effective_category\.source_category_label \) AS effective_category_primary/,
   );
 
   await repository.batchEditTransactions("shared", {
