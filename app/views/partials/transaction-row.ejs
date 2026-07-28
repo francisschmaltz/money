@@ -38,6 +38,7 @@
   <span class="transaction-row__main">
     <strong><%= transaction.merchant %></strong>
     <span
+      class="transaction-row__category"
       <% if (transaction.accountId) { %>
         data-account-display-name="<%= transaction.accountId %>"
         data-account-provider-name="<%= transaction.account %>"
@@ -45,6 +46,9 @@
         data-account-suffix="<%= transaction.tags?.length ? ` · ${transaction.tags.join(" · ")}` : "" %>"
       <% } %>
     ><%= transaction.category %> · <%= transaction.account %><%= transaction.tags?.length ? ` · ${transaction.tags.join(" · ")}` : "" %></span>
+    <% if (transaction.note) { %>
+      <span class="transaction-row__note"><i class="ph ph-note-pencil" aria-hidden="true"></i><%= transaction.note %></span>
+    <% } %>
   </span>
   <span class="transaction-row__meta">
     <strong class="<%= transaction.amount.amount_minor > 0 ? 'money-positive' : '' %>"><%= formatMoney(transaction.amount) %></strong>

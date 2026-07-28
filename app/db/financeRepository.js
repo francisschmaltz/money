@@ -315,6 +315,20 @@ export class PgFinanceRepository {
     this.#pool = pool;
   }
 
+  async #assertBudgetHierarchy(client, workspaceId) {
+    const result = await client.query(
+      `SELECT budget_hierarchy_is_valid($1) AS is_valid`,
+      [workspaceId],
+    );
+    if (result.rows[0]?.is_valid === false) {
+      const error = new Error(
+        "The category change would make the budget hierarchy invalid.",
+      );
+      error.code = "BUDGET_HIERARCHY_CONFLICT";
+      throw error;
+    }
+  }
+
   async #refreshAccountSearchDocument(
     client,
     workspaceId,
@@ -521,6 +535,7 @@ export class PgFinanceRepository {
           concat_ws(
             ' ',
             metadata.display_name,
+            metadata.note,
             cleanup_rule.display_name,
             t.merchant_name,
             t.name,
@@ -546,6 +561,7 @@ export class PgFinanceRepository {
             concat_ws(
               ' ',
               metadata.display_name,
+              metadata.note,
               cleanup_rule.display_name,
               t.merchant_name,
               t.name,
@@ -583,7 +599,8 @@ export class PgFinanceRepository {
                 effective_category.source_category_label
               ),
               'original_category', t.category_primary,
-              'tags', effective_tags.tags
+              'tags', effective_tags.tags,
+              'note', metadata.note
             )
           )
         FROM transactions t
@@ -2003,6 +2020,55 @@ export class PgFinanceRepository {
         if (replacementIds.length) {
           await client.query(
             `
+              INSERT INTO transaction_metadata (
+                workspace_id,
+                transaction_id,
+                note,
+                note_version,
+                note_updated_by,
+                note_updated_at,
+                created_by,
+                created_at,
+                updated_at
+              )
+              SELECT
+                posted.workspace_id,
+                posted.id,
+                pending_metadata.note,
+                pending_metadata.note_version,
+                pending_metadata.note_updated_by,
+                pending_metadata.note_updated_at,
+                pending_metadata.created_by,
+                pending_metadata.created_at,
+                pending_metadata.updated_at
+              FROM transactions posted
+              JOIN transactions pending
+                ON pending.provider_transaction_id =
+                   posted.provider_pending_transaction_id
+               AND pending.workspace_id = posted.workspace_id
+               AND pending.pending = true
+              JOIN transaction_metadata pending_metadata
+                ON pending_metadata.workspace_id = pending.workspace_id
+               AND pending_metadata.transaction_id = pending.id
+              WHERE posted.provider_pending_transaction_id =
+                    ANY($1::text[])
+                AND pending_metadata.note IS NOT NULL
+              ON CONFLICT (workspace_id, transaction_id) DO UPDATE SET
+                note = EXCLUDED.note,
+                note_version = EXCLUDED.note_version,
+                note_updated_by = EXCLUDED.note_updated_by,
+                note_updated_at = EXCLUDED.note_updated_at,
+                updated_at = GREATEST(
+                  transaction_metadata.updated_at,
+                  EXCLUDED.updated_at
+                )
+              WHERE transaction_metadata.note IS NULL
+                AND transaction_metadata.note_version = 0
+            `,
+            [replacementIds],
+          );
+          await client.query(
+            `
               DELETE FROM transactions pending
               WHERE pending.provider_transaction_id = ANY($1::text[])
                 AND pending.pending = true
@@ -3157,6 +3223,10 @@ export class PgFinanceRepository {
             metadata.display_name,
             cleanup_rule.display_name
           ) AS display_name,
+          metadata.note,
+          metadata.note_version,
+          metadata.note_updated_by,
+          metadata.note_updated_at,
           lower(
             COALESCE(
               metadata.display_name,
@@ -3403,6 +3473,7 @@ export class PgFinanceRepository {
             OR concat_ws(
                  ' ',
                  metadata.display_name,
+                 metadata.note,
                  cleanup_rule.display_name,
                  t.merchant_name,
                  t.name,
@@ -3543,6 +3614,10 @@ export class PgFinanceRepository {
             metadata.display_name,
             cleanup_rule.display_name
           ) AS display_name,
+          metadata.note,
+          metadata.note_version,
+          metadata.note_updated_by,
+          metadata.note_updated_at,
           CASE
             WHEN metadata.tags_overridden
               THEN COALESCE(tag_data.tags, '[]'::jsonb)
@@ -4330,6 +4405,7 @@ export class PgFinanceRepository {
                 AND transaction_id = ANY($2::text[])
                 AND display_name IS NULL
                 AND tags_overridden = false
+                AND note IS NULL
             `,
             [workspaceId, ids],
           );
@@ -4499,6 +4575,104 @@ export class PgFinanceRepository {
       return {
         updatedCount: lockedIds.length,
         transactionIds: ids,
+      };
+    });
+  }
+
+  async updateTransactionNote(
+    workspaceId = DEFAULT_WORKSPACE_ID,
+    {
+      transactionId,
+      note,
+      expectedVersion,
+      userId = null,
+    },
+  ) {
+    return withTransaction(this.#pool, async (client) => {
+      const transaction = await client.query(
+        `
+          SELECT id
+          FROM transactions
+          WHERE workspace_id = $1
+            AND id = $2
+          FOR UPDATE
+        `,
+        [workspaceId, transactionId],
+      );
+      if (!transaction.rows[0]) return null;
+
+      const existing = await client.query(
+        `
+          SELECT note, note_version, note_updated_by, note_updated_at
+          FROM transaction_metadata
+          WHERE workspace_id = $1
+            AND transaction_id = $2
+          FOR UPDATE
+        `,
+        [workspaceId, transactionId],
+      );
+      const current = existing.rows[0] ?? null;
+      const currentVersion = Number(current?.note_version ?? 0);
+      if (currentVersion !== expectedVersion) {
+        return {
+          conflict: true,
+          transaction_id: transactionId,
+          note: current?.note ?? null,
+          note_version: currentVersion,
+          note_updated_by: current?.note_updated_by ?? null,
+          note_updated_at: dateValue(current?.note_updated_at),
+        };
+      }
+
+      if (!current && note == null) {
+        return {
+          transaction_id: transactionId,
+          note: null,
+          note_version: 0,
+          note_updated_by: null,
+          note_updated_at: null,
+        };
+      }
+
+      const result = await client.query(
+        `
+          INSERT INTO transaction_metadata (
+            workspace_id,
+            transaction_id,
+            note,
+            note_version,
+            note_updated_by,
+            note_updated_at,
+            created_by
+          )
+          VALUES ($1, $2, $3, 1, $4, now(), $4)
+          ON CONFLICT (workspace_id, transaction_id) DO UPDATE SET
+            note = EXCLUDED.note,
+            note_version = transaction_metadata.note_version + 1,
+            note_updated_by = EXCLUDED.note_updated_by,
+            note_updated_at = now(),
+            updated_at = now()
+          RETURNING
+            transaction_id,
+            note,
+            note_version,
+            note_updated_by,
+            note_updated_at
+        `,
+        [workspaceId, transactionId, note, userId],
+      );
+      await this.#refreshTransactionSearchDocuments(
+        client,
+        workspaceId,
+        [transactionId],
+      );
+      const updated = result.rows[0];
+      return {
+        transaction_id: updated.transaction_id,
+        note: updated.note ?? null,
+        note_version: Number(updated.note_version),
+        note_updated_by: updated.note_updated_by ?? null,
+        note_updated_at: dateValue(updated.note_updated_at),
       };
     });
   }
@@ -5131,6 +5305,7 @@ export class PgFinanceRepository {
             [workspaceId, categoryId],
           );
         }
+        await this.#assertBudgetHierarchy(client, workspaceId);
         const affected = await client.query(
           `
             SELECT transaction_id
@@ -5153,6 +5328,9 @@ export class PgFinanceRepository {
         return true;
       });
     } catch (error) {
+      if (error?.code === "BUDGET_HIERARCHY_CONFLICT") {
+        return { invalidBudgetHierarchy: true };
+      }
       if (
         error?.code === "23505" ||
         error?.code === "CATEGORY_NAME_CONFLICT"
@@ -5497,6 +5675,8 @@ export class PgFinanceRepository {
               effective_month_on::text AS effective_month_on,
               amount_minor,
               currency_code,
+              tracking_mode,
+              is_removed,
               updated_by
             FROM budget_default_revisions
             WHERE workspace_id = $1
@@ -5520,7 +5700,7 @@ export class PgFinanceRepository {
             )
             INSERT INTO budget_lines (
               workspace_id, month_on, category, category_id, amount_minor,
-              currency_code, updated_by, updated_at
+              currency_code, tracking_mode, updated_by, updated_at
             )
             SELECT
               $1,
@@ -5529,6 +5709,11 @@ export class PgFinanceRepository {
               $4,
               SUM(amount_minor),
               currency_code,
+              CASE
+                WHEN bool_and(tracking_mode = 'informational')
+                  THEN 'informational'
+                ELSE 'tracked'
+              END,
               $5,
               now()
             FROM moved
@@ -5549,9 +5734,10 @@ export class PgFinanceRepository {
             `
               INSERT INTO budget_default_revisions (
                 workspace_id, category, category_id, effective_month_on,
-                amount_minor, currency_code, updated_by, updated_at
+                amount_minor, currency_code, tracking_mode, is_removed,
+                updated_by, updated_at
               )
-              VALUES ($1, $2, $3, $4, $5, $6, $7, now())
+              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now())
             `,
             [
               workspaceId,
@@ -5560,6 +5746,8 @@ export class PgFinanceRepository {
               revision.effectiveMonthOn,
               revision.amountMinor,
               revision.currencyCode,
+              revision.trackingMode,
+              revision.isRemoved,
               userId,
             ],
           );
@@ -5629,6 +5817,7 @@ export class PgFinanceRepository {
             ],
           );
         }
+        await this.#assertBudgetHierarchy(client, workspaceId);
         const affected = await client.query(
           `
             SELECT transaction_id
@@ -5654,6 +5843,9 @@ export class PgFinanceRepository {
         return targetId;
       });
     } catch (error) {
+      if (error?.code === "BUDGET_HIERARCHY_CONFLICT") {
+        return { invalidBudgetHierarchy: true };
+      }
       if (
         error?.code === "23505" ||
         error?.code === "CATEGORY_NAME_CONFLICT"
@@ -6340,26 +6532,82 @@ export class PgFinanceRepository {
   ) {
     const result = await this.#pool.query(
       `
-        SELECT r.*, a.name AS account_name,
+        SELECT
+          r.*,
+          a.name AS account_name,
           COALESCE(
-            jsonb_agg(
-              rst.transaction_id
-              ORDER BY t.posted_on, rst.transaction_id
-            )
-              FILTER (WHERE rst.transaction_id IS NOT NULL),
+            current_transaction.display_name,
+            r.display_name
+          ) AS current_display_name,
+          current_transaction.category_primary
+            AS current_category_primary,
+          COALESCE(
+            stream_transactions.transaction_ids,
             '[]'::jsonb
           ) AS transaction_ids
         FROM recurring_streams r
         LEFT JOIN accounts a ON a.id = r.account_id
-        LEFT JOIN recurring_stream_transactions rst ON rst.stream_id = r.id
-        LEFT JOIN transactions t ON t.id = rst.transaction_id
+        LEFT JOIN LATERAL (
+          SELECT jsonb_agg(
+            rst.transaction_id
+            ORDER BY t.posted_on, rst.transaction_id
+          ) AS transaction_ids
+          FROM recurring_stream_transactions rst
+          JOIN transactions t ON t.id = rst.transaction_id
+          WHERE rst.stream_id = r.id
+        ) stream_transactions ON true
+        LEFT JOIN LATERAL (
+          SELECT
+            COALESCE(
+              metadata.display_name,
+              cleanup_rule.display_name,
+              t.merchant_name,
+              t.name
+            ) AS display_name,
+            COALESCE(
+              effective_category.category_name,
+              effective_category.source_category_label,
+              t.category_primary
+            ) AS category_primary
+          FROM recurring_stream_transactions rst
+          JOIN transactions t ON t.id = rst.transaction_id
+          LEFT JOIN transaction_metadata metadata
+            ON metadata.workspace_id = t.workspace_id
+           AND metadata.transaction_id = t.id
+          LEFT JOIN transaction_effective_spending_categories
+            effective_category
+            ON effective_category.workspace_id = t.workspace_id
+           AND effective_category.transaction_id = t.id
+          LEFT JOIN LATERAL (
+            SELECT rule.*
+            FROM transaction_cleanup_rules rule
+            WHERE rule.workspace_id = t.workspace_id
+              AND rule.enabled = true
+              AND transaction_cleanup_rule_matches(
+                rule.match_field,
+                rule.match_mode,
+                rule.normalized_match_value,
+                t.normalized_merchant,
+                t.normalized_name
+              )
+            ORDER BY
+              (rule.match_mode = 'exact') DESC,
+              rule.updated_at DESC,
+              rule.id DESC
+            LIMIT 1
+          ) cleanup_rule ON true
+          WHERE rst.stream_id = r.id
+          ORDER BY t.posted_on DESC, t.id DESC
+          LIMIT 1
+        ) current_transaction ON true
         WHERE r.workspace_id = $1
           AND (
             $2::boolean
             OR r.status IN ('active', 'resumed', 'irregular')
           )
-        GROUP BY r.id, a.name
-        ORDER BY r.monthly_equivalent_minor DESC, r.display_name
+        ORDER BY
+          r.monthly_equivalent_minor DESC,
+          COALESCE(current_transaction.display_name, r.display_name)
       `,
       [workspaceId, includeInactive],
     );
@@ -6586,6 +6834,69 @@ export class PgFinanceRepository {
     );
     const row = result.rows[0];
     return row ? mapInsightFinding(row) : null;
+  }
+
+  async getInsightStorageSummary(
+    workspaceId = DEFAULT_WORKSPACE_ID,
+  ) {
+    const result = await this.#pool.query(
+      `
+        SELECT
+          count(*) FILTER (
+            WHERE is_current = true AND state = 'active'
+          ) AS active_count,
+          count(*) FILTER (
+            WHERE is_current = false OR state <> 'active'
+          ) AS archived_count,
+          count(*) AS total_count,
+          max(generated_at) AS last_findings_generated_at
+        FROM insight_findings
+        WHERE workspace_id = $1
+      `,
+      [workspaceId],
+    );
+    const row = result.rows[0] ?? {};
+    return {
+      active_count: Number(row.active_count ?? 0),
+      archived_count: Number(row.archived_count ?? 0),
+      total_count: Number(row.total_count ?? 0),
+      last_findings_generated_at: dateValue(
+        row.last_findings_generated_at,
+      ),
+    };
+  }
+
+  async clearInsightOutput(
+    workspaceId = DEFAULT_WORKSPACE_ID,
+  ) {
+    return withTransaction(this.#pool, async (client) => {
+      const searchDocuments = await client.query(
+        `
+          DELETE FROM search_documents
+          WHERE workspace_id = $1 AND entity_type = 'insight'
+        `,
+        [workspaceId],
+      );
+      const narratives = await client.query(
+        `
+          DELETE FROM insight_narratives
+          WHERE workspace_id = $1
+        `,
+        [workspaceId],
+      );
+      const findings = await client.query(
+        `
+          DELETE FROM insight_findings
+          WHERE workspace_id = $1
+        `,
+        [workspaceId],
+      );
+      return {
+        findings_deleted: findings.rowCount,
+        narratives_deleted: narratives.rowCount,
+        search_documents_deleted: searchDocuments.rowCount,
+      };
+    });
   }
 
   async getInsightRules(
@@ -6879,6 +7190,236 @@ export class PgFinanceRepository {
       return updated.rows[0]
         ? mapInsightFinding(updated.rows[0])
         : null;
+    });
+  }
+
+  async batchTransitionInsightFindings(
+    workspaceId = DEFAULT_WORKSPACE_ID,
+    findingIds,
+    { action, actorId = null, reasonCode = null } = {},
+  ) {
+    const targetStates = {
+      archive: "archived",
+      ignore: "dismissed",
+      report_incorrect: "bad",
+      restore: "active",
+    };
+    const targetState = targetStates[action];
+    if (!targetState) {
+      throw new TypeError("Unsupported bulk insight transition");
+    }
+    const allowedReasons = new Set([
+      "not_subscription",
+      "wrong_data",
+      "wrong_interpretation",
+      "other_false_positive",
+    ]);
+    const normalizedReason =
+      action === "report_incorrect" ? reasonCode : null;
+    if (
+      action === "report_incorrect" &&
+      !allowedReasons.has(normalizedReason)
+    ) {
+      throw new TypeError("Unsupported insight feedback reason");
+    }
+    if (action !== "report_incorrect" && reasonCode != null) {
+      throw new TypeError(
+        "reasonCode is only supported for incorrect insights",
+      );
+    }
+
+    const ids = [...new Set(findingIds)];
+    if (!ids.length || ids.length !== findingIds.length) {
+      throw new TypeError(
+        "findingIds must contain unique insight finding IDs",
+      );
+    }
+
+    return withTransaction(this.#pool, async (client) => {
+      const existing = await client.query(
+        `
+          SELECT *
+          FROM insight_findings
+          WHERE workspace_id = $1
+            AND id = ANY($2::text[])
+          ORDER BY id
+          FOR UPDATE
+        `,
+        [workspaceId, ids],
+      );
+      if (existing.rows.length !== ids.length) return null;
+
+      const recurringStreamIds = (row) =>
+        (Array.isArray(row.evidence) ? row.evidence : [])
+          .filter((entry) =>
+            ["recurring", "recurring_stream"].includes(
+              entry?.entity_type,
+            ),
+          )
+          .map((entry) => entry.entity_id)
+          .filter(Boolean);
+
+      if (normalizedReason === "not_subscription") {
+        const incompatibleFindingIds = existing.rows
+          .filter(
+            (row) =>
+              row.family !== "subscriptions" ||
+              recurringStreamIds(row).length === 0,
+          )
+          .map((row) => row.id);
+        if (incompatibleFindingIds.length) {
+          return { incompatibleFindingIds };
+        }
+      }
+
+      if (action === "report_incorrect") {
+        const duplicateStreamIds = [
+          ...new Set(
+            existing.rows
+              .filter(
+                (row) => row.finding_type === "possible_duplicate",
+              )
+              .flatMap(recurringStreamIds),
+          ),
+        ];
+        if (duplicateStreamIds.length) {
+          await client.query(
+            `
+              UPDATE recurring_streams
+              SET duplicate_state = 'not_duplicate',
+                  updated_at = now()
+              WHERE workspace_id = $1
+                AND id = ANY($2::text[])
+            `,
+            [workspaceId, duplicateStreamIds],
+          );
+        }
+
+        if (normalizedReason === "not_subscription") {
+          for (const row of existing.rows) {
+            await client.query(
+              `
+                UPDATE recurring_streams
+                SET stream_type_override = 'frequent_spending',
+                    override_source_finding_id = $3,
+                    override_updated_by = $4,
+                    override_updated_at = now(),
+                    updated_at = now()
+                WHERE workspace_id = $1
+                  AND id = ANY($2::text[])
+              `,
+              [
+                workspaceId,
+                recurringStreamIds(row),
+                row.id,
+                actorId,
+              ],
+            );
+          }
+        }
+      }
+
+      for (const row of existing.rows) {
+        await client.query(
+          `
+            INSERT INTO insight_finding_events (
+              id, workspace_id, finding_id, finding_key, family,
+              finding_type, action, from_state, to_state, actor_id,
+              reason_code
+            )
+            VALUES (
+              $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
+            )
+          `,
+          [
+            randomUUID(),
+            workspaceId,
+            row.id,
+            row.finding_key ?? row.id,
+            row.family,
+            row.finding_type,
+            action,
+            row.state,
+            targetState,
+            actorId,
+            normalizedReason,
+          ],
+        );
+      }
+
+      const findingKeys = existing.rows.map(
+        (row) => row.finding_key ?? row.id,
+      );
+      if (action === "restore") {
+        await client.query(
+          `
+            DELETE FROM insight_finding_preferences
+            WHERE workspace_id = $1
+              AND finding_key = ANY($2::text[])
+          `,
+          [workspaceId, findingKeys],
+        );
+        await client.query(
+          `
+            UPDATE recurring_streams
+            SET stream_type_override = NULL,
+                override_source_finding_id = NULL,
+                override_updated_by = NULL,
+                override_updated_at = NULL,
+                updated_at = now()
+            WHERE workspace_id = $1
+              AND override_source_finding_id = ANY($2::text[])
+          `,
+          [workspaceId, ids],
+        );
+      } else if (
+        ["ignore", "report_incorrect"].includes(action)
+      ) {
+        for (const row of existing.rows) {
+          await client.query(
+            `
+              INSERT INTO insight_finding_preferences (
+                workspace_id, finding_key, disposition, reason_code,
+                updated_by
+              )
+              VALUES ($1, $2, $3, $4, $5)
+              ON CONFLICT (workspace_id, finding_key) DO UPDATE SET
+                disposition = EXCLUDED.disposition,
+                reason_code = EXCLUDED.reason_code,
+                updated_by = EXCLUDED.updated_by,
+                updated_at = now()
+            `,
+            [
+              workspaceId,
+              row.finding_key ?? row.id,
+              targetState,
+              normalizedReason,
+              actorId,
+            ],
+          );
+        }
+      }
+
+      const updated = await client.query(
+        `
+          UPDATE insight_findings
+          SET state = $3,
+              state_changed_at = now(),
+              state_changed_by = $4
+          WHERE workspace_id = $1
+            AND id = ANY($2::text[])
+          RETURNING *
+        `,
+        [workspaceId, ids, targetState, actorId],
+      );
+      const updatedById = new Map(
+        updated.rows.map((row) => [row.id, mapInsightFinding(row)]),
+      );
+      return {
+        updatedFindings: ids
+          .map((id) => updatedById.get(id))
+          .filter(Boolean),
+      };
     });
   }
 
@@ -7622,6 +8163,10 @@ function mapTransaction(row) {
     source_transaction_type: row.source_transaction_type ?? null,
     display_name:
       row.display_name ?? row.merchant_name ?? row.name,
+    note: row.note ?? null,
+    note_version: integer(row.note_version) ?? 0,
+    note_updated_by: row.note_updated_by ?? null,
+    note_updated_at: dateValue(row.note_updated_at),
     tags: Array.isArray(row.tags) ? row.tags : [],
     category_id:
       row.split_category_id ??
@@ -7734,19 +8279,33 @@ function mergedBudgetTimeline(categoryIds, rows) {
       current.set(row.category_id, {
         amountMinor: Number(row.amount_minor),
         currencyCode: row.currency_code,
+        trackingMode: row.tracking_mode ?? "tracked",
+        isRemoved: Boolean(row.is_removed),
       });
     }
-    const values = [...current.values()];
+    const values = [...current.values()].filter(
+      (value) => !value.isRemoved,
+    );
     const currencyCode = values[0]?.currencyCode ?? "USD";
     const amountMinor = values.reduce(
       (sum, value) => sum + value.amountMinor,
       0,
     );
+    const trackingMode =
+      values.length > 0 &&
+      values.every(
+        (value) => value.trackingMode === "informational",
+      )
+        ? "informational"
+        : "tracked";
+    const isRemoved = values.length === 0;
     const previous = timeline.at(-1);
     if (
       previous &&
       previous.amountMinor === amountMinor &&
-      previous.currencyCode === currencyCode
+      previous.currencyCode === currencyCode &&
+      previous.trackingMode === trackingMode &&
+      previous.isRemoved === isRemoved
     ) {
       continue;
     }
@@ -7754,6 +8313,8 @@ function mergedBudgetTimeline(categoryIds, rows) {
       effectiveMonthOn: date,
       amountMinor,
       currencyCode,
+      trackingMode,
+      isRemoved,
     });
   }
   return timeline;
@@ -7873,7 +8434,8 @@ function mapRecurring(row) {
   return {
     id: row.id,
     service_family: row.service_family,
-    display_name: row.display_name,
+    display_name: row.current_display_name ?? row.display_name,
+    category_primary: row.current_category_primary ?? null,
     stream_type: effectiveType,
     detected_stream_type: detectedType,
     stream_type_override: row.stream_type_override ?? null,

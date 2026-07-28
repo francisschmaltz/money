@@ -21,9 +21,9 @@ test("first-party asset revisions change with the current deployment", async () 
     path.resolve("app/views/partials/head.ejs"),
     "utf8",
   );
-  assert.match(head, /\/css\/money\.css\?v=27/);
+  assert.match(head, /\/css\/money\.css\?v=29/);
   assert.match(head, /\/js\/charts\.js\?v=5/);
-  assert.match(head, /\/js\/money\.js\?v=23/);
+  assert.match(head, /\/js\/money\.js\?v=25/);
 });
 
 test("dismissible notifications persist for the browser session", async () => {
@@ -41,6 +41,24 @@ test("dismissible notifications persist for the browser session", async () => {
   assert.match(money, /money\.dismissed-notifications\.v1/);
   assert.match(money, /window\.sessionStorage\.setItem/);
   assert.match(money, /notification\.hidden = true/);
+});
+
+test("Settings insight controls call the protected run and clear endpoints", async () => {
+  const money = await readFile(
+    path.resolve("app/public/js/money.js"),
+    "utf8",
+  );
+  const start = money.indexOf("const insightAdminStatus");
+  const end = money.indexOf("const saveRule", start);
+  const controls = money.slice(start, end);
+
+  assert.ok(start >= 0);
+  assert.ok(end > start);
+  assert.match(controls, /data-insights-run/);
+  assert.match(controls, /\/api\/v1\/settings\/insights\/run/);
+  assert.match(controls, /data-insights-clear/);
+  assert.match(controls, /method: "DELETE"/);
+  assert.match(controls, /window\.confirm\(warning\)/);
 });
 
 test("manual asset entry accepts formatted money and refreshes saved production data", async () => {
@@ -143,30 +161,63 @@ test("transaction bulk editing sends only selected override fields", async () =>
   assert.match(bulkEdit, /window\.location\.reload\(\)/);
 });
 
-test("a transaction detail category change uses one scoped batch override", async () => {
+test("transaction detail organization sends one scoped batch edit", async () => {
   const money = await readFile(
     path.resolve("app/public/js/money.js"),
     "utf8",
   );
-  const start = money.indexOf("function transactionCategoryOverride()");
+  const start = money.indexOf("function transactionOrganization()");
   const end = money.indexOf("function insightActions()", start);
-  const categoryOverride = money.slice(start, end);
+  const organization = money.slice(start, end);
 
   assert.ok(start >= 0);
   assert.ok(end > start);
-  assert.match(categoryOverride, /data-transaction-category-form/);
+  assert.match(organization, /data-transaction-organize-form/);
   assert.match(
-    categoryOverride,
+    organization,
     /transaction_ids: \[transactionId\]/,
   );
-  assert.match(
-    categoryOverride,
-    /changes: \{ category_primary: category \}/,
+  assert.match(organization, /changes\.category_primary = category\.value/);
+  assert.match(organization, /\/api\/v1\/transactions\/batch-edit/);
+});
+
+test("insight bulk selection sends one guarded batch action", async () => {
+  const money = await readFile(
+    path.resolve("app/public/js/money.js"),
+    "utf8",
   );
-  assert.match(
-    categoryOverride,
-    /\/api\/v1\/transactions\/batch-edit/,
+  const start = money.indexOf("function insightBulkActions()");
+  const end = money.indexOf("function insightActions()", start);
+  const bulkActions = money.slice(start, end);
+
+  assert.ok(start >= 0);
+  assert.ok(end > start);
+  assert.match(bulkActions, /data-bulk-insights/);
+  assert.match(bulkActions, /data-insight-selection-mode/);
+  assert.match(bulkActions, /data-insight-select-all/);
+  assert.match(bulkActions, /selectAll\.indeterminate/);
+  assert.match(bulkActions, /context\.open = true/);
+  assert.match(bulkActions, /finding_ids: findingIds/);
+  assert.match(bulkActions, /reason_code: reason\?\.value/);
+  assert.match(bulkActions, /\/api\/v1\/insights\/batch-action/);
+  assert.match(bulkActions, /"X-CSRF-Token": csrfToken/);
+  assert.doesNotMatch(bulkActions, /action === "delete"/);
+});
+
+test("transaction notes save with an optimistic version", async () => {
+  const money = await readFile(
+    path.resolve("app/public/js/money.js"),
+    "utf8",
   );
+  const start = money.indexOf("function transactionNotes()");
+  const end = money.indexOf("function transactionOrganization()", start);
+  const notes = money.slice(start, end);
+
+  assert.ok(start >= 0);
+  assert.ok(end > start);
+  assert.match(notes, /data-transaction-note-form/);
+  assert.match(notes, /expected_note_version: expectedVersion/);
+  assert.match(notes, /\/note`/);
 });
 
 test("transaction selection controls stay hidden outside edit mode", async () => {

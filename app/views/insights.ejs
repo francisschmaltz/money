@@ -54,12 +54,16 @@
         String(left.generatedAt || ""),
       ),
     );
+    const selectableInsightCount =
+      currentInsightView === "archive"
+        ? archivedInsights.length
+        : actionableInsights.length + contextInsights.length;
     const selectedCloseHref =
       currentInsightView === "archive"
         ? "/insights?view=archive"
         : "/insights";
   %>
-  <main class="page-shell">
+  <main class="page-shell" data-bulk-insights data-insight-view="<%= currentInsightView %>">
     <%- include("partials/page-heading", {
       eyebrow: freshness,
       pageTitle,
@@ -78,14 +82,72 @@
       }) %>
     <% } %>
 
-    <nav class="insight-view-nav" aria-label="Insight status">
-      <a href="/insights" <% if (currentInsightView === "active") { %>aria-current="page"<% } %>>
-        Active
-      </a>
-      <a href="/insights?view=archive" <% if (currentInsightView === "archive") { %>aria-current="page"<% } %>>
-        Archive
-      </a>
-    </nav>
+    <div class="insight-view-controls">
+      <nav class="insight-view-nav" aria-label="Insight status">
+        <a href="/insights" <% if (currentInsightView === "active") { %>aria-current="page"<% } %>>
+          Active
+        </a>
+        <a href="/insights?view=archive" <% if (currentInsightView === "archive") { %>aria-current="page"<% } %>>
+          Archive
+        </a>
+      </nav>
+      <% if (viewer?.is_admin) { %>
+        <button
+          class="button button--secondary"
+          type="button"
+          data-insight-bulk-start
+          <%= selectableInsightCount ? "" : "disabled" %>
+        >
+          <i class="ph ph-check-square-offset" aria-hidden="true"></i>
+          Select multiple
+        </button>
+      <% } %>
+    </div>
+
+    <% if (viewer?.is_admin) { %>
+      <section
+        class="insight-selection-bar"
+        data-insight-selection-bar
+        aria-label="Bulk insight actions"
+        hidden
+      >
+        <label class="insight-selection-bar__select-all">
+          <input type="checkbox" data-insight-select-all>
+          Select all shown
+        </label>
+        <strong data-insight-selected-count>0 selected</strong>
+        <label class="insight-selection-bar__field">
+          <span class="sr-only">Action for selected insights</span>
+          <select data-insight-bulk-action>
+            <option value="">Choose action</option>
+            <% if (currentInsightView === "active") { %>
+              <option value="archive">Archive</option>
+              <option value="ignore">Ignore similar</option>
+            <% } else { %>
+              <option value="restore">Restore</option>
+            <% } %>
+            <option value="report_incorrect">Incorrect</option>
+          </select>
+        </label>
+        <label class="insight-selection-bar__field" data-insight-bulk-reason-field hidden>
+          <span class="sr-only">Why the selected insights are incorrect</span>
+          <select data-insight-bulk-reason>
+            <option value="">Choose reason</option>
+            <option value="not_subscription" data-subscription-only hidden>Not subscriptions</option>
+            <option value="wrong_data">Wrong data</option>
+            <option value="wrong_interpretation">Wrong interpretation</option>
+            <option value="other_false_positive">Other false positive</option>
+          </select>
+        </label>
+        <button class="button button--dark" type="button" data-insight-bulk-apply disabled>
+          Apply
+        </button>
+        <button class="button button--ghost" type="button" data-insight-bulk-cancel>
+          Cancel
+        </button>
+        <span class="save-status insight-selection-bar__status" role="status" aria-live="polite" data-insight-bulk-status></span>
+      </section>
+    <% } %>
 
     <% if (typeof selectedInsight !== "undefined" && selectedInsight) { %>
       <section class="card selected-detail selected-detail--insight" aria-labelledby="selected-insight-heading" data-insight-card>
@@ -172,7 +234,8 @@
                 <%- include("partials/insight-card", {
                   insight,
                   insightView: currentInsightView,
-                  lifecycleControls: true
+                  lifecycleControls: true,
+                  bulkSelectable: true
                 }) %>
               <% }) %>
             </div>
@@ -198,6 +261,7 @@
                 insight,
                 insightView: currentInsightView,
                 lifecycleControls: true,
+                bulkSelectable: true,
                 compactInsight: true
               }) %>
             <% }) %>
@@ -230,7 +294,8 @@
               <%- include("partials/insight-card", {
                 insight,
                 insightView: currentInsightView,
-                lifecycleControls: true
+                lifecycleControls: true,
+                bulkSelectable: true
               }) %>
             <% }) %>
           </div>

@@ -21,6 +21,10 @@ function transaction(overrides = {}) {
     name: "WHOLEFDS MKT 117 BROOKLYN",
     normalized_name: "wholefds mkt brooklyn",
     display_name: "Whole Foods",
+    note: "Dinner supplies",
+    note_version: 2,
+    note_updated_by: "user-1",
+    note_updated_at: "2026-07-27T18:00:00.000Z",
     tags: ["Groceries", "Household"],
     category_id: "category-groceries",
     category_primary: "Groceries",
@@ -59,6 +63,10 @@ test("transaction cards expose effective display and tags without losing provide
   assert.equal(card.merchant, "Whole Foods");
   assert.equal(card.raw_merchant, "WHOLEFDS MKT 117");
   assert.equal(card.raw_name, "WHOLEFDS MKT 117 BROOKLYN");
+  assert.equal(card.note, "Dinner supplies");
+  assert.equal(card.note_version, 2);
+  assert.equal(card.note_updated_by, "user-1");
+  assert.equal(card.note_updated_at, "2026-07-27T18:00:00.000Z");
   assert.deepEqual(card.tags, ["Groceries", "Household"]);
   assert.equal(card.category_id, "category-groceries");
   assert.equal(card.category, "Groceries");
@@ -133,6 +141,66 @@ test("match lookup returns the strict Settings shape and rejects pending anchors
   await assert.rejects(
     service.findTransactionMatches({}),
     /transaction_id or q is required/,
+  );
+});
+
+test("transaction notes trim input and reject stale writes", async () => {
+  const calls = [];
+  const repository = {
+    async updateTransactionNote(workspaceId, input) {
+      calls.push({ workspaceId, input });
+      if (input.expectedVersion === 1) {
+        return {
+          conflict: true,
+          transaction_id: input.transactionId,
+          note: "Someone else changed this",
+          note_version: 2,
+        };
+      }
+      return {
+        transaction_id: input.transactionId,
+        note: input.note,
+        note_version: 1,
+        note_updated_by: input.userId,
+        note_updated_at: "2026-07-28T12:00:00.000Z",
+      };
+    },
+  };
+  const service = createFinanceService({ repository });
+
+  const saved = await service.updateTransactionNote(
+    {
+      transaction_id: "transaction-1",
+      note: "  Dinner with Sam  ",
+      expected_note_version: 0,
+    },
+    { id: "user-1" },
+  );
+
+  assert.equal(saved.note, "Dinner with Sam");
+  assert.deepEqual(calls[0].input, {
+    transactionId: "transaction-1",
+    note: "Dinner with Sam",
+    expectedVersion: 0,
+    userId: "user-1",
+  });
+  await assert.rejects(
+    service.updateTransactionNote({
+      transaction_id: "transaction-1",
+      note: "Stale draft",
+      expected_note_version: 1,
+    }),
+    (error) =>
+      error.statusCode === 409 &&
+      /changed after you opened it/.test(error.message),
+  );
+  await assert.rejects(
+    service.updateTransactionNote({
+      transaction_id: "transaction-1",
+      note: "x".repeat(2001),
+      expected_note_version: 0,
+    }),
+    /note must be between 1 and 2000 characters/,
   );
 });
 

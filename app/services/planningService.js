@@ -7,6 +7,7 @@ import {
   buildBudgetStatus,
   buildGoalHistoryInsights,
   buildPlanningSnapshot,
+  expandTransactionsWithSplits,
   modelPlanningScenario,
   monthStart,
   nextScheduleDueOn,
@@ -38,6 +39,8 @@ const IDEMPOTENT_WRITE_METHODS = Object.freeze({
   set_goal_funding_schedule: "setGoalFundingSchedule",
   finish_finance_goal: "finishFinanceGoal",
   set_category_budget: "setCategoryBudget",
+  clear_category_budget: "clearCategoryBudget",
+  set_budget_income_categories: "setBudgetIncomeCategories",
   split_transaction: "splitTransaction",
 });
 
@@ -166,7 +169,10 @@ export class PlanningService {
     });
   }
 
-  async getBudgetStatus({ month_on = null } = {}) {
+  async getBudgetStatus({
+    month_on = null,
+    include_available_categories = false,
+  } = {}) {
     const timeZone = await this.#repository.getWorkspaceTimezone(
       this.#workspaceId,
     );
@@ -182,6 +188,8 @@ export class PlanningService {
     const [
       budgetLines,
       budgetVersions,
+      categories,
+      budgetSettings,
       transactions,
       splits,
       freshness,
@@ -199,6 +207,15 @@ export class PlanningService {
               this.#workspaceId,
             )
           : [],
+        typeof this.#financeRepository.listSpendingCategories ===
+        "function"
+          ? this.#financeRepository.listSpendingCategories(
+              this.#workspaceId,
+            )
+          : [],
+        typeof this.#repository.getBudgetSettings === "function"
+          ? this.#repository.getBudgetSettings(this.#workspaceId)
+          : { version: 0, income_category_ids: [] },
         this.#financeRepository.getTransactionsForPeriod(
           this.#workspaceId,
           { startOn: month, endOn },
@@ -209,23 +226,73 @@ export class PlanningService {
         }),
         this.#financeRepository.getDataFreshness(this.#workspaceId),
       ]);
+    const incomeCategoryIds =
+      budgetSettings.income_category_ids ?? [];
+    const selectedIncomeIds = categorySubtreeIds(
+      categories,
+      incomeCategoryIds,
+    );
+    const actualIncomeMinor = netIncomeForTransactions(
+      transactions,
+      selectedIncomeIds,
+      this.#currency,
+      splits,
+    );
+    const incomeStart = addMonthsToMonth(currentMonth, -4);
+    const [incomeTransactions, incomeSplits] = incomeCategoryIds.length
+      ? await Promise.all([
+          this.#financeRepository.getTransactionsForPeriod(
+            this.#workspaceId,
+            { startOn: incomeStart, endOn: currentMonth },
+          ),
+          this.#repository.listTransactionSplits(
+            this.#workspaceId,
+            { startOn: incomeStart, endOn: currentMonth },
+          ),
+        ])
+      : [[], []];
+    const averageIncomeMinor = incomeCategoryIds.length
+      ? Math.round(
+          netIncomeForTransactions(
+            incomeTransactions,
+            selectedIncomeIds,
+            this.#currency,
+            incomeSplits,
+          ) / 4,
+        )
+      : 0;
     const data = buildBudgetStatus({
       monthOn: month,
       budgetLines,
+      categories,
       transactions,
       splits,
+      income: {
+        average_monthly_minor: averageIncomeMinor,
+        actual_month_minor: actualIncomeMinor,
+        month_count: incomeCategoryIds.length ? 4 : 0,
+        category_ids: incomeCategoryIds,
+      },
       currency: this.#currency,
     });
     const versionByCategory = new Map(
-      budgetVersions.map((entry) => [
-        entry.category,
-        Number(entry.version),
+      budgetVersions.flatMap((entry) => [
+        [entry.category_id, Number(entry.version)],
+        [entry.category, Number(entry.version)],
       ]),
     );
     for (const line of data.lines) {
       line.version =
-        versionByCategory.get(line.category) ?? line.version ?? 0;
+        versionByCategory.get(line.category_id) ??
+        versionByCategory.get(line.category) ??
+        line.version ??
+        0;
     }
+    if (include_available_categories) {
+      data.available_categories = categories;
+    }
+    data.settings_version = budgetSettings.version ?? 0;
+    data.is_current_month = month === currentMonth;
     data.has_exact_month_lines = budgetLines.some(
       (line) => line.exact_month,
     );
@@ -457,7 +524,10 @@ export class PlanningService {
       auditEvents,
     ] = await Promise.all([
       this.getSafeToSpend(),
-      this.getBudgetStatus({ month_on }),
+      this.getBudgetStatus({
+        month_on,
+        include_available_categories: true,
+      }),
       this.#planningState({ includeArchived: true }),
       this.#repository.listGoalScheduleRuns(this.#workspaceId, {
         limit: 20,
@@ -1040,11 +1110,9 @@ export class PlanningService {
     const currentMonth = monthStart(
       workspaceDate(this.#now(), timeZone),
     );
-    const requestedCategory = requiredText(
-      input.category,
-      500,
-      "category",
-    );
+    const requestedCategory =
+      input.category_id ??
+      requiredText(input.category, 500, "category");
     const resolvedCategory =
       typeof this.#financeRepository.resolveSpendingCategory === "function"
         ? await this.#financeRepository.resolveSpendingCategory(
@@ -1052,15 +1120,102 @@ export class PlanningService {
             requestedCategory,
           )
         : null;
+    if (
+      !resolvedCategory &&
+      typeof this.#financeRepository.resolveSpendingCategory ===
+        "function"
+    ) {
+      throw notFound("Budget category not found.");
+    }
+    const budgetCategory = resolvedCategory ?? {
+      id: input.category_id ?? requestedCategory,
+      path: requestedCategory,
+      parent_category_id: null,
+    };
+    const amountMinor = nonnegativeMinor(
+      input.amount_minor,
+      "amount_minor",
+    );
+    const currentBudget = await this.getBudgetStatus({
+      include_available_categories: true,
+    });
+    const currentById = new Map(
+      currentBudget.data.lines.map((line) => [
+        line.category_id,
+        line,
+      ]),
+    );
+    const availableCategories =
+      currentBudget.data.available_categories ?? [];
+    const incomeSubtreeIds = categorySubtreeIds(
+      availableCategories,
+      currentBudget.data.income_category_ids,
+    );
+    const budgetSubtreeIds = categorySubtreeIds(
+      availableCategories,
+      [budgetCategory.id],
+    );
+    if (
+      incomeSubtreeIds.has(budgetCategory.id) ||
+      currentBudget.data.income_category_ids.some((categoryId) =>
+        budgetSubtreeIds.has(categoryId),
+      )
+    ) {
+      throw badRequest(
+        "An income category cannot also be an expense budget.",
+      );
+    }
+    const parentId = budgetCategory.parent_category_id;
+    if (parentId && !currentById.has(parentId)) {
+      throw badRequest(
+        "Add the parent category to the budget before adding this child.",
+      );
+    }
+    const childTotal = currentBudget.data.lines
+      .filter(
+        (line) =>
+          line.parent_category_id === budgetCategory.id,
+      )
+      .reduce(
+        (sum, line) => sum + line.planned.amount_minor,
+        0,
+      );
+    if (childTotal > amountMinor) {
+      throw badRequest(
+        "This budget cannot be lower than its child allocations.",
+      );
+    }
+    if (parentId) {
+      const siblingTotal = currentBudget.data.lines
+        .filter(
+          (line) =>
+            line.parent_category_id === parentId &&
+            line.category_id !== resolvedCategory.id,
+        )
+        .reduce(
+          (sum, line) => sum + line.planned.amount_minor,
+          0,
+        );
+      const parentAmount =
+        currentById.get(parentId).planned.amount_minor;
+      if (siblingTotal + amountMinor > parentAmount) {
+        throw badRequest(
+          "Child allocations cannot exceed the parent budget.",
+        );
+      }
+    }
     const changed = await this.#repository.setBudgetLine(
       this.#workspaceId,
       {
         monthOn: currentMonth,
         effectiveMonthOn: currentMonth,
-        category: resolvedCategory?.path ?? requestedCategory,
-        amountMinor: nonnegativeMinor(
-          input.amount_minor,
-          "amount_minor",
+        category: budgetCategory.path,
+        categoryId: resolvedCategory?.id ?? input.category_id ?? null,
+        amountMinor,
+        trackingMode: enumValue(
+          input.tracking_mode ?? "tracked",
+          ["tracked", "informational"],
+          "tracking_mode",
         ),
         scope: "standing",
         expectedVersion,
@@ -1070,6 +1225,129 @@ export class PlanningService {
     );
     assertMutation(changed);
     return this.#changeResult("Budget saved", changed);
+  }
+
+  async clearCategoryBudget(input = {}, actorInput = null) {
+    const actor = normalizeActor(actorInput);
+    const categoryId = requiredId(
+      input.category_id,
+      "category_id",
+    );
+    const expectedVersion = nonnegativeMinor(
+      input.expected_version,
+      "expected_version",
+    );
+    const timeZone = await this.#repository.getWorkspaceTimezone(
+      this.#workspaceId,
+    );
+    const currentMonth = monthStart(
+      workspaceDate(this.#now(), timeZone),
+    );
+    const currentBudget = await this.getBudgetStatus({
+      include_available_categories: true,
+    });
+    const categoriesById = new Map(
+      (currentBudget.data.available_categories ?? []).map(
+        (category) => [category.id, category],
+      ),
+    );
+    const selectedIds = new Set(
+      currentBudget.data.lines.map((line) => line.category_id),
+    );
+    const selectedDescendants = [
+      ...categorySubtreeIds(
+        currentBudget.data.available_categories ?? [],
+        [categoryId],
+      ),
+    ].filter(
+      (selectedId) =>
+        selectedId !== categoryId &&
+        selectedIds.has(selectedId),
+    );
+    if (
+      selectedDescendants.length &&
+      input.confirm_descendants !== true
+    ) {
+      const names = selectedDescendants
+        .map(
+          (selectedId) =>
+            categoriesById.get(selectedId)?.path ?? selectedId,
+        )
+        .join(", ");
+      throw badRequest(
+        `Confirm removal of descendant budgets: ${names}.`,
+      );
+    }
+    const changed = await this.#repository.removeBudgetLine(
+      this.#workspaceId,
+      {
+        categoryId,
+        effectiveMonthOn: currentMonth,
+        expectedVersion,
+        auditEventId: `audit_${randomUUID()}`,
+      },
+      actor,
+    );
+    assertMutation(changed);
+    return this.#changeResult("Budget removed", changed);
+  }
+
+  async setBudgetIncomeCategories(input = {}, actorInput = null) {
+    const actor = normalizeActor(actorInput);
+    const categoryIds = uniqueIds(
+      input.income_category_ids,
+      "income_category_ids",
+    );
+    const expectedVersion = nonnegativeMinor(
+      input.expected_version,
+      "expected_version",
+    );
+    const categories =
+      await this.#financeRepository.listSpendingCategories(
+        this.#workspaceId,
+      );
+    const activeIds = new Set(categories.map((category) => category.id));
+    if (categoryIds.some((categoryId) => !activeIds.has(categoryId))) {
+      throw badRequest("Income categories must be active categories.");
+    }
+    const currentBudget = await this.getBudgetStatus({
+      include_available_categories: true,
+    });
+    const budgetedIds = new Set(
+      currentBudget.data.lines.map((line) => line.category_id),
+    );
+    const incomeSubtreeIds = categorySubtreeIds(
+      categories,
+      categoryIds,
+    );
+    const budgetSubtreeIds = categorySubtreeIds(
+      categories,
+      [...budgetedIds],
+    );
+    if (
+      [...incomeSubtreeIds].some((categoryId) =>
+        budgetedIds.has(categoryId),
+      ) ||
+      categoryIds.some((categoryId) =>
+        budgetSubtreeIds.has(categoryId),
+      )
+    ) {
+      throw badRequest(
+        "Remove a category from the expense budget before using it as income.",
+      );
+    }
+    const changed =
+      await this.#repository.replaceBudgetIncomeCategories(
+        this.#workspaceId,
+        {
+          categoryIds,
+          expectedVersion,
+          auditEventId: `audit_${randomUUID()}`,
+        },
+        actor,
+      );
+    assertMutation(changed);
+    return this.#changeResult("Income categories saved", changed);
   }
 
   async splitTransaction(input = {}, actorInput = null) {
@@ -1915,6 +2193,65 @@ function previousMonth(monthOn) {
   const date = new Date(`${monthOn}T00:00:00.000Z`);
   date.setUTCMonth(date.getUTCMonth() - 1);
   return date.toISOString().slice(0, 10);
+}
+
+function addMonthsToMonth(monthOn, offset) {
+  const date = new Date(`${monthOn}T00:00:00.000Z`);
+  date.setUTCMonth(date.getUTCMonth() + offset);
+  return date.toISOString().slice(0, 10);
+}
+
+function categorySubtreeIds(categories = [], rootIds = []) {
+  const roots = new Set(rootIds ?? []);
+  const byId = new Map(
+    categories.map((category) => [category.id, category]),
+  );
+  const result = new Set();
+  for (const category of categories) {
+    let current = category;
+    const visited = new Set();
+    while (current && !visited.has(current.id)) {
+      if (roots.has(current.id)) {
+        result.add(category.id);
+        break;
+      }
+      visited.add(current.id);
+      current = byId.get(current.parent_category_id);
+    }
+  }
+  return result;
+}
+
+function netIncomeForTransactions(
+  transactions,
+  categoryIds,
+  currency,
+  splits = [],
+) {
+  if (!categoryIds.size) return 0;
+  return expandTransactionsWithSplits(
+    transactions,
+    splits,
+  ).reduce((sum, transaction) => {
+    if (
+      transaction.pending ||
+      transaction.excluded_from_spending ||
+      transaction.currency_code !== currency ||
+      !categoryIds.has(transaction.category_id)
+    ) {
+      return sum;
+    }
+    return sum + Number(transaction.amount_minor);
+  }, 0);
+}
+
+function uniqueIds(values, name) {
+  if (!Array.isArray(values)) {
+    throw badRequest(`${name} must be an array.`);
+  }
+  return [
+    ...new Set(values.map((value) => requiredId(value, name))),
+  ];
 }
 
 function formatMonth(monthOn) {

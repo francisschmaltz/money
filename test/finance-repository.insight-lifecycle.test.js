@@ -357,6 +357,238 @@ test("insight transitions write sticky feedback and an append-only event", async
   ]);
 });
 
+test("bulk incorrect transitions and recurring corrections share one transaction", async () => {
+  const rows = [
+    storedFinding({
+      id: "finding-sub-1",
+      finding_key: "subscription-duplicate",
+      family: "subscriptions",
+      finding_type: "possible_duplicate",
+      evidence: [
+        {
+          entity_type: "recurring_stream",
+          entity_id: "stream-1",
+        },
+      ],
+    }),
+    storedFinding({
+      id: "finding-sub-2",
+      finding_key: "subscription-expensive",
+      family: "subscriptions",
+      finding_type: "expensive",
+      evidence: [
+        {
+          entity_type: "recurring",
+          entity_id: "stream-2",
+        },
+      ],
+    }),
+  ];
+  const db = fakePool(async (sql, params) => {
+    if (
+      sql.includes("FROM insight_findings") &&
+      sql.includes("id = ANY") &&
+      sql.includes("FOR UPDATE")
+    ) {
+      return { rows };
+    }
+    if (sql.startsWith("UPDATE insight_findings SET state")) {
+      return {
+        rows: rows.map((row) => ({
+          ...row,
+          state: params[2],
+          state_changed_by: params[3],
+        })),
+      };
+    }
+    return { rows: [] };
+  });
+  const repository = new PgFinanceRepository(db.pool);
+
+  const result = await repository.batchTransitionInsightFindings(
+    "shared",
+    ["finding-sub-1", "finding-sub-2"],
+    {
+      action: "report_incorrect",
+      actorId: "user-1",
+      reasonCode: "not_subscription",
+    },
+  );
+
+  assert.equal(result.updatedFindings.length, 2);
+  assert.deepEqual(
+    result.updatedFindings.map((finding) => finding.state),
+    ["bad", "bad"],
+  );
+  assert.equal(db.calls[0].sql, "BEGIN");
+  assert.equal(db.calls.at(-1).sql, "COMMIT");
+  assert.equal(
+    db.calls.filter((call) =>
+      call.sql.startsWith("INSERT INTO insight_finding_events"),
+    ).length,
+    2,
+  );
+  assert.equal(
+    db.calls.filter((call) =>
+      call.sql.startsWith(
+        "INSERT INTO insight_finding_preferences",
+      ),
+    ).length,
+    2,
+  );
+  const duplicateCorrection = db.calls.find((call) =>
+    call.sql.includes("duplicate_state = 'not_duplicate'"),
+  );
+  assert.deepEqual(duplicateCorrection.params, [
+    "shared",
+    ["stream-1"],
+  ]);
+  const classificationCorrections = db.calls.filter((call) =>
+    call.sql.includes(
+      "stream_type_override = 'frequent_spending'",
+    ),
+  );
+  assert.deepEqual(
+    classificationCorrections.map((call) => call.params),
+    [
+      ["shared", ["stream-1"], "finding-sub-1", "user-1"],
+      ["shared", ["stream-2"], "finding-sub-2", "user-1"],
+    ],
+  );
+});
+
+test("bulk transitions reject missing or incompatible selections before mutation", async () => {
+  const subscription = storedFinding({
+    id: "finding-sub",
+    family: "subscriptions",
+    evidence: [
+      {
+        entity_type: "recurring_stream",
+        entity_id: "stream-1",
+      },
+    ],
+  });
+  const weekly = storedFinding({
+    id: "finding-weekly",
+    family: "weekly",
+    evidence: [],
+  });
+  const incompatibleDb = fakePool(async (sql) => {
+    if (
+      sql.includes("FROM insight_findings") &&
+      sql.includes("FOR UPDATE")
+    ) {
+      return { rows: [subscription, weekly] };
+    }
+    return { rows: [] };
+  });
+  const incompatibleRepository = new PgFinanceRepository(
+    incompatibleDb.pool,
+  );
+
+  const incompatible =
+    await incompatibleRepository.batchTransitionInsightFindings(
+      "shared",
+      ["finding-sub", "finding-weekly"],
+      {
+        action: "report_incorrect",
+        reasonCode: "not_subscription",
+      },
+    );
+  assert.deepEqual(incompatible, {
+    incompatibleFindingIds: ["finding-weekly"],
+  });
+  assert.equal(
+    incompatibleDb.calls.some((call) =>
+      call.sql.startsWith("INSERT INTO insight_finding_events"),
+    ),
+    false,
+  );
+  assert.equal(incompatibleDb.calls.at(-1).sql, "COMMIT");
+
+  const missingDb = fakePool(async (sql) => {
+    if (
+      sql.includes("FROM insight_findings") &&
+      sql.includes("FOR UPDATE")
+    ) {
+      return { rows: [subscription] };
+    }
+    return { rows: [] };
+  });
+  const missingRepository = new PgFinanceRepository(missingDb.pool);
+  const missing =
+    await missingRepository.batchTransitionInsightFindings(
+      "shared",
+      ["finding-sub", "finding-missing"],
+      { action: "archive" },
+    );
+  assert.equal(missing, null);
+  assert.equal(
+    missingDb.calls.some((call) =>
+      call.sql.startsWith("INSERT INTO insight_finding_events"),
+    ),
+    false,
+  );
+});
+
+test("bulk restore clears only selected sticky feedback and owned corrections", async () => {
+  const rows = [
+    storedFinding({
+      id: "finding-1",
+      state: "bad",
+    }),
+    storedFinding({
+      id: "finding-2",
+      finding_key: "pattern-fees",
+      state: "dismissed",
+    }),
+  ];
+  const db = fakePool(async (sql, params) => {
+    if (
+      sql.includes("FROM insight_findings") &&
+      sql.includes("FOR UPDATE")
+    ) {
+      return { rows };
+    }
+    if (sql.startsWith("UPDATE insight_findings SET state")) {
+      return {
+        rows: rows.map((row) => ({
+          ...row,
+          state: params[2],
+          state_changed_by: params[3],
+        })),
+      };
+    }
+    return { rows: [] };
+  });
+  const repository = new PgFinanceRepository(db.pool);
+
+  await repository.batchTransitionInsightFindings(
+    "shared",
+    ["finding-1", "finding-2"],
+    { action: "restore", actorId: "user-1" },
+  );
+
+  const preferences = db.calls.find((call) =>
+    call.sql.startsWith(
+      "DELETE FROM insight_finding_preferences",
+    ),
+  );
+  assert.deepEqual(preferences.params, [
+    "shared",
+    ["pattern-dining", "pattern-fees"],
+  ]);
+  const corrections = db.calls.find((call) =>
+    call.sql.includes(
+      "override_source_finding_id = ANY($2::text[])",
+    ),
+  );
+  assert.deepEqual(corrections.params, [
+    "shared",
+    ["finding-1", "finding-2"],
+  ]);
+});
+
 test("deleting an insight hard-deletes its body but retains its fingerprint event", async () => {
   const row = storedFinding();
   const db = fakePool(async (sql) => {

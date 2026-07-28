@@ -346,6 +346,157 @@ test("manual recurring classification clears automatic source ownership", async 
   });
 });
 
+test("bulk insight actions transition once and rebuild search once", async () => {
+  const calls = [];
+  const service = createFinanceService({
+    repository: {
+      async batchTransitionInsightFindings(
+        workspaceId,
+        findingIds,
+        transition,
+      ) {
+        calls.push([
+          "transition",
+          workspaceId,
+          findingIds,
+          transition,
+        ]);
+        return {
+          updatedFindings: findingIds.map((id) => ({ id })),
+        };
+      },
+      async rebuildSearchDocuments(workspaceId) {
+        calls.push(["search", workspaceId]);
+      },
+    },
+  });
+
+  const result = await service.batchActOnFindings(
+    {
+      finding_ids: ["finding-1", "finding-2"],
+      action: "report_incorrect",
+      reason_code: "wrong_interpretation",
+    },
+    { id: "user-1" },
+  );
+
+  assert.deepEqual(calls, [
+    [
+      "transition",
+      "shared",
+      ["finding-1", "finding-2"],
+      {
+        action: "report_incorrect",
+        actorId: "user-1",
+        reasonCode: "wrong_interpretation",
+      },
+    ],
+    ["search", "shared"],
+  ]);
+  assert.deepEqual(result, {
+    updated: true,
+    action: "report_incorrect",
+    state: "bad",
+    updated_count: 2,
+    finding_ids: ["finding-1", "finding-2"],
+    reason_code: "wrong_interpretation",
+  });
+});
+
+test("bulk aliases normalize and invalid selections never rebuild search", async () => {
+  const calls = [];
+  const service = createFinanceService({
+    repository: {
+      async batchTransitionInsightFindings(
+        _workspaceId,
+        _findingIds,
+        transition,
+      ) {
+        calls.push(transition);
+        if (transition.reasonCode === "not_subscription") {
+          return { incompatibleFindingIds: ["finding-1"] };
+        }
+        return {
+          updatedFindings: [{ id: "finding-1" }],
+        };
+      },
+      async rebuildSearchDocuments() {
+        calls.push("search");
+      },
+    },
+  });
+
+  const alias = await service.batchActOnFindings(
+    {
+      finding_ids: ["finding-1"],
+      action: "mark_bad",
+    },
+    { id: "user-1" },
+  );
+  assert.equal(alias.action, "report_incorrect");
+  assert.equal(alias.reason_code, "other_false_positive");
+  assert.deepEqual(calls, [
+    {
+      action: "report_incorrect",
+      actorId: "user-1",
+      reasonCode: "other_false_positive",
+    },
+    "search",
+  ]);
+
+  calls.length = 0;
+  await assert.rejects(
+    service.batchActOnFindings({
+      finding_ids: ["finding-1"],
+      action: "report_incorrect",
+      reason_code: "not_subscription",
+    }),
+    /only applies to subscription insights/,
+  );
+  assert.deepEqual(calls, [
+    {
+      action: "report_incorrect",
+      actorId: null,
+      reasonCode: "not_subscription",
+    },
+  ]);
+});
+
+test("bulk insight validation rejects malformed requests before storage", async () => {
+  let called = false;
+  const service = createFinanceService({
+    repository: {
+      async batchTransitionInsightFindings() {
+        called = true;
+      },
+    },
+  });
+
+  for (const input of [
+    { finding_ids: [], action: "archive" },
+    {
+      finding_ids: ["finding-1", "finding-1"],
+      action: "archive",
+    },
+    { finding_ids: ["finding-1"], action: "delete" },
+    {
+      finding_ids: ["finding-1"],
+      action: "archive",
+      reason_code: "wrong_data",
+    },
+    {
+      finding_ids: ["finding-1"],
+      action: "report_incorrect",
+    },
+  ]) {
+    await assert.rejects(
+      service.batchActOnFindings(input),
+      (error) => error.statusCode === 400,
+    );
+  }
+  assert.equal(called, false);
+});
+
 test("frequent spending stays visible on the web without inflating payment totals or MCP results", async () => {
   const stream = {
     cadence: "monthly",

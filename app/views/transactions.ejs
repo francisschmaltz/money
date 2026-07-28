@@ -30,7 +30,7 @@
       <label>
         <span class="sr-only">Search transactions</span>
         <i class="ph ph-magnifying-glass"></i>
-        <input type="search" name="q" value="<%= query.q || '' %>" placeholder="Merchant or description">
+        <input type="search" name="q" value="<%= query.q || '' %>" placeholder="Merchant, category, or note">
       </label>
       <select name="period" aria-label="Timeline">
         <option value="month" <%= selectedTransactionPeriod === "month" ? "selected" : "" %>>This Month</option>
@@ -89,12 +89,84 @@
             ><%= selectedTransaction.category %> · <%= selectedTransaction.account %></span>
             · <%- include("partials/transaction-date", { transaction: selectedTransaction }) %><%= selectedTransaction.status === "pending" ? " · Pending" : "" %><%= selectedTransaction.tags?.length ? ` · ${selectedTransaction.tags.join(" · ")}` : "" %>
           </p>
+        </div>
+        <strong><%= formatMoney(selectedTransaction.amount) %></strong>
+        <button class="icon-button" type="button" data-detail-dialog-close aria-label="Close transaction details"><i class="ph ph-x" aria-hidden="true"></i></button>
+      </section>
+      <div class="entity-detail-dialog__body entity-detail-dialog__body--transaction">
+          <section class="transaction-note-editor" aria-labelledby="transaction-note-heading">
+            <div>
+              <h3 id="transaction-note-heading">Note</h3>
+              <p>Shared with everyone in this household.</p>
+            </div>
+            <form
+              data-transaction-note-form
+              data-transaction-id="<%= selectedTransaction.id %>"
+              data-note-version="<%= selectedTransaction.noteVersion ?? 0 %>"
+            >
+              <label>
+                <span class="sr-only">Transaction note</span>
+                <textarea
+                  name="note"
+                  maxlength="2000"
+                  rows="3"
+                  placeholder="What was this for?"
+                  data-transaction-note-input
+                ><%= selectedTransaction.note || "" %></textarea>
+              </label>
+              <div class="transaction-note-editor__footer">
+                <small><span data-transaction-note-count><%= (selectedTransaction.note || "").length %></span>/2000</small>
+                <% if (selectedTransaction.noteUpdatedAt) { %>
+                  <small data-transaction-note-updated>Updated <time datetime="<%= selectedTransaction.noteUpdatedAt %>" data-local-date-time="<%= selectedTransaction.noteUpdatedAt %>"><%= selectedTransaction.noteUpdatedAt %></time></small>
+                <% } else { %>
+                  <small data-transaction-note-updated></small>
+                <% } %>
+                <span class="form-status" role="status" data-transaction-note-status></span>
+                <button class="button button--secondary" type="submit">Save note</button>
+              </div>
+            </form>
+          </section>
+          <%
+            const transactionOrganizeFormId =
+              `transaction-organize-${selectedTransaction.id}`;
+            const canOrganizeTransaction =
+              viewer?.is_admin && selectedTransaction.status !== "pending";
+          %>
           <dl class="entity-detail-grid entity-detail-grid--transaction">
             <div><dt>Original merchant</dt><dd><%= selectedTransaction.rawMerchant || "—" %></dd></div>
             <div><dt>Statement description</dt><dd><%= selectedTransaction.rawName || "—" %></dd></div>
             <div><dt>Account</dt><dd><%= selectedTransaction.account %><%= selectedTransaction.accountMask ? ` · ••••${selectedTransaction.accountMask}` : "" %></dd></div>
             <div><dt>Institution</dt><dd><%= selectedTransaction.institution || "—" %></dd></div>
-            <div><dt>Current category</dt><dd><%= selectedTransaction.categoryValue || selectedTransaction.category %></dd></div>
+            <div class="entity-detail-grid__category">
+              <dt>Spending category</dt>
+              <dd>
+                <% if (canOrganizeTransaction) {
+                  const selectedCategory =
+                    selectedTransaction.categoryValue ||
+                    selectedTransaction.category;
+                  const hasSelectedCategory = categories.some(
+                    (category) => category.label === selectedCategory
+                  );
+                %>
+                  <select
+                    name="category_primary"
+                    form="<%= transactionOrganizeFormId %>"
+                    data-transaction-organize-category
+                    data-initial-value="<%= selectedCategory %>"
+                    aria-label="Spending category"
+                  >
+                    <% if (!hasSelectedCategory) { %>
+                      <option value="<%= selectedCategory %>" selected><%= selectedCategory %></option>
+                    <% } %>
+                    <% categories.forEach((category) => { %>
+                      <option value="<%= category.label %>" <%= category.label === selectedCategory ? "selected" : "" %>><%= category.label %></option>
+                    <% }) %>
+                  </select>
+                <% } else { %>
+                  <%= selectedTransaction.categoryValue || selectedTransaction.category %>
+                <% } %>
+              </dd>
+            </div>
             <div><dt>Source category</dt><dd><%= selectedTransaction.originalCategoryValue || "—" %></dd></div>
             <div><dt>Source detail</dt><dd><%= selectedTransaction.originalDetailedCategoryValue || selectedTransaction.detailedCategoryValue || "—" %></dd></div>
             <div><dt>Provider amount</dt><dd><%= formatMoney(selectedTransaction.providerAmount || selectedTransaction.amount) %></dd></div>
@@ -110,37 +182,50 @@
             <div class="entity-detail-grid__wide"><dt>Transaction ID</dt><dd><code><%= selectedTransaction.id %></code></dd></div>
             <div class="entity-detail-grid__wide"><dt>Provider transaction ID</dt><dd><code><%= selectedTransaction.providerTransactionId || "—" %></code></dd></div>
           </dl>
-          <% if (viewer?.is_admin && selectedTransaction.status !== "pending") { %>
-            <%
-              const selectedCategory =
-                selectedTransaction.categoryValue ||
-                selectedTransaction.category;
-              const hasSelectedCategory = categories.some(
-                (category) => category.label === selectedCategory
-              );
-            %>
-            <section class="transaction-category-override" aria-labelledby="transaction-category-override-heading">
+          <% if (canOrganizeTransaction) { %>
+            <section class="transaction-organize" aria-labelledby="transaction-organize-heading">
               <div>
-                <h3 id="transaction-category-override-heading">Spending category</h3>
-                <p>Changes only this transaction. No automatic cleanup rule is created.</p>
+                <h3 id="transaction-organize-heading">Organize transaction</h3>
+                <p>One-time edits only. No automatic cleanup rule is created.</p>
               </div>
               <form
-                data-transaction-category-form
+                id="<%= transactionOrganizeFormId %>"
+                data-transaction-organize-form
                 data-transaction-id="<%= selectedTransaction.id %>"
               >
                 <label>
-                  <span class="sr-only">Spending category</span>
-                  <select name="category_primary" required>
-                    <% if (!hasSelectedCategory) { %>
-                      <option value="<%= selectedCategory %>" selected><%= selectedCategory %></option>
-                    <% } %>
-                    <% categories.forEach((category) => { %>
-                      <option value="<%= category.label %>" <%= category.label === selectedCategory ? "selected" : "" %>><%= category.label %></option>
-                    <% }) %>
+                  Merchant name
+                  <input
+                    name="display_name"
+                    maxlength="160"
+                    value="<%= selectedTransaction.displayName %>"
+                    data-initial-value="<%= selectedTransaction.displayName %>"
+                  >
+                </label>
+                <label>
+                  Tags
+                  <input
+                    name="tags"
+                    maxlength="400"
+                    value="<%= selectedTransaction.tags?.join(", ") || "" %>"
+                    data-initial-value="<%= selectedTransaction.tags?.join(", ") || "" %>"
+                    placeholder="household, reimbursable"
+                  >
+                </label>
+                <label>
+                  Spending treatment
+                  <select
+                    name="excluded_from_spending"
+                    data-initial-value="<%= String(Boolean(selectedTransaction.excludedFromSpending)) %>"
+                  >
+                    <option value="false" <%= !selectedTransaction.excludedFromSpending ? "selected" : "" %>>Include in spending</option>
+                    <option value="true" <%= selectedTransaction.excludedFromSpending ? "selected" : "" %>>Exclude from spending</option>
                   </select>
                 </label>
-                <button class="button button--secondary" type="submit">Save for this transaction</button>
-                <span class="form-status" role="status" data-transaction-category-status></span>
+                <div class="transaction-organize__footer">
+                  <span class="form-status" role="status" data-transaction-organize-status></span>
+                  <button class="button button--secondary" type="submit">Save changes</button>
+                </div>
               </form>
             </section>
             <a class="selected-detail__link" href="/format-rules?transaction=<%= encodeURIComponent(selectedTransaction.id) %>#transaction-cleanup">
@@ -305,10 +390,7 @@
               <% } %>
             </details>
           <% } %>
-        </div>
-        <strong><%= formatMoney(selectedTransaction.amount) %></strong>
-        <button class="icon-button" type="button" data-detail-dialog-close aria-label="Close transaction details"><i class="ph ph-x" aria-hidden="true"></i></button>
-      </section>
+      </div>
         </div>
       </dialog>
     <% } %>

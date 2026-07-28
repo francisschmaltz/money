@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { DEMO_IDS } from "../app/demo/fixtureIds.js";
 import { createDemoFinanceService } from "../app/services/demoFinanceService.js";
 
 const amount = (value) => value.amount_minor;
@@ -103,6 +104,51 @@ test("demo transactions expose the optimistic split version", async () => {
     ledger.data.transactions.every(
       (transaction) => transaction.split_version === 0,
     ),
+  );
+});
+
+test("demo transaction notes save optimistically and are searchable", async () => {
+  const service = createDemoFinanceService();
+  const ledger = await service.listTransactions({ status: "posted" });
+  const transaction = ledger.data.transactions.find(
+    (item) => item.id === "txn_whole_foods",
+  );
+
+  assert.equal(transaction.note_version, 1);
+  const saved = await service.updateTransactionNote(
+    {
+      transaction_id: transaction.id,
+      note: "  Split with Alex  ",
+      expected_note_version: 1,
+    },
+    { id: "member-1" },
+  );
+  assert.equal(saved.note, "Split with Alex");
+  assert.equal(saved.note_version, 2);
+
+  const filtered = await service.listTransactions({
+    status: "posted",
+    search: "Alex",
+  });
+  assert.deepEqual(
+    filtered.data.transactions.map((item) => item.id),
+    [transaction.id],
+  );
+  const global = await service.search("Alex", {
+    entityTypes: ["transaction"],
+  });
+  assert.deepEqual(
+    global.groups[0].items.map((item) => item.url),
+    [`/transactions?transaction=${transaction.id}`],
+  );
+
+  await assert.rejects(
+    service.updateTransactionNote({
+      transaction_id: transaction.id,
+      note: "Stale edit",
+      expected_note_version: 1,
+    }),
+    (error) => error.statusCode === 409,
   );
 });
 
@@ -513,4 +559,47 @@ test("demo cleanup contains rules match any normalized substring and yield to ex
     (transaction) => transaction.id === "txn_apple_services",
   );
   assert.equal(apple.display_name, "Exact billing");
+});
+
+test("demo bulk insight actions enforce subscription-only corrections", async () => {
+  const service = createDemoFinanceService();
+  const archived = await service.batchActOnFindings({
+    finding_ids: [
+      "finding_weekly_dining",
+      "finding_weekly_coffee",
+    ],
+    action: "archive",
+  });
+  assert.equal(archived.updated_count, 2);
+  assert.equal(archived.state, "archived");
+
+  const restoredFromWeb = await service.batchActOnFindings({
+    finding_ids: [
+      "ins_week_archive_001",
+      "ins_sub_archive_001",
+    ],
+    action: "restore",
+  });
+  assert.equal(restoredFromWeb.updated_count, 2);
+  assert.equal(restoredFromWeb.state, "active");
+
+  const corrected = await service.batchActOnFindings({
+    finding_ids: [
+      DEMO_IDS.insights.subscriptionDuplicate,
+      DEMO_IDS.insights.subscriptionExpensive,
+    ],
+    action: "report_incorrect",
+    reason_code: "not_subscription",
+  });
+  assert.equal(corrected.updated_count, 2);
+  assert.equal(corrected.reason_code, "not_subscription");
+
+  await assert.rejects(
+    service.batchActOnFindings({
+      finding_ids: ["finding_weekly_dining"],
+      action: "report_incorrect",
+      reason_code: "not_subscription",
+    }),
+    (error) => error.statusCode === 400,
+  );
 });

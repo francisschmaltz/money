@@ -519,6 +519,10 @@ const transactions = [
     raw_merchant: "WHOLE FOODS MKT #1024",
     raw_name: "WHOLE FOODS MKT #1024",
     display_name: "Whole Foods Market",
+    note: "Dinner supplies for the family visit",
+    note_version: 1,
+    note_updated_by: "demo-user",
+    note_updated_at: "2026-07-25T21:10:00.000Z",
     category: "Groceries",
     account: {
       id: "account_checking",
@@ -614,6 +618,10 @@ function cloneDemoTransaction(transaction) {
     raw_name: rawName,
     raw_category_primary: rawCategory,
     display_name: transaction.display_name ?? rawMerchant ?? rawName,
+    note: transaction.note ?? null,
+    note_version: Number(transaction.note_version ?? 0),
+    note_updated_by: transaction.note_updated_by ?? null,
+    note_updated_at: transaction.note_updated_at ?? null,
     category_primary: transaction.category_primary ?? rawCategory,
     tags: [...(transaction.tags ?? [])],
   };
@@ -926,6 +934,21 @@ export class DemoFinanceService {
   #manualAssetSequence = 1;
   #creditScoreSourceSequence = 3;
   #creditScoreObservationSequence = 5;
+  #insightStatus = {
+    state: "ready",
+    can_run: true,
+    pause_reasons: [],
+    freshness_data_as_of: DATA_AS_OF,
+    current_job_type: null,
+    last_run_at: "2026-07-27T09:02:00.000Z",
+    last_run_status: "succeeded",
+    last_error: null,
+    next_scheduled_at: "2026-07-28T09:00:00.000Z",
+    last_findings_generated_at: "2026-07-27T09:02:00.000Z",
+    active_count: 8,
+    archived_count: 2,
+    total_count: 10,
+  };
   #creditScoreSources = [
     {
       id: "score_source_amex",
@@ -1462,13 +1485,34 @@ export class DemoFinanceService {
     };
   }
 
-  async listTransactions({ status = "all", limit = 50 } = {}) {
+  async listTransactions({
+    status = "all",
+    search = null,
+    query = null,
+    limit = 50,
+  } = {}) {
+    const normalizedSearch = normalizedMatchText(search ?? query);
     const filtered = this.#transactions
       .filter((transaction) => {
         if (status === "pending") return transaction.pending;
         if (status === "posted") return !transaction.pending;
         return true;
       })
+      .filter(
+        (transaction) =>
+          !normalizedSearch ||
+          normalizedMatchText(
+            [
+              transaction.display_name,
+              transaction.raw_merchant,
+              transaction.raw_name,
+              transaction.category_primary,
+              transaction.tags.join(" "),
+              transaction.account.name,
+              transaction.note,
+            ].join(" "),
+          ).includes(normalizedSearch),
+      )
       .slice(0, limit)
       .map(publicDemoTransaction);
     return result({
@@ -1857,7 +1901,7 @@ export class DemoFinanceService {
         ]
           .filter(Boolean)
           .join(" · "),
-        searchText: `${transaction.display_name} ${transaction.raw_merchant} ${transaction.raw_name} ${transaction.category_primary} ${transaction.tags.join(" ")} ${transaction.account.name}`,
+        searchText: `${transaction.display_name} ${transaction.raw_merchant} ${transaction.raw_name} ${transaction.category_primary} ${transaction.tags.join(" ")} ${transaction.account.name} ${transaction.note ?? ""}`,
         url: `/transactions?transaction=${encodeURIComponent(transaction.id)}`,
         icon: "ph-receipt",
       })),
@@ -2312,8 +2356,194 @@ export class DemoFinanceService {
     };
   }
 
+  async updateTransactionNote(input = {}, actor = null) {
+    const transactionId = input.transactionId ?? input.transaction_id;
+    const transaction = this.#transactions.find(
+      (candidate) => candidate.id === transactionId,
+    );
+    if (!transaction) {
+      const error = new Error("Transaction not found");
+      error.statusCode = 404;
+      throw error;
+    }
+    const expectedVersion = Number(
+      input.expectedVersion ?? input.expected_note_version,
+    );
+    if (
+      !Number.isSafeInteger(expectedVersion) ||
+      expectedVersion < 0
+    ) {
+      const error = new TypeError(
+        "expected_note_version must be a non-negative integer",
+      );
+      error.statusCode = 400;
+      throw error;
+    }
+    if (expectedVersion !== Number(transaction.note_version ?? 0)) {
+      const error = new Error(
+        "This note changed after you opened it. Reload the current note before saving.",
+      );
+      error.statusCode = 409;
+      error.expose = true;
+      throw error;
+    }
+    if (input.note !== null && typeof input.note !== "string") {
+      const error = new TypeError("note must be a string or null");
+      error.statusCode = 400;
+      throw error;
+    }
+    const note = input.note == null ? null : input.note.trim() || null;
+    if (note && note.length > 2000) {
+      const error = new TypeError(
+        "note must be between 1 and 2000 characters",
+      );
+      error.statusCode = 400;
+      throw error;
+    }
+    transaction.note = note;
+    transaction.note_version = Number(transaction.note_version ?? 0) + 1;
+    transaction.note_updated_by = actor?.id ?? null;
+    transaction.note_updated_at = new Date().toISOString();
+    return {
+      transaction_id: transaction.id,
+      note: transaction.note,
+      note_version: transaction.note_version,
+      note_updated_by: transaction.note_updated_by,
+      note_updated_at: transaction.note_updated_at,
+    };
+  }
+
   async actOnFinding(input) {
     return { updated: true, finding: input };
+  }
+
+  async batchActOnFindings(input = {}) {
+    const findingIds = input.findingIds ?? input.finding_ids ?? [];
+    const requestedAction = input.action;
+    const action =
+      requestedAction === "dismiss"
+        ? "ignore"
+        : requestedAction === "mark_bad"
+          ? "report_incorrect"
+          : requestedAction;
+    const reasonCode =
+      input.reasonCode ??
+      input.reason_code ??
+      (requestedAction === "mark_bad"
+        ? "other_false_positive"
+        : null);
+    const findings = [
+      ...weeklyFindings.map((finding) => ({
+        ...finding,
+        family: "weekly",
+      })),
+      ...investmentFindings.map((finding) => ({
+        ...finding,
+        family: "investments",
+      })),
+      ...subscriptionFindings.map((finding) => ({
+        ...finding,
+        family: "subscriptions",
+      })),
+    ];
+    const findingById = new Map(
+      findings.map((finding) => [finding.id, finding]),
+    );
+    const webFindingAliases = new Map([
+      [DEMO_IDS.insights.weeklyDining, findings[0]],
+      [DEMO_IDS.insights.weeklyCoffee, findings[1]],
+      [DEMO_IDS.insights.weeklyTravel, findings[2]],
+      ["ins_inv_001", findings[3]],
+      ["ins_inv_002", findings[4]],
+      [DEMO_IDS.insights.subscriptionDuplicate, findings[5]],
+      [DEMO_IDS.insights.subscriptionExpensive, findings[6]],
+      ["ins_week_archive_001", findings[0]],
+      ["ins_sub_archive_001", findings[5]],
+    ]);
+    const selected = findingIds.map(
+      (findingId) =>
+        findingById.get(findingId) ??
+        webFindingAliases.get(findingId),
+    );
+    if (selected.some((finding) => !finding)) {
+      const error = new Error(
+        "One or more insight findings could not be found",
+      );
+      error.statusCode = 404;
+      throw error;
+    }
+    if (
+      reasonCode === "not_subscription" &&
+      selected.some(
+        (finding) =>
+          finding.family !== "subscriptions" ||
+          !finding.evidence?.some((entry) =>
+            ["recurring", "recurring_stream"].includes(
+              entry.entity_type,
+            ),
+          ),
+      )
+    ) {
+      const error = new TypeError(
+        "Not a subscription only applies to subscription insights with recurring evidence",
+      );
+      error.statusCode = 400;
+      throw error;
+    }
+    return {
+      updated: true,
+      demo: true,
+      action,
+      state: {
+        archive: "archived",
+        ignore: "dismissed",
+        report_incorrect: "bad",
+        restore: "active",
+      }[action],
+      updated_count: selected.length,
+      finding_ids: findingIds,
+      ...(reasonCode ? { reason_code: reasonCode } : {}),
+    };
+  }
+
+  async getInsightStatus() {
+    return structuredClone(this.#insightStatus);
+  }
+
+  async forceRunInsights() {
+    const completedAt = new Date().toISOString();
+    this.#insightStatus = {
+      ...this.#insightStatus,
+      state: "ready",
+      can_run: true,
+      last_run_at: completedAt,
+      last_run_status: "succeeded",
+      last_findings_generated_at: completedAt,
+    };
+    return {
+      queued: true,
+      demo: true,
+      status: "queued",
+    };
+  }
+
+  async clearInsights() {
+    this.#insightStatus = {
+      ...this.#insightStatus,
+      active_count: 0,
+      archived_count: 0,
+      total_count: 0,
+      last_findings_generated_at: null,
+    };
+    return {
+      cleared: true,
+      demo: true,
+      findings_deleted: 10,
+      narratives_deleted: 3,
+      search_documents_deleted: 10,
+      feedback_preserved: true,
+      recurring_corrections_preserved: true,
+    };
   }
 
   async updateRecurringClassification(input) {

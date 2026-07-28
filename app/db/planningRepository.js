@@ -970,7 +970,9 @@ export class PgPlanningRepository {
             ) AS category,
             amount_minor,
             currency_code,
-            effective_month_on
+            effective_month_on,
+            tracking_mode,
+            is_removed
           FROM budget_default_revisions
           WHERE workspace_id = $1
             AND effective_month_on <= $2
@@ -991,7 +993,8 @@ export class PgPlanningRepository {
               category_id
             ) AS category,
             amount_minor,
-            currency_code
+            currency_code,
+            tracking_mode
           FROM budget_lines
           WHERE workspace_id = $1
             AND month_on = $2
@@ -1005,6 +1008,11 @@ export class PgPlanningRepository {
           COALESCE(overrides.category, defaults.category) AS category,
           COALESCE(overrides.amount_minor, defaults.amount_minor) AS amount_minor,
           COALESCE(overrides.currency_code, defaults.currency_code) AS currency_code,
+          COALESCE(
+            overrides.tracking_mode,
+            defaults.tracking_mode,
+            'tracked'
+          ) AS tracking_mode,
           (overrides.category IS NOT NULL) AS exact_month,
           defaults.effective_month_on,
           COALESCE(category_version.version, 0) AS version
@@ -1012,13 +1020,12 @@ export class PgPlanningRepository {
         FULL OUTER JOIN overrides USING (category_id)
         LEFT JOIN budget_category_versions category_version
           ON category_version.workspace_id = $1
-         AND active_spending_category_id(
-           category_version.workspace_id,
-           category_version.category_id
-         ) = COALESCE(
+         AND category_version.category_id = COALESCE(
            overrides.category_id,
            defaults.category_id
          )
+        WHERE COALESCE(defaults.is_removed, false) = false
+          OR overrides.category_id IS NOT NULL
         ORDER BY category
       `,
       [workspaceId, monthOn, includeExact],
@@ -1078,28 +1085,39 @@ export class PgPlanningRepository {
             workspace_id,
             month_on,
             category,
+            category_id,
             amount_minor,
             currency_code,
+            tracking_mode,
             updated_by
           )
           SELECT
             $1,
             $2,
             resolved.category,
+            resolved.category_id,
             resolved.amount_minor,
             resolved.currency_code,
+            resolved.tracking_mode,
             $3
           FROM (
-            SELECT DISTINCT ON (category)
-              category,
+            SELECT DISTINCT ON (category_id)
+              category_id,
+              spending_category_name_for_id(
+                workspace_id,
+                category_id
+              ) AS category,
               amount_minor,
-              currency_code
+              currency_code,
+              tracking_mode,
+              is_removed
             FROM budget_default_revisions
             WHERE workspace_id = $1
               AND effective_month_on <= $2
-            ORDER BY category, effective_month_on DESC
+            ORDER BY category_id, effective_month_on DESC
           ) resolved
-          ON CONFLICT (workspace_id, month_on, category) DO NOTHING
+          WHERE resolved.is_removed = false
+          ON CONFLICT (workspace_id, month_on, category_id) DO NOTHING
         `,
         [workspaceId, monthOn, actorId],
       );
@@ -1113,7 +1131,9 @@ export class PgPlanningRepository {
       monthOn,
       effectiveMonthOn,
       category,
+      categoryId = null,
       amountMinor,
+      trackingMode = "tracked",
       scope,
       expectedVersion,
       auditEventId,
@@ -1132,10 +1152,13 @@ export class PgPlanningRepository {
           SELECT version
           FROM budget_category_versions
           WHERE workspace_id = $1
-            AND category_id = spending_category_id_for_label($1, $2)
+            AND category_id = COALESCE(
+              active_spending_category_id($1, $2),
+              spending_category_id_for_label($1, $3)
+            )
           FOR UPDATE
         `,
-        [workspaceId, category],
+        [workspaceId, categoryId, category],
       );
       const currentVersion = Number(
         versionResult.rows[0]?.version ?? 0,
@@ -1150,9 +1173,15 @@ export class PgPlanningRepository {
         return {
           conflict: true,
           current:
+            currentLines.find(
+              (line) =>
+                line.category_id ===
+                (categoryId ??
+                  versionResult.rows[0]?.category_id),
+            ) ??
             currentLines.find((line) => line.category === category) ?? {
               category,
-              category_id: null,
+              category_id: categoryId,
               amount_minor: null,
               currency_code: "USD",
               version: currentVersion,
@@ -1182,7 +1211,11 @@ export class PgPlanningRepository {
               client,
               { includeExact: false },
             )
-          ).find((line) => line.category === category) ?? null;
+          ).find(
+            (line) =>
+              line.category_id === categoryId ||
+              (!categoryId && line.category === category),
+          ) ?? null;
       } else {
         const before = await client.query(
           `
@@ -1196,14 +1229,17 @@ export class PgPlanningRepository {
                 category_id
               ) AS category_id,
               amount_minor,
-              currency_code
+              currency_code,
+              tracking_mode
             FROM ${table}
             WHERE workspace_id = $1
               AND ${dateColumn} = $2
-              AND category_id =
-                spending_category_id_for_label($1, $3)
+              AND category_id = COALESCE(
+                active_spending_category_id($1, $3),
+                spending_category_id_for_label($1, $4)
+              )
           `,
-          [workspaceId, dateValueInput, category],
+          [workspaceId, dateValueInput, categoryId, category],
         );
         beforeValue = before.rows[0]
           ? mapBudgetLine({
@@ -1214,18 +1250,33 @@ export class PgPlanningRepository {
       }
       const result = await client.query(
         `
-          INSERT INTO ${table} (
-            workspace_id,
-            ${dateColumn},
-            category,
-            amount_minor,
-            currency_code,
-            updated_by
+            INSERT INTO ${table} (
+              workspace_id,
+              ${dateColumn},
+              category,
+              category_id,
+              amount_minor,
+              currency_code,
+              tracking_mode,
+              ${isRevision ? "is_removed," : ""}
+              updated_by
+            )
+          VALUES (
+            $1, $2, $3,
+            COALESCE(
+              active_spending_category_id($1, $4),
+              spending_category_id_for_label($1, $3)
+            ),
+            $5, 'USD', $6,
+            ${isRevision ? "false," : ""}
+            $7
           )
-          VALUES ($1, $2, $3, $4, 'USD', $5)
-          ON CONFLICT (workspace_id, category, ${dateColumn})
+          ON CONFLICT (workspace_id, category_id, ${dateColumn})
           DO UPDATE SET
             amount_minor = EXCLUDED.amount_minor,
+            category = EXCLUDED.category,
+            tracking_mode = EXCLUDED.tracking_mode,
+            ${isRevision ? "is_removed = false," : ""}
             updated_by = EXCLUDED.updated_by,
             updated_at = now()
           RETURNING
@@ -1238,25 +1289,41 @@ export class PgPlanningRepository {
               category_id
             ) AS category_id,
             amount_minor,
-            currency_code
+            currency_code,
+            tracking_mode
         `,
-        [workspaceId, dateValueInput, category, amountMinor, actor.id],
+        [
+          workspaceId,
+          dateValueInput,
+          category,
+          categoryId,
+          amountMinor,
+          trackingMode,
+          actor.id,
+        ],
       );
       const version = await client.query(
         `
           INSERT INTO budget_category_versions (
-            workspace_id,
-            category,
-            version
+            workspace_id, category, category_id, version
           )
-          VALUES ($1, $2, 1)
-          ON CONFLICT (workspace_id, category)
+          VALUES (
+            $1,
+            $2,
+            COALESCE(
+              active_spending_category_id($1, $3),
+              spending_category_id_for_label($1, $2)
+            ),
+            1
+          )
+          ON CONFLICT (workspace_id, category_id)
           DO UPDATE SET
+            category = EXCLUDED.category,
             version = budget_category_versions.version + 1,
             updated_at = now()
           RETURNING category_id, version
         `,
-        [workspaceId, category],
+        [workspaceId, category, categoryId],
       );
       const after = mapBudgetLine({
         ...result.rows[0],
@@ -1272,7 +1339,7 @@ export class PgPlanningRepository {
               ? "budget.default_set"
               : "budget.month_set",
         subjectType: "budget_line",
-        subjectId: `${dateValueInput}:${category}`,
+        subjectId: `${dateValueInput}:${after.category_id}`,
         actor,
         before: beforeValue,
         after,
@@ -1283,6 +1350,253 @@ export class PgPlanningRepository {
         line: after,
         audit_event_id: auditId,
       };
+    });
+  }
+
+  async removeBudgetLine(
+    workspaceId,
+    {
+      effectiveMonthOn,
+      categoryId,
+      expectedVersion,
+      auditEventId,
+    },
+    actor,
+  ) {
+    return this.withWorkspacePlanningLock(workspaceId, async (client) => {
+      const categoryResult = await client.query(
+        `
+          SELECT
+            category.id,
+            spending_category_name_for_id(
+              category.workspace_id,
+              category.id
+            ) AS category
+          FROM spending_categories category
+          WHERE category.workspace_id = $1
+            AND category.id = active_spending_category_id($1, $2)
+        `,
+        [workspaceId, categoryId],
+      );
+      const target = categoryResult.rows[0];
+      if (!target) return null;
+      const versionResult = await client.query(
+        `
+          SELECT version
+          FROM budget_category_versions
+          WHERE workspace_id = $1 AND category_id = $2
+          FOR UPDATE
+        `,
+        [workspaceId, target.id],
+      );
+      const currentVersion = Number(versionResult.rows[0]?.version ?? 0);
+      if (currentVersion !== expectedVersion) {
+        return { conflict: true, current_version: currentVersion };
+      }
+      const descendants = await client.query(
+        `
+          SELECT descendant.category_id
+          FROM spending_category_descendant_ids($1, $2) descendant
+          JOIN budget_default_revisions revision
+            ON revision.workspace_id = $1
+           AND revision.category_id = descendant.category_id
+          GROUP BY descendant.category_id
+        `,
+        [workspaceId, target.id],
+      );
+      const descendantIds = new Set(
+        descendants.rows.map((entry) => entry.category_id),
+      );
+      const before = (
+        await this.listResolvedBudgetLines(
+          workspaceId,
+          effectiveMonthOn,
+          client,
+          { includeExact: false },
+        )
+      ).filter((line) => descendantIds.has(line.category_id));
+      if (
+        !before.some((line) => line.category_id === target.id)
+      ) {
+        return { noop: true, audit_event_id: null };
+      }
+      for (const entry of descendants.rows) {
+        const path = await client.query(
+          `SELECT spending_category_name_for_id($1, $2) AS category`,
+          [workspaceId, entry.category_id],
+        );
+        await client.query(
+          `
+            INSERT INTO budget_default_revisions (
+              workspace_id, category, category_id, effective_month_on,
+              amount_minor, currency_code, tracking_mode, is_removed,
+              updated_by
+            )
+            VALUES ($1, $2, $3, $4, 0, 'USD', 'tracked', true, $5)
+            ON CONFLICT (
+              workspace_id, category_id, effective_month_on
+            )
+            DO UPDATE SET
+              category = EXCLUDED.category,
+              amount_minor = 0,
+              tracking_mode = 'tracked',
+              is_removed = true,
+              updated_by = EXCLUDED.updated_by,
+              updated_at = now()
+          `,
+          [
+            workspaceId,
+            path.rows[0]?.category ?? target.category,
+            entry.category_id,
+            effectiveMonthOn,
+            actor.id,
+          ],
+        );
+        await client.query(
+          `
+            INSERT INTO budget_category_versions (
+              workspace_id, category, category_id, version
+            )
+            VALUES ($1, $2, $3, 1)
+            ON CONFLICT (workspace_id, category_id)
+            DO UPDATE SET
+              category = EXCLUDED.category,
+              version = budget_category_versions.version + 1,
+              updated_at = now()
+          `,
+          [
+            workspaceId,
+            path.rows[0]?.category ?? target.category,
+            entry.category_id,
+          ],
+        );
+      }
+      const auditId = await insertAudit(client, {
+        id: auditEventId,
+        workspaceId,
+        eventType: "budget.standing_removed",
+        subjectType: "budget_line",
+        subjectId: `${effectiveMonthOn}:${target.id}`,
+        actor,
+        before,
+        after: null,
+      });
+      return { before, after: null, audit_event_id: auditId };
+    });
+  }
+
+  async getBudgetSettings(workspaceId = DEFAULT_WORKSPACE_ID) {
+    const result = await this.#client().query(
+      `
+        WITH income_categories AS (
+          SELECT DISTINCT
+            active_spending_category_id(
+              workspace_id,
+              category_id
+            ) AS category_id
+          FROM budget_income_categories
+          WHERE workspace_id = $1
+        )
+        SELECT
+          COALESCE(settings.version, 0) AS version,
+          COALESCE(
+            jsonb_agg(income.category_id ORDER BY income.category_id)
+              FILTER (WHERE income.category_id IS NOT NULL),
+            '[]'::jsonb
+          ) AS income_category_ids
+        FROM budget_settings settings
+        LEFT JOIN income_categories income ON true
+        WHERE settings.workspace_id = $1
+        GROUP BY settings.version
+      `,
+      [workspaceId],
+    );
+    return {
+      version: Number(result.rows[0]?.version ?? 0),
+      income_category_ids: result.rows[0]?.income_category_ids ?? [],
+    };
+  }
+
+  async replaceBudgetIncomeCategories(
+    workspaceId,
+    { categoryIds, expectedVersion, auditEventId },
+    actor,
+  ) {
+    return this.withWorkspacePlanningLock(workspaceId, async (client) => {
+      await client.query(
+        `
+          INSERT INTO budget_settings (workspace_id)
+          VALUES ($1)
+          ON CONFLICT (workspace_id) DO NOTHING
+        `,
+        [workspaceId],
+      );
+      const current = await client.query(
+        `
+          SELECT version
+          FROM budget_settings
+          WHERE workspace_id = $1
+          FOR UPDATE
+        `,
+        [workspaceId],
+      );
+      if (Number(current.rows[0]?.version ?? 0) !== expectedVersion) {
+        return { conflict: true };
+      }
+      const before = await client.query(
+        `
+          SELECT category_id
+          FROM budget_income_categories
+          WHERE workspace_id = $1
+          ORDER BY category_id
+        `,
+        [workspaceId],
+      );
+      await client.query(
+        `DELETE FROM budget_income_categories WHERE workspace_id = $1`,
+        [workspaceId],
+      );
+      if (categoryIds.length) {
+        await client.query(
+          `
+            INSERT INTO budget_income_categories (
+              workspace_id, category_id
+            )
+            SELECT $1, category_id
+            FROM unnest($2::text[]) category_id
+          `,
+          [workspaceId, categoryIds],
+        );
+      }
+      const updated = await client.query(
+        `
+          UPDATE budget_settings
+          SET version = version + 1,
+              updated_by = $2,
+              updated_at = now()
+          WHERE workspace_id = $1
+          RETURNING version
+        `,
+        [workspaceId, actor.id],
+      );
+      const after = {
+        income_category_ids: categoryIds,
+        version: Number(updated.rows[0].version),
+      };
+      const auditId = await insertAudit(client, {
+        id: auditEventId,
+        workspaceId,
+        eventType: "budget.income_categories_set",
+        subjectType: "budget_settings",
+        subjectId: workspaceId,
+        actor,
+        before: {
+          income_category_ids: before.rows.map((row) => row.category_id),
+          version: expectedVersion,
+        },
+        after,
+      });
+      return { before, after, settings: after, audit_event_id: auditId };
     });
   }
 
@@ -1321,32 +1635,55 @@ export class PgPlanningRepository {
               workspace_id,
               month_on,
               category,
+              category_id,
               amount_minor,
               currency_code,
+              tracking_mode,
               updated_by
             )
-            VALUES ($1, $2, $3, $4, 'USD', $5)
+            VALUES (
+              $1, $2, $3,
+              COALESCE(
+                active_spending_category_id($1, $4),
+                spending_category_id_for_label($1, $3)
+              ),
+              $5, 'USD', $6, $7
+            )
           `,
-          [workspaceId, monthOn, line.category, line.amount_minor, actor.id],
+          [
+            workspaceId,
+            monthOn,
+            line.category,
+            line.category_id ?? null,
+            line.amount_minor,
+            line.tracking_mode ?? "tracked",
+            actor.id,
+          ],
         );
       }
       const changedCategories = [
         ...new Set(
-          before.concat(lines).map((line) => line.category),
+          before.concat(lines).map((line) => line.category_id),
         ),
-      ];
+      ].filter(Boolean);
       if (changedCategories.length > 0) {
         await client.query(
           `
             INSERT INTO budget_category_versions (
               workspace_id,
               category,
+              category_id,
               version
             )
-            SELECT $1, category, 1
-            FROM unnest($2::text[]) category
-            ON CONFLICT (workspace_id, category)
+            SELECT
+              $1,
+              spending_category_name_for_id($1, category_id),
+              category_id,
+              1
+            FROM unnest($2::text[]) category_id
+            ON CONFLICT (workspace_id, category_id)
             DO UPDATE SET
+              category = EXCLUDED.category,
               version = budget_category_versions.version + 1,
               updated_at = now()
           `,
@@ -2263,6 +2600,7 @@ function mapBudgetLine(row) {
     category: row.category,
     amount_minor: integer(row.amount_minor),
     currency_code: row.currency_code ?? "USD",
+    tracking_mode: row.tracking_mode ?? "tracked",
     version: Number(row.version ?? 0),
     exact_month: Boolean(row.exact_month),
     effective_month_on: row.effective_month_on

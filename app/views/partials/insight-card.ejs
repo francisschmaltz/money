@@ -2,6 +2,10 @@
   const showLifecycle =
     typeof lifecycleControls !== "undefined" && lifecycleControls;
   const compact = typeof compactInsight !== "undefined" && compactInsight;
+  const selectable =
+    typeof bulkSelectable !== "undefined" &&
+    bulkSelectable &&
+    viewer?.is_admin;
   const state = insight.state || "active";
   const returnView =
     typeof insightView !== "undefined" && insightView === "archive"
@@ -12,7 +16,19 @@
   class="insight-card insight-card--<%= insight.severity %><%= compact ? ' insight-card--compact' : '' %>"
   data-insight-card
   data-finding-id="<%= insight.id %>"
+  <% if (selectable) { %>data-bulk-insight-card<% } %>
 >
+  <% if (selectable) { %>
+    <label class="insight-select-control" hidden>
+      <input
+        type="checkbox"
+        value="<%= insight.id %>"
+        data-insight-select
+        data-insight-family="<%= insight.family %>"
+      >
+      <span class="sr-only">Select <%= insight.actionTitle || insight.title %></span>
+    </label>
+  <% } %>
   <h3><%= insight.actionTitle || insight.title %></h3>
   <% if (insight.timeframe) { %>
     <p class="insight-timeframe"><%= insight.timeframe %></p>
@@ -38,8 +54,9 @@
       <% } %>
       <% if (viewer?.is_admin) { %>
         <details class="insight-card__menu">
-          <summary class="icon-button" aria-label="More actions for <%= insight.actionTitle || insight.title %>">
-            <i class="ph ph-dots-three" aria-hidden="true"></i>
+          <summary class="button button--ghost insight-card__menu-trigger" aria-label="Actions for <%= insight.actionTitle || insight.title %>">
+            Actions
+            <i class="ph ph-caret-down" aria-hidden="true"></i>
           </summary>
           <div class="insight-card__menu-panel">
             <% if (state === "active") { %>

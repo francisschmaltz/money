@@ -106,7 +106,7 @@ test("Plaid OAuth callback renders a resumable authenticated return page", async
   assert.match(response.text, /data-page="plaid-oauth"/);
   assert.match(response.text, /data-plaid-oauth-return/);
   assert.match(response.text, /Returning to Plaid/);
-  assert.match(response.text, /\/js\/money\.js\?v=23/);
+  assert.match(response.text, /\/js\/money\.js\?v=25/);
   assert.doesNotMatch(response.text, /data-search-dialog/);
 });
 
@@ -250,6 +250,29 @@ test("dashboard places insights before spending", async () => {
     insightsPosition < spendingPosition,
     "expected Insights to render before Spend by category",
   );
+});
+
+test("dashboard insight actions are obvious to admins and absent for members", async () => {
+  const adminHtml = await render("dashboard");
+  assert.match(
+    adminHtml,
+    /aria-label="Actions for Spend less on Dining"[^>]*>\s*Actions/,
+  );
+  assert.match(adminHtml, /data-insight-action="archive"/);
+  assert.doesNotMatch(adminHtml, /data-bulk-insight-card/);
+  assert.doesNotMatch(adminHtml, /data-insight-bulk-start/);
+
+  const memberHtml = await render("dashboard", {
+    viewer: {
+      id: "member-1",
+      name: "Member",
+      email: "member@example.com",
+      initials: "MM",
+      is_admin: false,
+    },
+  });
+  assert.doesNotMatch(memberHtml, /data-insight-action=/);
+  assert.doesNotMatch(memberHtml, /aria-label="Actions for /);
 });
 
 test("dashboard replaces stale insight promotion with a dismissible notification", async () => {
@@ -439,7 +462,7 @@ test("transaction ledger supports selecting rows and choosing bulk overrides", a
   assert.doesNotMatch(memberHtml, /data-bulk-edit-dialog/);
 });
 
-test("selected transactions can change one category without creating a rule", async () => {
+test("selected transactions expose notes and one-time organization", async () => {
   const html = await render("transactions", {
     pageTitle: "Transactions",
     activePath: "/transactions",
@@ -451,12 +474,16 @@ test("selected transactions can change one category without creating a rule", as
     /href="\/format-rules\?transaction=txn_whole_foods#transaction-cleanup"/,
   );
   assert.match(html, /Edit similar transactions or create a rule/);
-  assert.match(html, /data-transaction-category-form/);
+  assert.match(html, /data-transaction-note-form/);
+  assert.match(html, /maxlength="2000"/);
+  assert.match(html, /data-transaction-organize-form/);
+  assert.match(html, /data-transaction-organize-category/);
   assert.match(html, /data-transaction-id="txn_whole_foods"/);
-  assert.match(html, /Save for this transaction/);
+  assert.match(html, /Save note/);
+  assert.match(html, /Save changes/);
   assert.match(
     html,
-    /Changes only this transaction\. No automatic cleanup rule is created\./,
+    /One-time edits only\. No automatic cleanup rule is created\./,
   );
   assert.match(
     html,
@@ -814,6 +841,47 @@ test("settings exposes account grouping and manual asset CRUD controls", async (
   assert.doesNotMatch(html, /data-cleanup-search/);
   assert.doesNotMatch(html, /data-cleanup-rules/);
   assert.doesNotMatch(html, /data-category-manager/);
+});
+
+test("settings shows insight status, timestamps, and admin run and clear controls", async () => {
+  const html = await render("settings", {
+    pageTitle: "Settings",
+    activePath: "/settings",
+    insightStatus: {
+      state: "paused",
+      can_run: false,
+      pause_reasons: [
+        {
+          message: "Everyday checking has not finished syncing.",
+        },
+      ],
+      last_run_at: "2026-07-28T09:00:00.000Z",
+      last_run_status: "succeeded",
+      next_scheduled_at: "2026-07-29T09:00:00.000Z",
+      last_findings_generated_at: "2026-07-28T09:00:01.000Z",
+      active_count: 4,
+      archived_count: 2,
+      total_count: 6,
+    },
+  });
+
+  assert.match(html, /href="#insights">Insights</);
+  assert.match(html, /<h2>Insight status<\/h2>/);
+  assert.match(html, />\s*Paused\s*</);
+  assert.match(html, /Why it’s paused/);
+  assert.match(html, /Everyday checking has not finished syncing\./);
+  assert.match(html, /<dt>Last run<\/dt>/);
+  assert.match(html, /Job succeeded/);
+  assert.match(html, /<dt>Next scheduled run<\/dt>/);
+  assert.match(html, /4 active · 2 archived/);
+  assert.match(html, /data-insights-run/);
+  assert.match(html, />\s*Run insights now\s*</);
+  assert.match(html, /data-insights-clear/);
+  assert.match(html, />\s*Clear all insights\s*</);
+  assert.match(
+    html,
+    /Feedback, ignored patterns, and recurring corrections will stay/,
+  );
 });
 
 test("Format Rules manages nested spending categories without visibility switches", async () => {
@@ -1224,6 +1292,23 @@ test("active insights lead with actions and keep lifecycle controls compact", as
   assert.equal((html.match(/class="insight-summary card"/g) ?? []).length, 1);
   assert.match(html, /aria-label="Insight status"/);
   assert.match(html, /href="\/insights" aria-current="page"/);
+  assert.match(html, /data-bulk-insights data-insight-view="active"/);
+  assert.match(html, /data-insight-bulk-start/);
+  assert.match(html, />\s*Select multiple\s*</);
+  assert.match(html, /data-insight-selection-bar[\s\S]*?hidden/);
+  assert.match(html, /data-bulk-insight-card/);
+  assert.match(html, /class="insight-select-control" hidden/);
+  assert.match(html, />Select Spend less on Dining</);
+  assert.match(html, /data-insight-select-all/);
+  assert.match(html, /data-insight-bulk-action/);
+  assert.match(html, /<option value="archive">Archive<\/option>/);
+  assert.match(html, /<option value="ignore">Ignore similar<\/option>/);
+  assert.match(
+    html,
+    /<option value="report_incorrect">Incorrect<\/option>/,
+  );
+  assert.match(html, /data-insight-bulk-reason/);
+  assert.doesNotMatch(html, /<option value="restore">Restore<\/option>/);
   assert.match(html, /id="review-now"/);
   assert.match(html, /id="spend-less"/);
   assert.match(html, /id="change-a-habit"/);
@@ -1234,6 +1319,10 @@ test("active insights lead with actions and keep lifecycle controls compact", as
   assert.match(html, />Investment risk</);
   assert.match(html, /<h3>Spend less on Dining<\/h3>[\s\S]*?Jul 19–25 vs Jul 12–18[\s\S]*?You spent \$126 more/);
   assert.match(html, /class="button button--secondary insight-card__solve"/);
+  assert.match(
+    html,
+    /aria-label="Actions for Spend less on Dining"[^>]*>\s*Actions/,
+  );
   assert.match(html, /data-insight-action="archive"/);
   assert.match(html, /data-insight-action="ignore"/);
   assert.match(html, /data-insight-action="report_incorrect"/);
@@ -1245,6 +1334,17 @@ test("active insights lead with actions and keep lifecycle controls compact", as
     html,
     /class="insight-card__topline"|class="tag">Spend less/,
   );
+
+  const memberHtml = await render("insights", {
+    pageTitle: "Insights",
+    activePath: "/insights",
+    insightView: "active",
+    viewer: { ...demo.viewer, is_admin: false },
+  });
+  assert.doesNotMatch(memberHtml, /data-insight-bulk-start/);
+  assert.doesNotMatch(memberHtml, /data-insight-selection-bar/);
+  assert.doesNotMatch(memberHtml, /data-bulk-insight-card/);
+  assert.doesNotMatch(memberHtml, /data-insight-select/);
 });
 
 test("stale insights use the shared dismissible notification", async () => {
@@ -1272,6 +1372,11 @@ test("insight archive exposes restore, incorrect, and confirmed delete actions",
   assert.match(html, /href="\/insights\?view=archive" aria-current="page"/);
   assert.match(html, /Past findings stay here, out of your way/);
   assert.match(html, /id="archive-heading"/);
+  assert.match(html, /data-insight-view="archive"/);
+  assert.match(html, /data-insight-bulk-start/);
+  assert.match(html, /<option value="restore">Restore<\/option>/);
+  assert.doesNotMatch(html, /<option value="archive">Archive<\/option>/);
+  assert.doesNotMatch(html, /<option value="ignore">Ignore similar<\/option>/);
   assert.match(html, /data-insight-action="restore"/);
   assert.match(html, /data-insight-action="report_incorrect"/);
   assert.match(html, /data-insight-action="delete"/);
@@ -1279,6 +1384,17 @@ test("insight archive exposes restore, incorrect, and confirmed delete actions",
   assert.match(html, />Archived</);
   assert.match(html, />Incorrect</);
   assert.doesNotMatch(html, /id="review-now"/);
+
+  const memberHtml = await render("insights", {
+    pageTitle: "Insights",
+    activePath: "/insights",
+    insights: demo.archivedInsights,
+    insightView: "archive",
+    insightData: { view: "archive" },
+    viewer: { ...demo.viewer, is_admin: false },
+  });
+  assert.doesNotMatch(memberHtml, /data-insight-bulk-start/);
+  assert.doesNotMatch(memberHtml, /data-bulk-insight-card/);
 });
 
 test("recurring view includes functional monthly and annual values", async () => {
@@ -1290,6 +1406,8 @@ test("recurring view includes functional monthly and annual values", async () =>
   assert.match(html, /data-period="annual"/);
   assert.match(html, /data-monthly="\$85\.64"/);
   assert.match(html, /data-annual="\$1,027\.68"/);
+  assert.match(html, /Utilities/);
+  assert.doesNotMatch(html, /Inactive recurring payments/);
 });
 
 test("recurring view separates frequent spending and opens classification evidence in a modal", async () => {
@@ -1305,6 +1423,7 @@ test("recurring view separates frequent spending and opens classification eviden
     state: "active",
     next: "2026-08-01",
     type: "frequent_spending",
+    category: "Transportation",
     detectedType: "frequent_spending",
     classificationSignals: {
       classification_confidence_basis_points: 9_000,
@@ -1327,6 +1446,7 @@ test("recurring view separates frequent spending and opens classification eviden
 
   assert.match(html, /id="frequent-spending-heading"/);
   assert.match(html, /Repeated discretionary merchants/);
+  assert.match(html, /Transportation/);
   assert.match(html, /data-detail-query-key="item"/);
   assert.match(
     html,

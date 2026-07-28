@@ -95,6 +95,36 @@ test("transaction metadata migration keeps user metadata separate and workspace 
   );
 });
 
+test("transaction notes are versioned, searchable metadata", async () => {
+  const migration = await readFile(
+    fileURLToPath(
+      new URL(
+        "../migrations/024_transaction_notes.sql",
+        import.meta.url,
+      ),
+    ),
+    "utf8",
+  );
+
+  assert.match(migration, /ADD COLUMN note text/);
+  assert.match(
+    migration,
+    /ADD COLUMN note_version integer NOT NULL DEFAULT 0/,
+  );
+  assert.match(
+    migration,
+    /ADD COLUMN note_updated_by text REFERENCES users\(id\)/,
+  );
+  assert.match(
+    migration,
+    /note = btrim\(note\)[\s\S]*char_length\(note\) BETWEEN 1 AND 2000/,
+  );
+  assert.match(
+    migration,
+    /transaction_metadata_note_trgm_idx[\s\S]*gin_trgm_ops/,
+  );
+});
+
 test("transaction sync inserts and updates normalized provider names", async () => {
   const db = fakePool();
   const repository = new PgFinanceRepository(db.pool);
@@ -130,4 +160,49 @@ test("transaction sync inserts and updates normalized provider names", async () 
     /normalized_name = EXCLUDED\.normalized_name/,
   );
   assert.equal(JSON.parse(insert.params[0])[0].normalized_name, "cafe");
+});
+
+test("transaction sync carries a pending note to its posted replacement before deletion", async () => {
+  const db = fakePool();
+  const repository = new PgFinanceRepository(db.pool);
+
+  await repository.applyTransactionSync({
+    itemId: "item-1",
+    added: [
+      {
+        id: "posted-transaction",
+        provider_account_id: "provider-account-1",
+        provider_transaction_id: "posted-provider-id",
+        provider_pending_transaction_id: "pending-provider-id",
+        name: "Restaurant",
+        normalized_name: "restaurant",
+        amount_minor: -4_200,
+        currency_code: "USD",
+        posted_on: "2026-07-27",
+        pending: false,
+        excluded_from_spending: false,
+      },
+    ],
+    cursor: "cursor-1",
+  });
+
+  const copyIndex = db.calls.findIndex((call) =>
+    call.sql.includes("INSERT INTO transaction_metadata"),
+  );
+  const deleteIndex = db.calls.findIndex((call) =>
+    call.sql.includes("DELETE FROM transactions pending"),
+  );
+  assert.ok(copyIndex >= 0);
+  assert.ok(deleteIndex > copyIndex);
+  assert.match(
+    db.calls[copyIndex].sql,
+    /pending_metadata\.note[\s\S]*pending_metadata\.note_version/,
+  );
+  assert.match(
+    db.calls[copyIndex].sql,
+    /WHERE transaction_metadata\.note IS NULL[\s\S]*transaction_metadata\.note_version = 0/,
+  );
+  assert.deepEqual(db.calls[copyIndex].params, [
+    ["pending-provider-id"],
+  ]);
 });

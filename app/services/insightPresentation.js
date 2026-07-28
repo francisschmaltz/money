@@ -30,6 +30,7 @@ export function presentInsightForWeb(
 ) {
   const typeKey = insightTypeKey(finding);
   const state = finding.state ?? "active";
+  const evidence = normalizeEvidence(finding.evidence);
   const actions = normalizeActions(finding.actions);
   const actionTitle =
     finding.actionTitle ??
@@ -41,6 +42,10 @@ export function presentInsightForWeb(
     finding.explanation ??
     "";
   const solveAction =
+    evidenceSolveAction(
+      { ...finding, actionTitle, typeKey, family },
+      evidence,
+    ) ??
     normalizeSolveAction(finding.solveAction) ??
     deterministicSolveAction({ ...finding, typeKey, family }, actions);
 
@@ -60,6 +65,7 @@ export function presentInsightForWeb(
     lifecycleLabel: lifecycleLabel(state),
     bucket: insightBucket({ ...finding, typeKey, family }),
     isDemoted: PURE_CONTEXT_TYPES.has(typeKey),
+    evidence,
     actions,
     generatedAt: finding.generatedAt ?? finding.generated_at ?? null,
   };
@@ -257,6 +263,128 @@ function deterministicSolveAction(finding, actions) {
     label: solveLabel(finding.typeKey, finding.family),
     webUrl: sameHostPath(webUrl),
   };
+}
+
+function evidenceSolveAction(finding, evidence) {
+  const recurring = uniqueEvidence(
+    evidence.filter((entry) =>
+      ["recurring", "recurring_stream"].includes(entry.entity_type),
+    ),
+  );
+  const holdings = uniqueEvidence(
+    evidence.filter((entry) => entry.entity_type === "holding"),
+  );
+  const objects = [...recurring, ...holdings];
+
+  if (objects.length === 1) {
+    return solveAction(finding, objects[0].web_url);
+  }
+  if (objects.length > 1) {
+    return solveAction(finding, insightDetailUrl(finding.id));
+  }
+
+  const transactions = uniqueEvidence(
+    evidence.filter((entry) => entry.entity_type === "transaction"),
+  );
+  if (transactions.length === 1) {
+    return solveAction(finding, transactions[0].web_url);
+  }
+  if (transactions.length > 1) {
+    const merchant = merchantFilter(finding, transactions);
+    return solveAction(
+      finding,
+      merchant
+        ? transactionFilterUrl(finding, merchant)
+        : insightDetailUrl(finding.id),
+    );
+  }
+  return null;
+}
+
+function solveAction(finding, webUrl) {
+  return {
+    type: "link",
+    label: solveLabel(finding.typeKey, finding.family),
+    webUrl: sameHostPath(webUrl),
+  };
+}
+
+function insightDetailUrl(findingId) {
+  return findingId
+    ? `/insights?finding=${encodeURIComponent(findingId)}`
+    : "/insights";
+}
+
+function transactionFilterUrl(finding, merchant) {
+  const query = new URLSearchParams({ q: merchant });
+  if (finding.period_start && finding.period_end) {
+    query.set("start", String(finding.period_start).slice(0, 10));
+    query.set("end", String(finding.period_end).slice(0, 10));
+  }
+  return `/transactions?${query.toString()}`;
+}
+
+function merchantFilter(finding, transactions) {
+  const titleMerchant =
+    capture(finding.actionTitle ?? "", /^Spend less at (.+)$/i) ??
+    capture(finding.actionTitle ?? "", /^Make fewer stops at (.+)$/i) ??
+    capture(finding.title ?? "", /^Spending rose at (.+)$/i) ??
+    capture(finding.title ?? "", /^More frequent spending at (.+)$/i);
+  if (titleMerchant) return titleMerchant;
+
+  const labels = new Set(
+    transactions
+      .map((entry) => String(entry.label ?? "").trim())
+      .filter(Boolean),
+  );
+  return labels.size === 1 ? [...labels][0] : null;
+}
+
+function uniqueEvidence(evidence) {
+  const seen = new Set();
+  return evidence.filter((entry) => {
+    const key = `${entry.entity_type}:${entry.entity_id}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function normalizeEvidence(evidence) {
+  if (!Array.isArray(evidence)) return [];
+  return evidence.map((entry) => {
+    const entityType = entry.entity_type ?? entry.entityType ?? null;
+    const entityId = entry.entity_id ?? entry.entityId ?? null;
+    return {
+      ...entry,
+      entity_type: entityType,
+      entity_id: entityId,
+      web_url: evidenceUrl({ ...entry, entityType, entityId }),
+    };
+  });
+}
+
+function evidenceUrl(entry) {
+  if (entry.entityType === "transaction" && entry.entityId) {
+    return `/transactions?transaction=${encodeURIComponent(entry.entityId)}`;
+  }
+  if (
+    ["recurring", "recurring_stream"].includes(entry.entityType) &&
+    entry.entityId
+  ) {
+    return `/recurring?item=${encodeURIComponent(entry.entityId)}`;
+  }
+  if (entry.entityType === "holding") {
+    const selectionKey =
+      entry.selection_key ??
+      entry.selectionKey ??
+      entry.label ??
+      entry.entityId;
+    if (selectionKey) {
+      return `/portfolio?holding=${encodeURIComponent(selectionKey)}`;
+    }
+  }
+  return sameHostPath(entry.web_url ?? entry.webUrl ?? "/insights");
 }
 
 function solveLabel(typeKey, family) {

@@ -53,6 +53,12 @@ const TRANSACTION_SORTS = new Set([
   "category",
   "cost",
 ]);
+const INSIGHT_INCORRECT_REASON_CODES = new Set([
+  "not_subscription",
+  "wrong_data",
+  "wrong_interpretation",
+  "other_false_positive",
+]);
 
 export class FinanceService {
   #repository;
@@ -1371,6 +1377,45 @@ export class FinanceService {
     };
   }
 
+  async updateTransactionNote(input = {}, actor = null) {
+    const transactionId = requiredId(
+      input.transactionId ?? input.transaction_id,
+      "transaction_id",
+    );
+    const expectedVersion = Number(
+      input.expectedVersion ?? input.expected_note_version,
+    );
+    if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 0) {
+      throw badRequest(
+        "expected_note_version must be a non-negative integer",
+      );
+    }
+    const rawNote = input.note;
+    if (rawNote !== null && typeof rawNote !== "string") {
+      throw badRequest("note must be a string or null");
+    }
+    const note =
+      rawNote == null || !rawNote.trim()
+        ? null
+        : boundedText(rawNote, "note", 2000);
+    const updated = await this.#repository.updateTransactionNote(
+      this.#workspaceId,
+      {
+        transactionId,
+        note,
+        expectedVersion,
+        userId: actor?.id ?? null,
+      },
+    );
+    if (!updated) throw notFound("Transaction not found");
+    if (updated.conflict) {
+      throw categoryConflict(
+        "This note changed after you opened it. Reload the current note before saving.",
+      );
+    }
+    return updated;
+  }
+
   async listTransactionCleanupRules(input = {}) {
     const result =
       await this.#repository.listTransactionCleanupRules(
@@ -1866,6 +1911,105 @@ export class FinanceService {
     };
   }
 
+  async batchActOnFindings(input = {}, actor = null) {
+    const rawFindingIds =
+      input.findingIds ?? input.finding_ids;
+    if (
+      !Array.isArray(rawFindingIds) ||
+      rawFindingIds.length < 1 ||
+      rawFindingIds.length > 100
+    ) {
+      throw badRequest(
+        "finding_ids must contain between 1 and 100 insight IDs",
+      );
+    }
+    const findingIds = rawFindingIds.map((findingId) =>
+      requiredId(findingId, "finding_id"),
+    );
+    if (new Set(findingIds).size !== findingIds.length) {
+      throw badRequest("finding_ids must be unique");
+    }
+
+    const requestedAction = input.action;
+    const action =
+      requestedAction === "dismiss"
+        ? "ignore"
+        : requestedAction === "mark_bad"
+          ? "report_incorrect"
+          : requestedAction;
+    if (
+      ![
+        "archive",
+        "ignore",
+        "report_incorrect",
+        "restore",
+      ].includes(action)
+    ) {
+      throw badRequest("This bulk insight action is not supported");
+    }
+
+    let reasonCode =
+      input.reasonCode ?? input.reason_code ?? null;
+    if (
+      requestedAction === "mark_bad" &&
+      reasonCode == null
+    ) {
+      reasonCode = "other_false_positive";
+    }
+    if (
+      action === "report_incorrect" &&
+      !INSIGHT_INCORRECT_REASON_CODES.has(reasonCode)
+    ) {
+      throw badRequest(
+        "Choose a supported incorrect-insight reason",
+      );
+    }
+    if (action !== "report_incorrect" && reasonCode != null) {
+      throw badRequest(
+        "reason_code is only supported for incorrect insights",
+      );
+    }
+
+    const result =
+      await this.#repository.batchTransitionInsightFindings(
+        this.#workspaceId,
+        findingIds,
+        {
+          action,
+          actorId: actor?.id ?? input.user_id ?? null,
+          ...(reasonCode ? { reasonCode } : {}),
+        },
+      );
+    if (!result) {
+      throw notFound(
+        "One or more insight findings could not be found",
+      );
+    }
+    if (result.incompatibleFindingIds?.length) {
+      throw badRequest(
+        "Not a subscription only applies to subscription insights with recurring evidence",
+      );
+    }
+
+    await this.#repository.rebuildSearchDocuments?.(
+      this.#workspaceId,
+    );
+    return {
+      updated: true,
+      action,
+      state:
+        {
+          archive: "archived",
+          ignore: "dismissed",
+          report_incorrect: "bad",
+          restore: "active",
+        }[action],
+      updated_count: result.updatedFindings.length,
+      finding_ids: findingIds,
+      ...(reasonCode ? { reason_code: reasonCode } : {}),
+    };
+  }
+
   async updateRecurringClassification(input, actor = null) {
     const streamId = requiredId(
       input.streamId ?? input.stream_id,
@@ -1938,6 +2082,129 @@ export class FinanceService {
     }
     await this.#enqueueRecompute();
     return { updated: true, rule: updated };
+  }
+
+  async getInsightStatus() {
+    const freshness = await this.#repository.getDataFreshness(
+      this.#workspaceId,
+    );
+    return this.#buildInsightStatus(freshness);
+  }
+
+  async forceRunInsights(_input = {}, actor = null) {
+    const status = await this.getInsightStatus();
+    if (status.state === "paused") {
+      const reason =
+        status.pause_reasons[0]?.message ??
+        "Connected finance data is not fresh enough.";
+      throw insightRunConflict(`Insights are paused: ${reason}`);
+    }
+    if (["running", "queued"].includes(status.state)) {
+      return {
+        queued: false,
+        already_in_progress: true,
+        status,
+      };
+    }
+    if (!this.#jobQueue) {
+      const error = new Error("The insights worker is unavailable.");
+      error.statusCode = 503;
+      error.expose = true;
+      throw error;
+    }
+    const job = await this.#jobQueue.enqueue(
+      "finance.detect_recurring",
+      {
+        workspaceId: this.#workspaceId,
+        source: "manual",
+        requestedBy: actor?.id ?? null,
+      },
+      { dedupeKey: this.#workspaceId, runAt: this.#now() },
+    );
+    return {
+      queued: true,
+      job_id: job.id,
+      status: "queued",
+    };
+  }
+
+  async clearInsights() {
+    if (
+      typeof this.#repository.clearInsightOutput !== "function"
+    ) {
+      const error = new Error("Insight storage is unavailable.");
+      error.statusCode = 503;
+      error.expose = true;
+      throw error;
+    }
+    const deleted = await this.#repository.clearInsightOutput(
+      this.#workspaceId,
+    );
+    return {
+      cleared: true,
+      ...deleted,
+      feedback_preserved: true,
+      recurring_corrections_preserved: true,
+    };
+  }
+
+  async #buildInsightStatus(freshness) {
+    const [storage, jobs] = await Promise.all([
+      optionalRepositoryCall(
+        this.#repository,
+        "getInsightStorageSummary",
+        {
+          active_count: 0,
+          archived_count: 0,
+          total_count: 0,
+          last_findings_generated_at: null,
+        },
+        this.#workspaceId,
+      ),
+      typeof this.#jobQueue?.getInsightJobStatus === "function"
+        ? this.#jobQueue.getInsightJobStatus(this.#workspaceId)
+        : {
+            current: null,
+            latest: null,
+            nextScheduledAt: null,
+          },
+    ]);
+    const current = jobs.current ?? null;
+    const latest = jobs.latest ?? null;
+    let state = "never_run";
+    if (freshness.partial) {
+      state = "paused";
+    } else if (current?.status === "running") {
+      state = "running";
+    } else if (current?.status === "queued") {
+      state = "queued";
+    } else if (latest?.status === "failed") {
+      state = "failed";
+    } else if (
+      latest?.status === "succeeded" ||
+      storage.last_findings_generated_at ||
+      storage.total_count > 0
+    ) {
+      state = "ready";
+    }
+    return {
+      state,
+      can_run:
+        !freshness.partial &&
+        !["running", "queued"].includes(state),
+      pause_reasons: freshness.warnings ?? [],
+      freshness_data_as_of: freshness.data_as_of ?? null,
+      current_job_type: current?.type ?? null,
+      last_run_at: isoDateTime(latest?.updatedAt),
+      last_run_status: latest?.status ?? null,
+      last_error: latest?.lastError ?? null,
+      next_scheduled_at: isoDateTime(jobs.nextScheduledAt),
+      last_findings_generated_at:
+        storage.last_findings_generated_at ?? null,
+      active_count: Number(storage.active_count ?? 0),
+      archived_count: Number(storage.archived_count ?? 0),
+      total_count: Number(storage.total_count ?? 0),
+    };
   }
 
   async listSpendingCategories(input = {}) {
@@ -2043,6 +2310,11 @@ export class FinanceService {
         "A category cannot be nested under itself, a descendant, or a merged category.",
       );
     }
+    if (updated.invalidBudgetHierarchy) {
+      throw badRequest(
+        "That category change would leave a child budget without a valid parent envelope or exceed its parent amount.",
+      );
+    }
     if (updated.protected) {
       throw badRequest(
         "Other is permanent and cannot be edited.",
@@ -2146,6 +2418,11 @@ export class FinanceService {
     if (merged.invalidParent) {
       throw badRequest("The destination parent category is invalid");
     }
+    if (merged.invalidBudgetHierarchy) {
+      throw badRequest(
+        "That merge would leave a child budget without a valid parent envelope or exceed its parent amount.",
+      );
+    }
     if (merged.protected) {
       throw badRequest(
         "Other cannot be edited, merged, or used as a merge destination.",
@@ -2188,6 +2465,11 @@ export class FinanceService {
     }
     if (deleted.invalidParent) {
       throw badRequest("The category tree could not be preserved.");
+    }
+    if (deleted.invalidBudgetHierarchy) {
+      throw badRequest(
+        "Remove or rebalance the affected budgets before deleting this category.",
+      );
     }
     await this.#enqueueRecompute();
     return {
@@ -2251,6 +2533,7 @@ export class FinanceService {
         accounts,
         transactionTagRows,
         cleanupRuleResult,
+        insightStatus,
       ] = await Promise.all([
         typeof this.#repository.listFinanceConnections === "function"
           ? this.#repository.listFinanceConnections(this.#workspaceId)
@@ -2284,6 +2567,7 @@ export class FinanceService {
           this.#workspaceId,
         ),
         this.listTransactionCleanupRules(),
+        this.#buildInsightStatus(freshness),
       ]);
       const manualAssets = manualAssetsAt(
         rawManualAssets,
@@ -2344,6 +2628,7 @@ export class FinanceService {
         transactionTags,
         transactionRules: cleanupRuleResult.rules,
         transactionCleanup,
+        insightStatus,
       };
     }
     if (view === "transactions") {
@@ -2476,7 +2761,6 @@ export class FinanceService {
       const [overview, recurring] = await Promise.all([
         this.getFinanceOverview(),
         this.listRecurringPayments({
-          status: "all",
           limit: 100,
           includeFrequentSpending: true,
         }),
@@ -2509,12 +2793,6 @@ export class FinanceService {
           .map(webRecurring),
         frequentSpending: activeStreams
           .filter((stream) => stream.type === "frequent_spending")
-          .map(webRecurring),
-        inactiveRecurring: streams
-          .filter(
-            (stream) =>
-              !["active", "resumed", "irregular"].includes(stream.status),
-          )
           .map(webRecurring),
         selectedRecurring: selectedRecurring
           ? {
@@ -2897,6 +3175,10 @@ function transactionCard(transaction) {
     raw_merchant: transaction.merchant_name ?? null,
     raw_name: transaction.name,
     description: transaction.name,
+    note: transaction.note ?? null,
+    note_version: Number(transaction.note_version ?? 0),
+    note_updated_by: transaction.note_updated_by ?? null,
+    note_updated_at: transaction.note_updated_at ?? null,
     tags: Array.isArray(transaction.tags) ? transaction.tags : [],
     category_id: transaction.category_id ?? null,
     category: transaction.category_primary,
@@ -2971,6 +3253,7 @@ function recurringCard(stream) {
     confidence_basis_points: stream.confidence_basis_points,
     status: stream.status,
     duplicate_state: stream.duplicate_state,
+    category: stream.category_primary ?? null,
     account: stream.account_id
       ? { id: stream.account_id, name: stream.account_name }
       : null,
@@ -4001,10 +4284,12 @@ function transactionDateOnly(transaction, timestamp) {
 
 function webTransaction(transaction) {
   const categoryValue = transaction.category ?? "Uncategorized";
-  const category = transactionCategoryLabel(
-    categoryValue,
-    transaction.detailed_category,
-  );
+  const category = transaction.category_id
+    ? categoryValue
+    : transactionCategoryLabel(
+        categoryValue,
+        transaction.detailed_category,
+      );
   const dateTime =
     trustworthyTransactionTimestamp(transaction.authorized_at) ??
     trustworthyTransactionTimestamp(transaction.posted_at);
@@ -4020,6 +4305,10 @@ function webTransaction(transaction) {
       transaction.description,
     rawMerchant: transaction.raw_merchant ?? null,
     rawName: transaction.raw_name ?? transaction.description,
+    note: transaction.note ?? null,
+    noteVersion: Number(transaction.note_version ?? 0),
+    noteUpdatedBy: transaction.note_updated_by ?? null,
+    noteUpdatedAt: transaction.note_updated_at ?? null,
     tags: Array.isArray(transaction.tags) ? transaction.tags : [],
     category,
     categoryValue,
@@ -4154,6 +4443,7 @@ function webRecurring(stream) {
     state: stream.status,
     next: stream.next_estimated_date ?? "unknown",
     type: stream.type,
+    category: stream.category ?? null,
   };
 }
 
@@ -4574,6 +4864,19 @@ function requiredId(value, field) {
     throw new TypeError(`${field} is required`);
   }
   return value;
+}
+
+function isoDateTime(value) {
+  if (value == null) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isFinite(date.getTime()) ? date.toISOString() : null;
+}
+
+function insightRunConflict(message) {
+  const error = new Error(message);
+  error.statusCode = 409;
+  error.expose = true;
+  return error;
 }
 
 function notFound(message) {

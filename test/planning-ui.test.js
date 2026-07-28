@@ -46,6 +46,7 @@ test("transaction split Save and Clear include planning idempotency", async () =
     splitBranch,
     /lines: \[\.\.\.form\.querySelectorAll\("\[data-split-line\]"\)\][\s\S]*expected_version: Number\([\s\S]*idempotency_key: idempotencyKeyFor\(form\)/,
   );
+  assert.match(source, /confirm_descendants: true/);
 });
 
 test("Dashboard and Plan share the same link-free Safe to Spend component", async () => {
@@ -99,8 +100,16 @@ test("the standing budget is view-only by default with linked category status", 
   );
   assert.match(
     plan,
-    /data-endpoint="\/api\/v1\/plan\/budget\/<%= encodeURIComponent\(line\.category\) %>"/,
+    /data-endpoint="\/api\/v1\/plan\/budget\/<%= encodeURIComponent\(line\.category_id\) %>"/,
   );
+  assert.match(plan, /Average monthly income/);
+  assert.match(plan, /Estimated leftover/);
+  assert.match(plan, /Actual leftover/);
+  assert.match(plan, /name="tracking_mode"/);
+  assert.match(plan, /data-budget-remove/);
+  assert.match(plan, /data-budget-toggle/);
+  assert.match(plan, /Informational \(inherited\)/);
+  assert.match(plan, /name="category_id"/);
   assert.doesNotMatch(
     plan,
     /name="scope"|name="effective_month_on"|budgetEditMonth/,
@@ -174,7 +183,7 @@ test("goal cards are summaries and all goal changes live in dialogs", async () =
     client,
     /dialog\.addEventListener\("close"[\s\S]*goalDialogOpenersByDialog\.get\(dialog\)\?\.focus\(\)/,
   );
-  assert.doesNotMatch(
+  assert.match(
     client,
     /delete form\.dataset\.idempotencyKey/,
   );

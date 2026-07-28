@@ -16,12 +16,66 @@
             },
           };
     const previousActualByCategory = new Map(
-      priorBudget.lines.map((line) => [line.category, line.actual]),
+      priorBudget.lines.flatMap((line) => [
+        [line.category_id, line.actual],
+        [line.category, line.actual],
+      ]),
     );
     const zeroBudgetMoney = {
       amount_minor: 0,
       currency: budget.actual_total.currency,
     };
+    const budgetedCategoryIds = new Set(
+      budget.lines.map((line) => line.category_id),
+    );
+    const budgetParentIds = new Set(
+      budget.lines
+        .map((line) => line.parent_category_id)
+        .filter(Boolean),
+    );
+    const incomeCategoryIds = new Set(
+      budget.income_category_ids || [],
+    );
+    const budgetCategoriesById = new Map(
+      (budget.available_categories || []).map(
+        (category) => [category.id, category],
+      ),
+    );
+    const isInsideCategoryRoots = (categoryId, rootIds) => {
+      let current = budgetCategoriesById.get(categoryId);
+      const visited = new Set();
+      while (current && !visited.has(current.id)) {
+        if (rootIds.has(current.id)) return true;
+        visited.add(current.id);
+        current = budgetCategoriesById.get(
+          current.parent_category_id,
+        );
+      }
+      return false;
+    };
+    const containsCategoryRoot = (categoryId, rootIds) =>
+      [...rootIds].some((rootId) =>
+        isInsideCategoryRoots(rootId, new Set([categoryId])),
+      );
+    const availableBudgetCategories = (
+      budget.available_categories || []
+    ).filter(
+      (category) =>
+        !budgetedCategoryIds.has(category.id) &&
+        !isInsideCategoryRoots(category.id, incomeCategoryIds) &&
+        !containsCategoryRoot(category.id, incomeCategoryIds) &&
+        (
+          !category.parent_category_id ||
+          budgetedCategoryIds.has(category.parent_category_id)
+        ),
+    );
+    const availableIncomeCategories = (
+      budget.available_categories || []
+    ).filter(
+      (category) =>
+        !isInsideCategoryRoots(category.id, budgetedCategoryIds) &&
+        !containsCategoryRoot(category.id, budgetedCategoryIds),
+    );
     const remainingStatus = (remaining) =>
       remaining.amount_minor < 0
         ? `${formatMoney({
@@ -514,14 +568,63 @@
         <h2 id="budget-heading">Budget</h2>
         <a class="button button--secondary" href="<%= editBudget ? budgetViewHref : budgetEditHref %>"><i class="ph ph-<%= editBudget ? 'check' : 'pencil-simple' %>"></i> <%= editBudget ? "Done" : "Edit budget" %></a>
       </div>
+      <div class="budget-summary" aria-label="Budget cash flow summary">
+        <article>
+          <span>Average monthly income</span>
+          <strong><%= formatMoney(budget.average_monthly_income) %></strong>
+          <small>Previous 4 completed months</small>
+        </article>
+        <article>
+          <span>Estimated leftover</span>
+          <strong><%= formatMoney(budget.estimated_leftover) %></strong>
+          <small>Average income minus planned spending</small>
+        </article>
+        <article>
+          <span>Actual leftover<%= budget.is_current_month ? " (MTD)" : "" %></span>
+          <strong><%= formatMoney(budget.actual_leftover) %></strong>
+          <small>All income minus all spending</small>
+        </article>
+        <article class="budget-summary__status budget-summary__status--<%= budget.plan_status %>">
+          <span>Plan status</span>
+          <strong><%= budget.plan_status === "needs_attention" ? "Needs attention" : "On track" %></strong>
+          <small>Informational budgets never trigger variance</small>
+        </article>
+      </div>
       <% if (editBudget) { %>
         <details class="plan-disclosure">
-          <summary>Add a budget category</summary>
+          <summary>Add or configure categories</summary>
           <form class="plan-inline-form" data-plan-form data-endpoint="/api/v1/plan/budget" data-method="POST">
             <input type="hidden" name="expected_version" value="0">
-            <label>Category<input name="category" maxlength="100" required></label>
+            <label>Category
+              <select name="category_id" required>
+                <option value="">Choose a category</option>
+                <% availableBudgetCategories.forEach((category) => { %>
+                  <option value="<%= category.id %>"><%= category.path %></option>
+                <% }) %>
+              </select>
+            </label>
             <label>Plan amount<span class="money-input"><span>$</span><input data-money-minor="amount_minor" inputmode="decimal" required></span></label>
+            <label>Tracking
+              <select name="tracking_mode">
+                <option value="tracked">Tracked</option>
+                <option value="informational">Informational</option>
+              </select>
+            </label>
             <button class="button button--secondary" type="submit">Add category</button>
+            <span class="form-status" data-plan-status aria-live="polite"></span>
+          </form>
+          <form class="plan-inline-form" data-plan-form data-budget-income-form data-endpoint="/api/v1/plan/budget/settings" data-method="PUT">
+            <input type="hidden" name="expected_version" value="<%= budget.settings_version || 0 %>">
+            <fieldset>
+              <legend>Income categories</legend>
+              <% availableIncomeCategories.forEach((category) => { %>
+                <label class="check-row">
+                  <input type="checkbox" name="income_category_ids" value="<%= category.id %>" <%= incomeCategoryIds.has(category.id) ? "checked" : "" %>>
+                  <span><%= category.path %></span>
+                </label>
+              <% }) %>
+            </fieldset>
+            <button class="button button--secondary" type="submit">Save income categories</button>
             <span class="form-status" data-plan-status aria-live="polite"></span>
           </form>
         </details>
@@ -538,27 +641,30 @@
         </div>
         <% budget.lines.forEach((line) => { %>
           <%
-            const budgetStatus = remainingStatus(line.remaining);
+            const budgetStatus = line.remaining
+              ? remainingStatus(line.remaining)
+              : "Informational";
             const previousActual =
+              previousActualByCategory.get(line.category_id) ||
               previousActualByCategory.get(line.category) ||
               zeroBudgetMoney;
           %>
           <% if (editBudget) { %>
-            <form class="budget-row budget-row--edit <%= line.over.amount_minor > 0 ? 'budget-row--over' : '' %>" role="row" data-plan-form data-endpoint="/api/v1/plan/budget/<%= encodeURIComponent(line.category) %>" data-method="PUT">
+            <form class="budget-row budget-row--edit <%= line.over.amount_minor > 0 ? 'budget-row--over' : '' %>" role="row" data-plan-form data-budget-category-id="<%= line.category_id %>" data-budget-parent-id="<%= line.parent_category_id || '' %>" data-endpoint="/api/v1/plan/budget/<%= encodeURIComponent(line.category_id) %>" data-method="PUT">
               <input type="hidden" name="expected_version" value="<%= line.version %>">
-              <span role="cell"><a class="budget-category-link" href="/transactions?category=<%= encodeURIComponent(line.category) %>"><%= line.category %></a></span>
+              <span role="cell" style="--budget-depth: <%= line.depth || 0 %>"><span class="budget-category-heading"><% if (budgetParentIds.has(line.category_id)) { %><button class="budget-tree-toggle" type="button" data-budget-toggle aria-expanded="true" aria-label="Collapse <%= line.category %> child budgets"><i class="ph ph-caret-down" aria-hidden="true"></i></button><% } else { %><span class="budget-tree-spacer" aria-hidden="true"></span><% } %><a class="budget-category-link" href="/transactions?category=<%= encodeURIComponent(line.category_id) %>"><%= line.name || line.category %></a></span><% if (line.effective_tracking_mode === "informational") { %><small><%= line.tracking_mode === "informational" ? "Informational" : "Informational (inherited)" %></small><% } %></span>
               <span class="money-input" role="cell"><span>$</span><input data-money-minor="amount_minor" inputmode="decimal" value="<%= (line.planned.amount_minor / 100).toFixed(2) %>" aria-label="<%= line.category %> planned amount"></span>
               <span role="cell"><%= formatMoney(line.actual) %></span>
-              <span role="cell" class="budget-status <%= remainingClass(line.remaining) %>"><%= budgetStatus %></span>
+              <span role="cell" class="budget-status <%= line.remaining ? remainingClass(line.remaining) : '' %>"><%= line.remaining ? budgetStatus : "Informational" %></span>
               <span role="cell"><%= formatMoney(previousActual) %></span>
-              <span role="cell"><button class="button button--ghost" type="submit">Save</button><span class="form-status" data-plan-status aria-live="polite"></span></span>
+              <span role="cell"><select name="tracking_mode" aria-label="<%= line.category %> tracking mode"><option value="tracked" <%= line.tracking_mode === "tracked" ? "selected" : "" %>>Tracked</option><option value="informational" <%= line.tracking_mode === "informational" ? "selected" : "" %>>Informational</option></select><button class="button button--ghost" type="submit">Save</button><button class="button button--ghost" type="button" data-budget-remove data-endpoint="/api/v1/plan/budget/<%= encodeURIComponent(line.category_id) %>">Remove</button><span class="form-status" data-plan-status aria-live="polite"></span></span>
             </form>
           <% } else { %>
-            <div class="budget-row budget-row--view <%= line.over.amount_minor > 0 ? 'budget-row--over' : '' %>" role="row">
-              <span role="cell"><a class="budget-category-link" href="/transactions?category=<%= encodeURIComponent(line.category) %>"><%= line.category %></a></span>
+            <div class="budget-row budget-row--view <%= line.over.amount_minor > 0 ? 'budget-row--over' : '' %>" role="row" data-budget-category-id="<%= line.category_id %>" data-budget-parent-id="<%= line.parent_category_id || '' %>">
+              <span role="cell" style="--budget-depth: <%= line.depth || 0 %>"><span class="budget-category-heading"><% if (budgetParentIds.has(line.category_id)) { %><button class="budget-tree-toggle" type="button" data-budget-toggle aria-expanded="true" aria-label="Collapse <%= line.category %> child budgets"><i class="ph ph-caret-down" aria-hidden="true"></i></button><% } else { %><span class="budget-tree-spacer" aria-hidden="true"></span><% } %><a class="budget-category-link" href="/transactions?category=<%= encodeURIComponent(line.category_id) %>"><%= line.name || line.category %></a></span><% if (line.effective_tracking_mode === "informational") { %><small><%= line.tracking_mode === "informational" ? "Informational" : "Informational (inherited)" %></small><% } %></span>
               <span role="cell"><%= formatMoney(line.planned) %></span>
               <span role="cell"><%= formatMoney(line.actual) %></span>
-              <span role="cell" class="budget-status <%= remainingClass(line.remaining) %>"><%= budgetStatus %></span>
+              <span role="cell" class="budget-status <%= line.remaining ? remainingClass(line.remaining) : '' %>"><%= line.remaining ? budgetStatus : "Informational" %></span>
               <span role="cell"><%= formatMoney(previousActual) %></span>
             </div>
           <% } %>

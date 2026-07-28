@@ -32,6 +32,8 @@ export const PLANNING_WRITE_TOOL_KIND_MAP = Object.freeze({
   set_goal_funding_schedule: "plan_change",
   finish_finance_goal: "plan_change",
   set_category_budget: "plan_change",
+  clear_category_budget: "plan_change",
+  set_budget_income_categories: "plan_change",
   split_transaction: "plan_change",
   spend_from_finance_goal: "plan_change",
   reverse_goal_spend: "plan_change",

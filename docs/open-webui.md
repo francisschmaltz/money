@@ -51,6 +51,8 @@ allocate_finance_goal
 set_goal_funding_schedule
 finish_finance_goal
 set_category_budget
+clear_category_budget
+set_budget_income_categories
 split_transaction
 spend_from_finance_goal
 reverse_goal_spend

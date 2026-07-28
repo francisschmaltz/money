@@ -107,6 +107,72 @@ export class PgJobQueue {
     return Boolean(result.rows[0]?.pending);
   }
 
+  async getInsightJobStatus(workspaceId) {
+    const jobTypes = [
+      "finance.detect_recurring",
+      "finance.generate_insights",
+      "finance.nightly_refresh",
+    ];
+    const [currentResult, latestResult, nextNightlyResult] =
+      await Promise.all([
+        this.#pool.query(
+          `
+            SELECT *
+            FROM jobs
+            WHERE job_type = ANY($2::text[])
+              AND payload->>'workspaceId' = $1
+              AND status = ANY(ARRAY['queued', 'running']::text[])
+              AND (
+                job_type <> 'finance.nightly_refresh'
+                OR run_at <= now()
+              )
+            ORDER BY
+              CASE status WHEN 'running' THEN 0 ELSE 1 END,
+              updated_at DESC,
+              created_at DESC
+            LIMIT 1
+          `,
+          [workspaceId, jobTypes],
+        ),
+        this.#pool.query(
+          `
+            SELECT *
+            FROM jobs
+            WHERE job_type = ANY($2::text[])
+              AND payload->>'workspaceId' = $1
+              AND status = ANY(ARRAY['succeeded', 'failed']::text[])
+            ORDER BY updated_at DESC, created_at DESC
+            LIMIT 1
+          `,
+          [workspaceId, jobTypes],
+        ),
+        this.#pool.query(
+          `
+            SELECT run_at
+            FROM jobs
+            WHERE job_type = 'finance.nightly_refresh'
+              AND payload->>'workspaceId' = $1
+              AND status = 'queued'
+              AND run_at > now()
+            ORDER BY run_at
+            LIMIT 1
+          `,
+          [workspaceId],
+        ),
+      ]);
+    return {
+      current: currentResult.rows[0]
+        ? mapJob(currentResult.rows[0])
+        : null,
+      latest: latestResult.rows[0]
+        ? mapJob(latestResult.rows[0])
+        : null,
+      nextScheduledAt: jobDate(
+        nextNightlyResult.rows[0]?.run_at,
+      ),
+    };
+  }
+
   async complete(jobId) {
     await this.#pool.query(
       `
@@ -261,6 +327,13 @@ function mapJob(row) {
     status: row.status,
     attempts: Number(row.attempts),
     maxAttempts: Number(row.max_attempts),
-    runAt: new Date(row.run_at),
+    runAt: jobDate(row.run_at),
+    createdAt: jobDate(row.created_at),
+    updatedAt: jobDate(row.updated_at),
+    lastError: row.last_error ?? null,
   };
+}
+
+function jobDate(value) {
+  return value == null ? null : new Date(value);
 }

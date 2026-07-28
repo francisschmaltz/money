@@ -414,8 +414,32 @@ export const FINANCE_TOOL_INPUT_SCHEMAS = Object.freeze({
 
   set_category_budget: z
     .object({
-      category: categorySchema,
+      category: categorySchema.optional(),
+      category_id: opaqueIdSchema.optional(),
       amount_minor: nonnegativeMinorUnitsSchema,
+      tracking_mode: z
+        .enum(["tracked", "informational"])
+        .optional(),
+      expected_version: z.number().int().min(0),
+      idempotency_key: idempotencyKeySchema,
+    })
+    .strict()
+    .refine((value) => value.category || value.category_id, {
+      message: "category_id or category is required",
+    }),
+
+  clear_category_budget: z
+    .object({
+      category_id: opaqueIdSchema,
+      confirm_descendants: z.boolean().optional(),
+      expected_version: z.number().int().min(0),
+      idempotency_key: idempotencyKeySchema,
+    })
+    .strict(),
+
+  set_budget_income_categories: z
+    .object({
+      income_category_ids: z.array(opaqueIdSchema).max(25),
       expected_version: z.number().int().min(0),
       idempotency_key: idempotencyKeySchema,
     })

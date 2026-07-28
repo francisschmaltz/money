@@ -31,6 +31,8 @@ const WRITE_METHODS = Object.freeze({
   set_goal_funding_schedule: "setGoalFundingSchedule",
   finish_finance_goal: "finishFinanceGoal",
   set_category_budget: "setCategoryBudget",
+  clear_category_budget: "clearCategoryBudget",
+  set_budget_income_categories: "setBudgetIncomeCategories",
   split_transaction: "splitTransaction",
   spend_from_finance_goal: "spendFromFinanceGoal",
   reverse_goal_spend: "reverseGoalSpend",
@@ -50,7 +52,7 @@ const DEFINITIONS = Object.freeze({
   get_budget_status: {
     title: "Get monthly budget status",
     description:
-      "Compare one calendar month's posted category spending against the standing monthly plan. Planned amounts persist until edited; actuals restart each month. Refunds reduce spending, transfers and card payments stay excluded, and budgets never alter Safe to Spend.",
+      "Return the selected hierarchical budget tree with direct and subtree actuals, effective tracking modes, optimistic versions, rolling four-completed-month income, estimated and actual leftover, and plan status. Refunds reduce spending; pending, excluded, transfer, and card-payment transactions stay out; unbudgeted spending still reduces actual leftover.",
   },
   model_finance_plan: {
     title: "Model finance plan",
@@ -90,7 +92,17 @@ const DEFINITIONS = Object.freeze({
   set_category_budget: {
     title: "Set category budget",
     description:
-      "Set a category in the current standing monthly plan using the version returned by get_budget_status (0 for a new category). The amount persists until edited and never reserves cash or alters Safe to Spend.",
+      "Add or update a taxonomy category in the current standing monthly plan by category_id, even when it has no transactions. Use the version returned by get_budget_status (0 for a new category), choose tracked or informational, add ancestors before children, and keep direct child allocations within the parent envelope. The amount persists until edited and never reserves cash or alters Safe to Spend.",
+  },
+  clear_category_budget: {
+    title: "Clear category budget",
+    description:
+      "Remove a category from the current standing budget using the version returned by get_budget_status. If it has selected descendants, inspect them first and pass confirm_descendants=true to cascade. Historical months remain intact.",
+  },
+  set_budget_income_categories: {
+    title: "Set budget income categories",
+    description:
+      "Replace the category subtrees used to calculate four-completed-month average income and actual monthly income. Income categories cannot also be expense budgets.",
   },
   split_transaction: {
     title: "Split transaction",
@@ -303,7 +315,10 @@ export function registerPlanningTools(
         outputSchema: FINANCE_TOOL_OUTPUT_SCHEMAS[toolName],
         annotations: {
           readOnlyHint: false,
-          destructiveHint: toolName === "finish_finance_goal",
+          destructiveHint: [
+            "finish_finance_goal",
+            "clear_category_budget",
+          ].includes(toolName),
           idempotentHint: true,
           openWorldHint: false,
         },

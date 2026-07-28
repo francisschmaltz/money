@@ -924,6 +924,132 @@ test("planning reads stay pure and budget edits update the current standing plan
   );
 });
 
+test("budget mutations enforce income subtrees and explicit cascade confirmation", async () => {
+  const categories = [
+    {
+      id: "income",
+      name: "Income",
+      path: "Income",
+      parent_category_id: null,
+    },
+    {
+      id: "salary",
+      name: "Salary",
+      path: "Income / Salary",
+      parent_category_id: "income",
+    },
+    {
+      id: "travel",
+      name: "Travel",
+      path: "Travel",
+      parent_category_id: null,
+    },
+    {
+      id: "airlines",
+      name: "Airlines",
+      path: "Travel / Airlines",
+      parent_category_id: "travel",
+    },
+  ];
+  const budgetLines = [
+    {
+      category_id: "travel",
+      category: "Travel",
+      amount_minor: 50_000,
+      tracking_mode: "tracked",
+      version: 1,
+    },
+    {
+      category_id: "airlines",
+      category: "Travel / Airlines",
+      amount_minor: 10_000,
+      tracking_mode: "tracked",
+      version: 1,
+    },
+  ];
+  let incomeCategoryIds = ["income"];
+  let removed = false;
+  const repository = {
+    async getWorkspaceTimezone() {
+      return "America/Los_Angeles";
+    },
+    async listResolvedBudgetLines() {
+      return structuredClone(budgetLines);
+    },
+    async listBudgetCategoryVersions() {
+      return budgetLines.map((line) => ({
+        category_id: line.category_id,
+        category: line.category,
+        version: line.version,
+      }));
+    },
+    async getBudgetSettings() {
+      return {
+        version: 1,
+        income_category_ids: incomeCategoryIds,
+      };
+    },
+    async listTransactionSplits() {
+      return [];
+    },
+    async removeBudgetLine() {
+      removed = true;
+      return { audit_event_id: "audit-remove", before: budgetLines };
+    },
+  };
+  const financeRepository = {
+    async listSpendingCategories() {
+      return structuredClone(categories);
+    },
+    async resolveSpendingCategory(_workspaceId, value) {
+      return structuredClone(
+        categories.find(
+          (category) =>
+            category.id === value || category.path === value,
+        ) ?? null,
+      );
+    },
+    async getTransactionsForPeriod() {
+      return [];
+    },
+    async getDataFreshness() {
+      return { data_as_of: null, partial: false };
+    },
+  };
+  const service = new PlanningService({
+    repository,
+    financeRepository,
+    now: () => new Date("2026-07-27T12:00:00.000Z"),
+  });
+
+  await assert.rejects(
+    service.setCategoryBudget({
+      category_id: "salary",
+      amount_minor: 1_000,
+      expected_version: 0,
+    }),
+    /income category cannot also be an expense budget/i,
+  );
+
+  incomeCategoryIds = [];
+  await assert.rejects(
+    service.clearCategoryBudget({
+      category_id: "travel",
+      expected_version: 1,
+    }),
+    /Confirm removal of descendant budgets: Travel \/ Airlines/,
+  );
+  assert.equal(removed, false);
+
+  await assert.rejects(
+    service.setBudgetIncomeCategories({
+      income_category_ids: ["airlines"],
+      expected_version: 1,
+    }),
+    /Remove a category from the expense budget/i,
+  );
+});
+
 test("planning service rejects invalid calendar dates and non-Friday anchors", async () => {
   const { service, goal } = fixture();
   const invalidCalls = [

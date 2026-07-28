@@ -210,6 +210,8 @@ test("batch metadata edits lock exact posted rows and refresh search once", asyn
   );
   assert.ok(searchRefresh);
   assert.match(searchRefresh.sql, /metadata\.display_name/);
+  assert.match(searchRefresh.sql, /metadata\.note/);
+  assert.match(searchRefresh.sql, /'note', metadata\.note/);
   assert.match(searchRefresh.sql, /tag_data\.tag_names/);
   assert.match(searchRefresh.sql, /'raw_merchant', t\.merchant_name/);
   assert.equal(
@@ -245,5 +247,123 @@ test("batch metadata rejects the whole write when any selected row is unavailabl
         call.sql.includes("DELETE FROM transaction_tag_assignments"),
     ),
     false,
+  );
+});
+
+test("recurring streams use the latest effective transaction name and category", async () => {
+  const db = fakePool(async (sql) => {
+    if (sql.includes("FROM recurring_streams r")) {
+      return {
+        rows: [
+          {
+            id: "stream-1",
+            service_family: "restaurant",
+            display_name: "OLD RESTAURANT",
+            current_display_name: "Dinner Club",
+            current_category_primary: "Food & Drink",
+            stream_type: "frequent_spending",
+            cadence: "monthly",
+            account_id: "account-1",
+            account_name: "Card",
+            expected_amount_minor: 4_200,
+            min_amount_minor: 4_000,
+            max_amount_minor: 4_400,
+            monthly_equivalent_minor: 4_200,
+            currency_code: "USD",
+            first_seen_on: "2026-01-01",
+            last_seen_on: "2026-07-01",
+            next_expected_on: "2026-08-01",
+            confidence_basis_points: 9_000,
+            status: "active",
+            transaction_ids: ["transaction-1"],
+          },
+        ],
+      };
+    }
+    return { rows: [] };
+  });
+  const repository = new PgFinanceRepository(db.pool);
+
+  const streams = await repository.listRecurringStreams("shared");
+
+  assert.equal(streams[0].display_name, "Dinner Club");
+  assert.equal(streams[0].category_primary, "Food & Drink");
+  const query = db.calls.find((call) =>
+    call.sql.includes("FROM recurring_streams r"),
+  );
+  assert.match(query.sql, /metadata\.display_name/);
+  assert.match(query.sql, /cleanup_rule\.display_name/);
+  assert.match(query.sql, /effective_category\.category_name/);
+  assert.match(
+    query.sql,
+    /current_transaction\.category_primary AS current_category_primary/,
+  );
+});
+
+test("transaction notes increment their version and refresh search", async () => {
+  const db = fakePool(async (sql) => {
+    if (
+      sql.includes("SELECT id FROM transactions") &&
+      sql.includes("FOR UPDATE")
+    ) {
+      return { rows: [{ id: "transaction-1" }] };
+    }
+    if (
+      sql.includes(
+        "SELECT note, note_version, note_updated_by, note_updated_at",
+      )
+    ) {
+      return { rows: [] };
+    }
+    if (
+      sql.includes("INSERT INTO transaction_metadata") &&
+      sql.includes("note_version")
+    ) {
+      return {
+        rows: [
+          {
+            transaction_id: "transaction-1",
+            note: "Dinner with Sam",
+            note_version: 1,
+            note_updated_by: "user-1",
+            note_updated_at: "2026-07-28T12:00:00.000Z",
+          },
+        ],
+      };
+    }
+    return { rows: [] };
+  });
+  const repository = new PgFinanceRepository(db.pool);
+
+  const result = await repository.updateTransactionNote("shared", {
+    transactionId: "transaction-1",
+    note: "Dinner with Sam",
+    expectedVersion: 0,
+    userId: "user-1",
+  });
+
+  assert.equal(result.note_version, 1);
+  assert.equal(result.note, "Dinner with Sam");
+  const write = db.calls.find(
+    (call) =>
+      call.sql.includes("INSERT INTO transaction_metadata") &&
+      call.sql.includes("note_version"),
+  );
+  assert.deepEqual(write.params, [
+    "shared",
+    "transaction-1",
+    "Dinner with Sam",
+    "user-1",
+  ]);
+  assert.match(
+    write.sql,
+    /note_version = transaction_metadata\.note_version \+ 1/,
+  );
+  assert.ok(
+    db.calls.some(
+      (call) =>
+        call.sql.includes("INSERT INTO search_documents") &&
+        call.sql.includes("metadata.note"),
+    ),
   );
 });

@@ -70,6 +70,10 @@ const transactions = [
     merchant: "Whole Foods Market",
     rawMerchant: "WHOLE FOODS MKT #1024",
     rawName: "WHOLE FOODS MKT #1024",
+    note: "Dinner supplies for the family visit",
+    noteVersion: 1,
+    noteUpdatedBy: "demo-user",
+    noteUpdatedAt: "2026-07-25T21:10:00.000Z",
     category: "Groceries",
     tags: ["Household"],
     account: "Everyday checking",
@@ -268,6 +272,7 @@ const subscriptions = [
     state: "active",
     next: "Aug 18",
     type: "subscription",
+    category: "Software & services",
     detectedType: "subscription",
     classificationSignals: {
       subscription_signal: true,
@@ -295,6 +300,7 @@ const subscriptions = [
     icon: "ph-bezier-curve",
     state: "active",
     next: "Aug 3",
+    category: "Software & services",
   },
   {
     id: DEMO_IDS.recurring.appleServices,
@@ -306,6 +312,7 @@ const subscriptions = [
     icon: "ph-device-mobile",
     state: "active",
     next: "Aug 24",
+    category: "Software & services",
   },
   {
     id: DEMO_IDS.recurring.squarespace,
@@ -317,6 +324,7 @@ const subscriptions = [
     icon: "ph-squares-four",
     state: "active",
     next: "Aug 8",
+    category: "Software & services",
   },
   {
     id: DEMO_IDS.recurring.disneyPlus,
@@ -328,6 +336,7 @@ const subscriptions = [
     icon: "ph-television",
     state: "active",
     next: "Aug 11",
+    category: "Entertainment",
   },
   {
     id: DEMO_IDS.recurring.iCloud,
@@ -339,6 +348,7 @@ const subscriptions = [
     icon: "ph-cloud",
     state: "active",
     next: "Aug 14",
+    category: "Software & services",
   },
 ];
 
@@ -351,6 +361,7 @@ const bills = [
     amount: usd(40_804),
     icon: "ph-heartbeat",
     next: "Aug 21",
+    category: "Health",
   },
   {
     id: DEMO_IDS.recurring.conEdison,
@@ -360,6 +371,7 @@ const bills = [
     amount: usd(18_419),
     icon: "ph-lightning",
     next: "Aug 25",
+    category: "Utilities",
   },
   {
     id: DEMO_IDS.recurring.verizonFios,
@@ -369,6 +381,7 @@ const bills = [
     amount: usd(8_999),
     icon: "ph-wifi-high",
     next: "Aug 9",
+    category: "Utilities",
   },
   {
     id: DEMO_IDS.recurring.geico,
@@ -378,6 +391,7 @@ const bills = [
     amount: usd(14_622),
     icon: "ph-car",
     next: "Aug 15",
+    category: "Insurance",
   },
 ];
 
@@ -393,6 +407,7 @@ const frequentSpending = [
     state: "active",
     next: "Unknown",
     type: "frequent_spending",
+    category: "Transportation",
     detectedType: "frequent_spending",
     classificationSignals: {
       hard_negative: true,

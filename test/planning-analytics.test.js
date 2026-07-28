@@ -420,6 +420,54 @@ test("budgets use posted splits, let refunds reduce spending, and ignore transfe
   assert.equal(budget.remaining_total.amount_minor, 10_000);
 });
 
+test("refunds can make net spending negative and increase actual leftover", () => {
+  const budget = buildBudgetStatus({
+    monthOn: "2026-07-01",
+    categories: [
+      {
+        id: "category_shopping",
+        name: "Shopping",
+        path: "Shopping",
+        parent_category_id: null,
+      },
+      {
+        id: "category_income",
+        name: "Income",
+        path: "Income",
+        parent_category_id: null,
+      },
+    ],
+    budgetLines: [
+      {
+        category_id: "category_shopping",
+        category: "Shopping",
+        amount_minor: 5_000,
+      },
+    ],
+    transactions: [
+      {
+        id: "refund",
+        category_id: "category_shopping",
+        category_primary: "Shopping",
+        posted_on: "2026-07-05",
+        amount_minor: 8_000,
+        currency_code: "USD",
+        pending: false,
+        excluded_from_spending: false,
+      },
+    ],
+    income: {
+      average_monthly_minor: 20_000,
+      actual_month_minor: 20_000,
+      month_count: 4,
+      category_ids: ["category_income"],
+    },
+  });
+
+  assert.equal(budget.actual_total.amount_minor, -8_000);
+  assert.equal(budget.actual_leftover.amount_minor, 28_000);
+});
+
 test("budget categories stay alphabetical with Other last across months", () => {
   const build = (monthOn, otherActualMinor) =>
     buildBudgetStatus({
@@ -465,6 +513,115 @@ test("budget categories stay alphabetical with Other last across months", () => 
   );
   assert.equal(current.lines.at(-1).actual.amount_minor, 12_500);
   assert.equal(previous.lines.at(-1).actual.amount_minor, 7_500);
+});
+
+test("hierarchical budgets count roots once and carve informational children out of variance", () => {
+  const budget = buildBudgetStatus({
+    monthOn: "2026-07-01",
+    categories: [
+      {
+        id: "category_transport",
+        name: "Transportation",
+        path: "Transportation",
+        parent_category_id: null,
+      },
+      {
+        id: "category_service",
+        name: "Car service",
+        path: "Transportation / Car service",
+        parent_category_id: "category_transport",
+      },
+      {
+        id: "category_gas",
+        name: "Gas",
+        path: "Transportation / Gas",
+        parent_category_id: "category_transport",
+      },
+      {
+        id: "category_airlines",
+        name: "Airlines",
+        path: "Airlines",
+        parent_category_id: null,
+      },
+    ],
+    budgetLines: [
+      {
+        category_id: "category_transport",
+        category: "Transportation",
+        amount_minor: 100_000,
+        tracking_mode: "tracked",
+      },
+      {
+        category_id: "category_service",
+        category: "Transportation / Car service",
+        amount_minor: 30_000,
+        tracking_mode: "informational",
+      },
+      {
+        category_id: "category_gas",
+        category: "Transportation / Gas",
+        amount_minor: 40_000,
+        tracking_mode: "tracked",
+      },
+    ],
+    transactions: [
+      {
+        id: "service",
+        category_id: "category_service",
+        category_primary: "Transportation / Car service",
+        posted_on: "2026-07-04",
+        amount_minor: -50_000,
+        currency_code: "USD",
+        pending: false,
+        excluded_from_spending: false,
+      },
+      {
+        id: "gas",
+        category_id: "category_gas",
+        category_primary: "Transportation / Gas",
+        posted_on: "2026-07-05",
+        amount_minor: -45_000,
+        currency_code: "USD",
+        pending: false,
+        excluded_from_spending: false,
+      },
+      {
+        id: "airline",
+        category_id: "category_airlines",
+        category_primary: "Airlines",
+        posted_on: "2026-07-06",
+        amount_minor: -20_000,
+        currency_code: "USD",
+        pending: false,
+        excluded_from_spending: false,
+      },
+    ],
+    income: {
+      average_monthly_minor: 500_000,
+      actual_month_minor: 480_000,
+      month_count: 4,
+      category_ids: [],
+    },
+  });
+
+  const transportation = budget.lines.find(
+    (line) => line.category_id === "category_transport",
+  );
+  const service = budget.lines.find(
+    (line) => line.category_id === "category_service",
+  );
+  assert.equal(budget.planned_total.amount_minor, 100_000);
+  assert.equal(budget.actual_total.amount_minor, 115_000);
+  assert.equal(transportation.actual.amount_minor, 95_000);
+  assert.equal(transportation.tracked_planned.amount_minor, 70_000);
+  assert.equal(transportation.tracked_actual.amount_minor, 45_000);
+  assert.equal(service.remaining, null);
+  assert.equal(budget.estimated_leftover.amount_minor, 400_000);
+  assert.equal(budget.actual_leftover.amount_minor, 365_000);
+  assert.equal(
+    budget.lines.some((line) => line.category === "Airlines"),
+    false,
+  );
 });
 
 test("invalidated split sets fall back to the corrected provider transaction", () => {

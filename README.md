@@ -25,6 +25,11 @@ Redis, GraphQL, or frontend framework hiding under the couch.
   rules plus deterministic fuzzy suggestions for one-time edits. Rules can
   rename merchants, set categories, and replace or clear tags for existing and
   future transactions. Provider names stay immutable and searchable.
+- Shared, searchable transaction notes with optimistic conflict protection.
+  Notes work on pending charges and follow Plaid's posted replacement.
+- Recurring bills and frequent-spending patterns resolve their current
+  transaction names and spending categories instead of preserving stale
+  provider or pre-merge labels.
 - Three deterministic insight families: weekly spending changes, investments,
   and subscriptions.
 - Plaid Transactions, Investments, and Liabilities ingestion with webhook and
@@ -200,7 +205,7 @@ credential discovers those same tools plus all nine writes.
 | `read` | Finance | `get_credit_score_summary` | Manually tracked scores, freshness, household average, and history; not an underwriting score. |
 | `read` | Planning | `get_safe_to_spend` | Liquid cash minus positive card balances and cash-backed goal earmarks. |
 | `read` | Planning | `list_finance_goals` | Active or finished goals, funding, schedules, attributed spending, remaining amounts, and shortfalls. |
-| `read` | Planning | `get_budget_status` | One month's posted category spending against the standing monthly budget. |
+| `read` | Planning | `get_budget_status` | Hierarchical selected budgets, tracking modes, income, leftover, and one month's posted actuals. |
 | `read` | Planning | `model_finance_plan` | Deterministic goal-funding and brokerage-change scenario arithmetic. |
 | `read` | Planning | `get_transaction_goal_spending` | A transaction's goal-spending links, unassigned amount, and current write versions. |
 | `plan:write` | Planning | `create_finance_goal` | Create a household goal with a purpose, target, and optional date. |
@@ -209,6 +214,8 @@ credential discovers those same tools plus all nine writes.
 | `plan:write` | Planning | `set_goal_funding_schedule` | Create or edit monthly or alternate-Friday virtual funding. |
 | `plan:write` | Planning | `finish_finance_goal` | Complete or cancel a goal while preserving its frozen plan and history. |
 | `plan:write` | Planning | `set_category_budget` | Create or update a persistent monthly category budget. |
+| `plan:write` | Planning | `clear_category_budget` | Remove a category and its selected descendants from the standing budget. |
+| `plan:write` | Planning | `set_budget_income_categories` | Select the category subtrees used for budget income and leftover calculations. |
 | `plan:write` | Planning | `split_transaction` | Replace or clear category splits without changing provider data. |
 | `plan:write` | Planning | `spend_from_finance_goal` | Attribute a posted outflow to a goal without making a payment, transfer, sale, or trade. |
 | `plan:write` | Planning | `reverse_goal_spend` | Reverse one goal-spending attribution while retaining audit history. |

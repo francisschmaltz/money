@@ -494,6 +494,101 @@ test(
         ...serviceOptions,
         repository: secondRepository,
       });
+
+      const parentCategory =
+        await financeRepository.createSpendingCategory(workspaceId, {
+          name: `Travel ${suffix}`,
+          classification: "flexible",
+        });
+      const childCategory =
+        await financeRepository.createSpendingCategory(workspaceId, {
+          name: `Airlines ${suffix}`,
+          classification: "flexible",
+          parentCategoryId: parentCategory.id,
+        });
+      await firstRepository.setBudgetLine(
+        workspaceId,
+        {
+          monthOn: "2026-07-01",
+          effectiveMonthOn: "2026-07-01",
+          category: parentCategory.path,
+          categoryId: parentCategory.id,
+          amountMinor: 50_000,
+          scope: "standing",
+          expectedVersion: 0,
+          auditEventId: `audit-budget-parent-${suffix}`,
+        },
+        actor,
+      );
+      const childWrite = await firstRepository.setBudgetLine(
+        workspaceId,
+        {
+          monthOn: "2026-07-01",
+          effectiveMonthOn: "2026-07-01",
+          category: childCategory.path,
+          categoryId: childCategory.id,
+          amountMinor: 10_000,
+          trackingMode: "informational",
+          scope: "standing",
+          expectedVersion: 0,
+          auditEventId: `audit-budget-child-${suffix}`,
+        },
+        actor,
+      );
+      assert.equal(childWrite.line.category_id, childCategory.id);
+      assert.equal(childWrite.line.version, 1);
+
+      const renamedChild =
+        await financeRepository.updateSpendingCategory(workspaceId, {
+          categoryId: childCategory.id,
+          name: `Flights ${suffix}`,
+          expectedVersion: childCategory.version,
+        });
+      assert.equal(renamedChild.id, childCategory.id);
+      const afterRename =
+        await secondRepository.listResolvedBudgetLines(
+          workspaceId,
+          "2026-07-01",
+        );
+      const renamedBudget = afterRename.find(
+        (line) => line.category_id === childCategory.id,
+      );
+      assert.match(renamedBudget.category, /Flights/);
+      assert.equal(renamedBudget.tracking_mode, "informational");
+
+      const editedChild = await secondRepository.setBudgetLine(
+        workspaceId,
+        {
+          monthOn: "2026-07-01",
+          effectiveMonthOn: "2026-07-01",
+          category: renamedBudget.category,
+          categoryId: childCategory.id,
+          amountMinor: 12_000,
+          trackingMode: "informational",
+          scope: "standing",
+          expectedVersion: renamedBudget.version,
+          auditEventId: `audit-budget-edit-${suffix}`,
+        },
+        actor,
+      );
+      assert.equal(editedChild.line.version, 2);
+      const staleChild = await firstRepository.setBudgetLine(
+        workspaceId,
+        {
+          monthOn: "2026-07-01",
+          effectiveMonthOn: "2026-07-01",
+          category: renamedBudget.category,
+          categoryId: childCategory.id,
+          amountMinor: 13_000,
+          trackingMode: "informational",
+          scope: "standing",
+          expectedVersion: 1,
+          auditEventId: `audit-budget-stale-${suffix}`,
+        },
+        actor,
+      );
+      assert.equal(staleChild.conflict, true);
+
       const allocations = await Promise.allSettled([
         firstService.allocateFinanceGoal({
           goal_id: `goal-a-${suffix}`,

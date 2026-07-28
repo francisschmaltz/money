@@ -569,6 +569,71 @@ test("transaction cleanup routes reject empty searches and malformed batches", a
   assert.equal(serviceCalls, 0);
 });
 
+test("transaction notes are member-editable, CSRF protected, and path bound", async () => {
+  const calls = [];
+  const middlewareCalls = [];
+  const actor = { id: "member-1", is_admin: false };
+  const app = express();
+  app.use(express.json());
+  app.use((request, _response, next) => {
+    request.user = actor;
+    next();
+  });
+  app.use(
+    createApiRouter({
+      requireAdmin() {
+        throw new Error("note route must not require admin");
+      },
+      requireCsrf(request, _response, next) {
+        middlewareCalls.push(request.method);
+        next();
+      },
+      financeService: {
+        updateTransactionNote(input, routeActor) {
+          calls.push({ input, routeActor });
+          return {
+            transaction_id: input.transaction_id,
+            note: input.note,
+            note_version: 4,
+          };
+        },
+      },
+    }),
+  );
+
+  await request(app)
+    .put("/api/v1/transactions/txn-1/note")
+    .send({
+      transaction_id: "spoofed",
+      note: "  Dinner with Sam  ",
+      expected_note_version: 3,
+    })
+    .expect(400);
+  await request(app)
+    .put("/api/v1/transactions/txn-1/note")
+    .send({
+      note: "  Dinner with Sam  ",
+      expected_note_version: 3,
+    })
+    .expect(200, {
+      transaction_id: "txn-1",
+      note: "Dinner with Sam",
+      note_version: 4,
+    });
+
+  assert.deepEqual(middlewareCalls, ["PUT", "PUT"]);
+  assert.deepEqual(calls, [
+    {
+      input: {
+        transaction_id: "txn-1",
+        note: "Dinner with Sam",
+        expected_note_version: 3,
+      },
+      routeActor: actor,
+    },
+  ]);
+});
+
 test("insight lifecycle routes keep mutations admin-only and use DELETE for deletion", async () => {
   const calls = [];
   const middlewareCalls = [];
@@ -655,6 +720,196 @@ test("insight lifecycle routes keep mutations admin-only and use DELETE for dele
     "csrf:DELETE",
     "admin:POST",
     "csrf:POST",
+  ]);
+});
+
+test("bulk insight actions validate one atomic admin request", async () => {
+  const calls = [];
+  const middlewareCalls = [];
+  const actor = { id: "user-admin", is_admin: true };
+  const app = express();
+  app.use(express.json());
+  app.use((request, _response, next) => {
+    request.user = actor;
+    next();
+  });
+  app.use(
+    createApiRouter({
+      requireAdmin(request, _response, next) {
+        middlewareCalls.push(`admin:${request.method}`);
+        next();
+      },
+      requireCsrf(request, _response, next) {
+        middlewareCalls.push(`csrf:${request.method}`);
+        next();
+      },
+      financeService: {
+        batchActOnFindings(input, routeActor) {
+          calls.push([input, routeActor]);
+          return {
+            updated: true,
+            action: input.action,
+            updated_count: input.finding_ids.length,
+            finding_ids: input.finding_ids,
+          };
+        },
+      },
+    }),
+  );
+
+  await request(app)
+    .post("/api/v1/insights/batch-action")
+    .send({
+      finding_ids: [" finding-1 ", "finding-2"],
+      action: "report_incorrect",
+      reason_code: "wrong_data",
+    })
+    .expect(200, {
+      updated: true,
+      action: "report_incorrect",
+      updated_count: 2,
+      finding_ids: ["finding-1", "finding-2"],
+    });
+
+  for (const body of [
+    { finding_ids: [], action: "archive" },
+    {
+      finding_ids: ["finding-1", "finding-1"],
+      action: "archive",
+    },
+    {
+      finding_ids: Array.from(
+        { length: 101 },
+        (_, index) => `finding-${index}`,
+      ),
+      action: "archive",
+    },
+    { finding_ids: ["finding-1"], action: "delete" },
+    {
+      finding_ids: ["finding-1"],
+      action: "report_incorrect",
+    },
+    {
+      finding_ids: ["finding-1"],
+      action: "archive",
+      reason_code: "wrong_data",
+    },
+    {
+      finding_ids: ["finding-1"],
+      action: "mark_bad",
+      reason_code: "made_up",
+    },
+  ]) {
+    await request(app)
+      .post("/api/v1/insights/batch-action")
+      .send(body)
+      .expect(400);
+  }
+
+  assert.deepEqual(calls, [
+    [
+      {
+        finding_ids: ["finding-1", "finding-2"],
+        action: "report_incorrect",
+        reason_code: "wrong_data",
+      },
+      actor,
+    ],
+  ]);
+  assert.deepEqual(
+    middlewareCalls.slice(0, 2),
+    ["admin:POST", "csrf:POST"],
+  );
+  assert.equal(middlewareCalls.length, 16);
+});
+
+test("insight admin controls expose status and protect run and clear mutations", async () => {
+  const calls = [];
+  const middlewareCalls = [];
+  const actor = {
+    id: "user_admin",
+    email: "admin@example.com",
+    is_admin: true,
+  };
+  const app = express();
+  app.use(express.json());
+  app.use((request, _response, next) => {
+    request.user = actor;
+    next();
+  });
+  app.use(
+    createApiRouter({
+      requireAdmin(request, _response, next) {
+        middlewareCalls.push(`admin:${request.method}`);
+        next();
+      },
+      requireCsrf(request, _response, next) {
+        middlewareCalls.push(`csrf:${request.method}`);
+        next();
+      },
+      financeService: {
+        getInsightStatus(input) {
+          calls.push(["status", input]);
+          return {
+            state: "ready",
+            last_run_at: "2026-07-28T09:00:00.000Z",
+            active_count: 4,
+          };
+        },
+        forceRunInsights(input, routeActor) {
+          calls.push(["run", input, routeActor]);
+          return {
+            queued: true,
+            job_id: "job-insights-1",
+            status: "queued",
+          };
+        },
+        clearInsights(input, routeActor) {
+          calls.push(["clear", input, routeActor]);
+          return {
+            cleared: true,
+            findings_deleted: 4,
+            feedback_preserved: true,
+          };
+        },
+      },
+    }),
+  );
+
+  await request(app)
+    .get("/api/v1/settings/insights/status")
+    .expect(200, {
+      state: "ready",
+      last_run_at: "2026-07-28T09:00:00.000Z",
+      active_count: 4,
+    });
+  await request(app)
+    .post("/api/v1/settings/insights/run")
+    .send({})
+    .expect(202, {
+      queued: true,
+      job_id: "job-insights-1",
+      status: "queued",
+    });
+  await request(app)
+    .delete("/api/v1/settings/insights")
+    .expect(200, {
+      cleared: true,
+      findings_deleted: 4,
+      feedback_preserved: true,
+    });
+
+  assert.deepEqual(calls, [
+    ["status", {}],
+    ["run", {}, actor],
+    ["clear", {}, actor],
+  ]);
+  assert.deepEqual(middlewareCalls, [
+    "admin:GET",
+    "admin:POST",
+    "csrf:POST",
+    "admin:DELETE",
+    "csrf:DELETE",
   ]);
 });
 

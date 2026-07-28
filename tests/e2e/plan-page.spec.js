@@ -3,6 +3,19 @@ import { expect, test } from "@playwright/test";
 test("Plan keeps one Safe to Spend card and a fixed, editable budget", async ({
   page,
 }) => {
+  const diningWriteKeys = [];
+  page.on("request", (request) => {
+    if (
+      request.method() === "PUT" &&
+      request.url().endsWith(
+        "/api/v1/plan/budget/category_dining",
+      )
+    ) {
+      diningWriteKeys.push(
+        request.postDataJSON().idempotency_key,
+      );
+    }
+  });
   await page.goto("/plan");
 
   const planSafeToSpend = page.getByRole("region", {
@@ -14,6 +27,10 @@ test("Plan keeps one Safe to Spend card and a fixed, editable budget", async ({
   await expect(planSafeToSpend.getByRole("link")).toHaveCount(0);
 
   const budget = page.getByRole("region", { name: "Budget" });
+  await expect(budget).toContainText("Average monthly income");
+  await expect(budget).toContainText("Estimated leftover");
+  await expect(budget).toContainText("Actual leftover");
+  await expect(budget.getByRole("link", { name: "Airlines" })).toHaveCount(0);
   await expect(budget.getByRole("columnheader")).toHaveText([
     "Category",
     "Planned",
@@ -25,7 +42,7 @@ test("Plan keeps one Safe to Spend card and a fixed, editable budget", async ({
   await expect(budget.getByRole("row").nth(1)).toContainText("Total");
   await expect(
     budget.getByRole("link", { name: "Dining" }),
-  ).toHaveAttribute("href", "/transactions?category=Dining");
+  ).toHaveAttribute("href", "/transactions?category=category_dining");
   await expect(budget.getByRole("row", { name: /^Dining / })).toContainText(
     "over",
   );
@@ -51,6 +68,45 @@ test("Plan keeps one Safe to Spend card and a fixed, editable budget", async ({
   await page.waitForTimeout(450);
   await page.reload();
   await expect(diningInput).toHaveValue("450.00");
+  expect(diningWriteKeys).toHaveLength(2);
+  expect(diningWriteKeys[0]).not.toBe(diningWriteKeys[1]);
+
+  await page.getByText("Add or configure categories").click();
+  const addBudgetForm = page.locator(
+    'form[data-endpoint="/api/v1/plan/budget"]',
+  );
+  await addBudgetForm.getByLabel("Category").selectOption("category_airlines");
+  await addBudgetForm.getByLabel("Plan amount").fill("100.00");
+  await addBudgetForm.getByLabel("Tracking").selectOption("informational");
+  await addBudgetForm.getByRole("button", { name: "Add category" }).click();
+  await expect(
+    page.getByRole("row", { name: /^Airlines / }),
+  ).toContainText("Informational");
+  const travelRow = page
+    .getByRole("row")
+    .filter({
+      has: page.getByRole("link", { name: "Travel", exact: true }),
+    });
+  await travelRow
+    .getByRole("button", { name: /Collapse Travel child budgets/ })
+    .click();
+  await expect(
+    page.getByRole("row", { name: /^Airlines / }),
+  ).not.toBeVisible();
+  await travelRow
+    .getByRole("button", { name: /Expand Travel child budgets/ })
+    .click();
+  await expect(
+    page.getByRole("row", { name: /^Airlines / }),
+  ).toBeVisible();
+
+  page.once("dialog", (dialog) => dialog.accept());
+  await page
+    .getByRole("row", { name: /^Airlines / })
+    .getByRole("button", { name: "Remove" })
+    .click();
+  await expect(page.getByRole("row", { name: /^Airlines / })).toHaveCount(0);
+
   await page.getByRole("link", { name: /Done/ }).click();
   await expect(
     page.getByRole("textbox", { name: "Dining planned amount" }),

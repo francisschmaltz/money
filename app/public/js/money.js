@@ -1049,6 +1049,63 @@
       return payload;
     };
 
+    const insightAdminStatus = document.querySelector(
+      "[data-insight-admin-status]",
+    );
+    const runInsights = document.querySelector("[data-insights-run]");
+    const clearInsights = document.querySelector(
+      "[data-insights-clear]",
+    );
+
+    runInsights?.addEventListener("click", async () => {
+      runInsights.disabled = true;
+      if (insightAdminStatus) {
+        insightAdminStatus.textContent = "Queueing insight run…";
+      }
+      try {
+        const result = await requestJson(
+          "/api/v1/settings/insights/run",
+        );
+        if (insightAdminStatus) {
+          insightAdminStatus.textContent =
+            result.already_in_progress
+              ? "An insight run is already in progress."
+              : "Insight run queued.";
+        }
+        window.setTimeout(() => window.location.reload(), 600);
+      } catch (error) {
+        runInsights.disabled = false;
+        if (insightAdminStatus) {
+          insightAdminStatus.textContent =
+            error.message || "Couldn’t start insights.";
+        }
+      }
+    });
+
+    clearInsights?.addEventListener("click", async () => {
+      const warning = clearInsights.dataset.confirmMessage;
+      if (warning && !window.confirm(warning)) return;
+      clearInsights.disabled = true;
+      if (insightAdminStatus) {
+        insightAdminStatus.textContent = "Clearing insights…";
+      }
+      try {
+        await requestJson("/api/v1/settings/insights", {
+          method: "DELETE",
+        });
+        if (insightAdminStatus) {
+          insightAdminStatus.textContent = "Insights cleared.";
+        }
+        window.setTimeout(() => window.location.reload(), 600);
+      } catch (error) {
+        clearInsights.disabled = false;
+        if (insightAdminStatus) {
+          insightAdminStatus.textContent =
+            error.message || "Couldn’t clear insights.";
+        }
+      }
+    });
+
     const saveRule = async (ruleId, settings) => {
       const response = await fetch(`/api/v1/settings/insight-rules/${encodeURIComponent(ruleId)}`, {
         method: "PUT",
@@ -2468,23 +2525,139 @@
     updateSelection();
   }
 
-  function transactionCategoryOverride() {
+  function transactionNotes() {
     const csrfToken =
       document.querySelector('meta[name="csrf-token"]')?.content || "";
     document
-      .querySelectorAll("[data-transaction-category-form]")
+      .querySelectorAll("[data-transaction-note-form]")
+      .forEach((form) => {
+        const input = form.querySelector("[data-transaction-note-input]");
+        const count = form.querySelector("[data-transaction-note-count]");
+        const status = form.querySelector(
+          "[data-transaction-note-status]",
+        );
+        const submit = form.querySelector('button[type="submit"]');
+        const updateCount = () => {
+          if (count && input) count.textContent = String(input.value.length);
+        };
+        input?.addEventListener("input", updateCount);
+        updateCount();
+
+        form.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          const transactionId = form.dataset.transactionId;
+          const expectedVersion = Number(form.dataset.noteVersion || 0);
+          if (!transactionId || !input || !submit) return;
+          submit.disabled = true;
+          if (status) status.textContent = "Saving…";
+          try {
+            const response = await fetch(
+              `/api/v1/transactions/${encodeURIComponent(transactionId)}/note`,
+              {
+                method: "PUT",
+                headers: {
+                  Accept: "application/json",
+                  "Content-Type": "application/json",
+                  "X-CSRF-Token": csrfToken,
+                },
+                body: JSON.stringify({
+                  note: input.value,
+                  expected_note_version: expectedVersion,
+                }),
+              },
+            );
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) {
+              throw new Error(
+                payload.message ||
+                  `Update failed with ${response.status}`,
+              );
+            }
+            input.value = payload.note || "";
+            form.dataset.noteVersion = String(
+              payload.note_version ?? expectedVersion + 1,
+            );
+            updateCount();
+            if (status) {
+              status.textContent = payload.note ? "Note saved" : "Note cleared";
+            }
+            const updated = form.querySelector(
+              "[data-transaction-note-updated]",
+            );
+            if (updated) updated.textContent = "Updated just now";
+          } catch (error) {
+            if (status) {
+              status.textContent =
+                error.message || "Couldn’t update the note";
+            }
+          } finally {
+            submit.disabled = false;
+          }
+        });
+      });
+  }
+
+  function transactionOrganization() {
+    const csrfToken =
+      document.querySelector('meta[name="csrf-token"]')?.content || "";
+    document
+      .querySelectorAll("[data-transaction-organize-form]")
       .forEach((form) => {
         form.addEventListener("submit", async (event) => {
           event.preventDefault();
           const transactionId = form.dataset.transactionId;
-          const category = form.querySelector(
-            'select[name="category_primary"]',
-          )?.value;
           const submit = form.querySelector('button[type="submit"]');
           const status = form.querySelector(
-            "[data-transaction-category-status]",
+            "[data-transaction-organize-status]",
           );
-          if (!transactionId || !category || !submit) return;
+          if (!transactionId || !submit) return;
+
+          const changes = {};
+          const displayName = form.elements.namedItem("display_name");
+          const category = form.elements.namedItem("category_primary");
+          const tags = form.elements.namedItem("tags");
+          const excluded = form.elements.namedItem(
+            "excluded_from_spending",
+          );
+          if (
+            displayName &&
+            displayName.value.trim() !== displayName.dataset.initialValue
+          ) {
+            changes.display_name = displayName.value.trim() || null;
+          }
+          if (
+            category &&
+            category.value !== category.dataset.initialValue
+          ) {
+            changes.category_primary = category.value;
+          }
+          if (tags && tags.value.trim() !== tags.dataset.initialValue) {
+            const parsedTags = [
+              ...new Map(
+                tags.value
+                  .split(",")
+                  .map((tag) => tag.trim())
+                  .filter(Boolean)
+                  .map((tag) => [tag.toLowerCase(), tag]),
+              ).values(),
+            ];
+            if (parsedTags.length > 20) {
+              if (status) status.textContent = "Use at most 20 tags.";
+              return;
+            }
+            changes.tags = parsedTags;
+          }
+          if (
+            excluded &&
+            excluded.value !== excluded.dataset.initialValue
+          ) {
+            changes.excluded_from_spending = excluded.value === "true";
+          }
+          if (!Object.keys(changes).length) {
+            if (status) status.textContent = "Nothing changed.";
+            return;
+          }
+
           submit.disabled = true;
           if (status) status.textContent = "Saving…";
           try {
@@ -2499,7 +2672,7 @@
                 },
                 body: JSON.stringify({
                   transaction_ids: [transactionId],
-                  changes: { category_primary: category },
+                  changes,
                 }),
               },
             );
@@ -2510,20 +2683,198 @@
                   `Update failed with ${response.status}`,
               );
             }
-            if (status) {
-              status.textContent =
-                "Category saved for this transaction";
-            }
+            if (status) status.textContent = "Changes saved";
             window.setTimeout(() => window.location.reload(), 350);
           } catch (error) {
             if (status) {
               status.textContent =
-                error.message || "Couldn’t update the category";
+                error.message || "Couldn’t update the transaction";
             }
             submit.disabled = false;
           }
         });
       });
+  }
+
+  function insightBulkActions() {
+    const root = document.querySelector("[data-bulk-insights]");
+    if (!root) return;
+
+    const start = root.querySelector("[data-insight-bulk-start]");
+    const selectionBar = root.querySelector(
+      "[data-insight-selection-bar]",
+    );
+    const selectAll = root.querySelector("[data-insight-select-all]");
+    const selectedCount = root.querySelector(
+      "[data-insight-selected-count]",
+    );
+    const action = root.querySelector("[data-insight-bulk-action]");
+    const reasonField = root.querySelector(
+      "[data-insight-bulk-reason-field]",
+    );
+    const reason = root.querySelector("[data-insight-bulk-reason]");
+    const subscriptionReason = reason?.querySelector(
+      "[data-subscription-only]",
+    );
+    const apply = root.querySelector("[data-insight-bulk-apply]");
+    const cancel = root.querySelector("[data-insight-bulk-cancel]");
+    const status = root.querySelector("[data-insight-bulk-status]");
+    const context = root.querySelector("details.insight-context");
+    const cards = [
+      ...root.querySelectorAll("[data-bulk-insight-card]"),
+    ];
+    const inputs = cards
+      .map((card) => card.querySelector("[data-insight-select]"))
+      .filter(Boolean);
+    const csrfToken =
+      document.querySelector('meta[name="csrf-token"]')?.content || "";
+    let selectionMode = false;
+    let contextWasOpen = false;
+
+    const selectedInputs = () =>
+      inputs.filter((input) => input.checked);
+
+    const updateSelection = () => {
+      const selected = selectedInputs();
+      const count = selected.length;
+      const allSubscriptions =
+        count > 0 &&
+        selected.every(
+          (input) => input.dataset.insightFamily === "subscriptions",
+        );
+      if (selectedCount) {
+        selectedCount.textContent = `${count} selected`;
+      }
+      if (selectAll) {
+        selectAll.checked = inputs.length > 0 && count === inputs.length;
+        selectAll.indeterminate = count > 0 && count < inputs.length;
+      }
+      if (subscriptionReason) {
+        subscriptionReason.hidden = !allSubscriptions;
+        subscriptionReason.disabled = !allSubscriptions;
+        if (!allSubscriptions && reason?.value === "not_subscription") {
+          reason.value = "";
+        }
+      }
+      const needsReason = action?.value === "report_incorrect";
+      if (reasonField) reasonField.hidden = !needsReason;
+      if (!needsReason && reason) reason.value = "";
+      if (apply) {
+        apply.disabled =
+          count === 0 ||
+          !action?.value ||
+          (needsReason && !reason?.value);
+        apply.textContent = count > 0 ? `Apply to ${count}` : "Apply";
+      }
+    };
+
+    const setSelectionMode = (active, { restoreFocus = false } = {}) => {
+      selectionMode = active;
+      root.toggleAttribute("data-insight-selection-mode", active);
+      if (start) start.hidden = active;
+      if (selectionBar) selectionBar.hidden = !active;
+      cards.forEach((card) => {
+        const control = card.querySelector(".insight-select-control");
+        if (control) control.hidden = !active;
+        card.querySelectorAll(".insight-card__menu[open]").forEach(
+          (menu) => menu.removeAttribute("open"),
+        );
+      });
+      if (active) {
+        contextWasOpen = Boolean(context?.open);
+        if (context) context.open = true;
+      } else {
+        inputs.forEach((input) => {
+          input.checked = false;
+        });
+        if (action) action.value = "";
+        if (reason) reason.value = "";
+        if (status) status.textContent = "";
+        if (context) context.open = contextWasOpen;
+        if (restoreFocus) start?.focus();
+      }
+      updateSelection();
+    };
+
+    start?.addEventListener("click", () => {
+      setSelectionMode(true);
+      inputs[0]?.focus();
+    });
+
+    cancel?.addEventListener("click", () => {
+      setSelectionMode(false, { restoreFocus: true });
+    });
+
+    selectAll?.addEventListener("change", () => {
+      inputs.forEach((input) => {
+        input.checked = selectAll.checked;
+      });
+      updateSelection();
+    });
+
+    inputs.forEach((input) => {
+      input.addEventListener("change", updateSelection);
+    });
+    action?.addEventListener("change", updateSelection);
+    reason?.addEventListener("change", updateSelection);
+
+    apply?.addEventListener("click", async () => {
+      const findingIds = selectedInputs().map((input) => input.value);
+      if (
+        !selectionMode ||
+        findingIds.length === 0 ||
+        !action?.value
+      ) {
+        return;
+      }
+      apply.disabled = true;
+      if (status) {
+        status.textContent = `Saving ${findingIds.length} insight${findingIds.length === 1 ? "" : "s"}…`;
+      }
+      try {
+        const response = await fetch("/api/v1/insights/batch-action", {
+          method: "POST",
+          headers: {
+            Accept: "application/json",
+            "Content-Type": "application/json",
+            "X-CSRF-Token": csrfToken,
+          },
+          body: JSON.stringify({
+            finding_ids: findingIds,
+            action: action.value,
+            ...(action.value === "report_incorrect"
+              ? { reason_code: reason?.value }
+              : {}),
+          }),
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(
+            payload.message || `Update failed with ${response.status}`,
+          );
+        }
+        if (status) {
+          const updatedCount =
+            Number(payload.updated_count) || findingIds.length;
+          status.textContent = `Updated ${updatedCount} insight${updatedCount === 1 ? "" : "s"}`;
+        }
+        const next = new URL(window.location.href);
+        next.searchParams.delete("finding");
+        window.setTimeout(() => {
+          window.location.assign(
+            `${next.pathname}${next.search}${next.hash}`,
+          );
+        }, 250);
+      } catch (error) {
+        if (status) {
+          status.textContent =
+            error.message || "Couldn’t update the selected insights";
+        }
+        updateSelection();
+      }
+    });
+
+    updateSelection();
   }
 
   function insightActions() {
@@ -3886,6 +4237,55 @@
 
   function planningForms() {
     const forms = document.querySelectorAll("[data-plan-form]");
+    const budgetRows = [
+      ...document.querySelectorAll("[data-budget-category-id]"),
+    ];
+    const budgetRowsById = new Map(
+      budgetRows.map((row) => [
+        row.dataset.budgetCategoryId,
+        row,
+      ]),
+    );
+    const collapsedBudgetIds = new Set();
+    const refreshBudgetTree = () => {
+      for (const row of budgetRows) {
+        let parentId = row.dataset.budgetParentId;
+        let hidden = false;
+        const visited = new Set();
+        while (parentId && !visited.has(parentId)) {
+          if (collapsedBudgetIds.has(parentId)) {
+            hidden = true;
+            break;
+          }
+          visited.add(parentId);
+          parentId =
+            budgetRowsById.get(parentId)?.dataset.budgetParentId || "";
+        }
+        row.hidden = hidden;
+      }
+    };
+    document.querySelectorAll("[data-budget-toggle]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const row = button.closest("[data-budget-category-id]");
+        const categoryId = row?.dataset.budgetCategoryId;
+        if (!categoryId) return;
+        const collapsed = collapsedBudgetIds.has(categoryId);
+        if (collapsed) {
+          collapsedBudgetIds.delete(categoryId);
+        } else {
+          collapsedBudgetIds.add(categoryId);
+        }
+        button.setAttribute("aria-expanded", String(collapsed));
+        const category =
+          row.querySelector(".budget-category-link")?.textContent?.trim() ||
+          "category";
+        button.setAttribute(
+          "aria-label",
+          `${collapsed ? "Collapse" : "Expand"} ${category} child budgets`,
+        );
+        refreshBudgetTree();
+      });
+    });
     if (!forms.length) return;
     const csrfToken =
       document.querySelector('meta[name="csrf-token"]')?.content || "";
@@ -3978,6 +4378,13 @@
         };
       }
       const payload = Object.fromEntries(new FormData(form));
+      if (form.dataset.budgetIncomeForm !== undefined) {
+        payload.income_category_ids = [
+          ...form.querySelectorAll(
+            'input[name="income_category_ids"]:checked',
+          ),
+        ].map((input) => input.value);
+      }
       form.querySelectorAll("[data-money-minor]").forEach((input) => {
         payload[input.dataset.moneyMinor] = minorUnits(input.value);
       });
@@ -4056,12 +4463,64 @@
             throw new Error(body.message || body.error || "The plan did not save.");
           }
           if (status) status.textContent = body.title || "Saved";
-          window.setTimeout(() => window.location.reload(), 250);
+          delete form.dataset.idempotencyKey;
+          const reloadDelay = form.dataset.endpoint.includes("/budget")
+            ? 650
+            : 250;
+          window.setTimeout(() => window.location.reload(), reloadDelay);
         } catch (error) {
           if (status) {
             status.textContent = error.message || "The plan did not save.";
           }
           if (submitter) submitter.disabled = false;
+        }
+      });
+    });
+
+    document.querySelectorAll("[data-budget-remove]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const form = button.closest("[data-plan-form]");
+        const status = form?.querySelector("[data-plan-status]");
+        if (
+          !form ||
+          !window.confirm(
+            "Remove this category and any child allocations from the budget?",
+          )
+        ) {
+          return;
+        }
+        button.disabled = true;
+        if (status) status.textContent = "Removing…";
+        try {
+          const response = await fetch(button.dataset.endpoint, {
+            method: "DELETE",
+            credentials: "same-origin",
+            headers: {
+              Accept: "application/json",
+              "Content-Type": "application/json",
+              "X-CSRF-Token": csrfToken,
+            },
+            body: JSON.stringify({
+              expected_version: Number(
+                form.elements.namedItem("expected_version")?.value ?? 0,
+              ),
+              confirm_descendants: true,
+              idempotency_key:
+                window.crypto?.randomUUID?.() ??
+                `web-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+            }),
+          });
+          const body = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            throw new Error(
+              body.message || body.error || "The budget was not removed.",
+            );
+          }
+          if (status) status.textContent = body.title || "Removed";
+          window.setTimeout(() => window.location.reload(), 650);
+        } catch (error) {
+          if (status) status.textContent = error.message;
+          button.disabled = false;
         }
       });
     });
@@ -4227,7 +4686,9 @@
     appleCardImport();
     exportTransactions();
     transactionBulkEdit();
-    transactionCategoryOverride();
+    transactionNotes();
+    transactionOrganization();
+    insightBulkActions();
     insightActions();
     transactionCleanupRules();
     transactionCleanup();

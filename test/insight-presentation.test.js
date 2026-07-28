@@ -47,6 +47,152 @@ test("weekly presentation leads with an action and keeps the supplied comparison
   assert.equal(insight.bucket, "spend_less");
 });
 
+test("stored insight evidence repairs stale review links at presentation time", () => {
+  const oneCharge = presentInsightForWeb({
+    id: "finding_ohgane_once",
+    family: "weekly",
+    type: "needs_review",
+    title: "Ohgane charge needs a look",
+    evidence: [
+      {
+        entity_type: "transaction",
+        entity_id: "txn_ohgane_1",
+        label: "Ohgane",
+        web_url: "/transactions",
+      },
+    ],
+    actions: [
+      {
+        type: "review",
+        label: "Review",
+        web_url: "/transactions",
+      },
+    ],
+  });
+
+  assert.equal(
+    oneCharge.solveAction.webUrl,
+    "/transactions?transaction=txn_ohgane_1",
+  );
+  assert.equal(
+    oneCharge.evidence[0].web_url,
+    "/transactions?transaction=txn_ohgane_1",
+  );
+
+  const merchantSpending = presentInsightForWeb({
+    id: "finding_ohgane_spending",
+    family: "weekly",
+    type: "spend_less",
+    title: "Spending rose at Ohgane",
+    period_start: "2026-07-20",
+    period_end: "2026-07-27",
+    evidence: [
+      {
+        entity_type: "transaction",
+        entity_id: "txn_ohgane_1",
+        label: "Ohgane",
+      },
+      {
+        entity_type: "transaction",
+        entity_id: "txn_ohgane_2",
+        label: "Ohgane",
+      },
+    ],
+    actions: [
+      {
+        type: "review",
+        label: "Review",
+        web_url: "/transactions",
+      },
+    ],
+  });
+
+  assert.equal(merchantSpending.actionTitle, "Spend less at Ohgane");
+  assert.equal(
+    merchantSpending.solveAction.webUrl,
+    "/transactions?q=Ohgane&start=2026-07-20&end=2026-07-27",
+  );
+});
+
+test("multi-object evidence stays on the insight detail instead of choosing an arbitrary item", () => {
+  const insight = presentInsightForWeb({
+    id: "finding_two_merchants",
+    family: "weekly",
+    type: "better_habits",
+    title: "Similar dining purchases clustered",
+    evidence: [
+      {
+        entity_type: "transaction",
+        entity_id: "txn_ohgane",
+        label: "Ohgane",
+      },
+      {
+        entity_type: "transaction",
+        entity_id: "txn_ihop",
+        label: "IHOP",
+      },
+    ],
+    actions: [
+      {
+        type: "review",
+        label: "Review",
+        web_url: "/transactions",
+      },
+    ],
+  });
+
+  assert.equal(
+    insight.solveAction.webUrl,
+    "/insights?finding=finding_two_merchants",
+  );
+  assert.deepEqual(
+    insight.evidence.map((entry) => entry.web_url),
+    [
+      "/transactions?transaction=txn_ohgane",
+      "/transactions?transaction=txn_ihop",
+    ],
+  );
+});
+
+test("recurring and holding evidence use their canonical object dialogs", () => {
+  const recurring = presentInsightForWeb({
+    id: "finding_subscription",
+    family: "subscriptions",
+    type: "expensive",
+    title: "Example is an expensive subscription",
+    evidence: [
+      {
+        entity_type: "recurring_stream",
+        entity_id: "stream_example",
+        label: "Example",
+        web_url: "/recurring?stream=stream_example",
+      },
+      {
+        entity_type: "transaction",
+        entity_id: "txn_example",
+        label: "Example",
+      },
+    ],
+  });
+  const holding = presentInsightForWeb({
+    id: "finding_holding",
+    family: "investments",
+    type: "concentration",
+    title: "VTI is a concentrated position",
+    evidence: [
+      {
+        entity_type: "holding",
+        entity_id: "security_vti",
+        label: "VTI",
+        web_url: "/portfolio",
+      },
+    ],
+  });
+
+  assert.equal(recurring.solveAction.webUrl, "/recurring?item=stream_example");
+  assert.equal(holding.solveAction.webUrl, "/portfolio?holding=VTI");
+});
+
 test("investment statistics become context while real risks stay actionable", () => {
   assert.equal(
     insightBucket({ family: "investments", type: "performance" }),

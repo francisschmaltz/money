@@ -357,14 +357,58 @@ export function buildGoalHistoryInsights(
 export function buildBudgetStatus({
   monthOn,
   budgetLines = [],
+  categories = [],
   transactions = [],
   splits = [],
+  income = null,
   currency = "USD",
 } = {}) {
   const month = monthStart(monthOn);
   const endOn = nextMonth(month);
   const expanded = expandTransactionsWithSplits(transactions, splits);
-  const actualByCategory = new Map();
+  const categoryList = categories.length
+    ? categories
+    : [
+        ...new Set([
+          ...budgetLines.map((line) => line.category),
+          ...expanded.map(
+            (transaction) =>
+              transaction.category_primary ?? "Uncategorized",
+          ),
+        ]),
+      ].map((category) => ({
+        id: category,
+        name: category,
+        path: category,
+        parent_category_id: null,
+      }));
+  const categoryById = new Map(
+    categoryList.map((category) => [category.id, category]),
+  );
+  const idByPath = new Map(
+    categoryList.flatMap((category) => [
+      [category.path, category.id],
+      [category.name, category.id],
+    ]),
+  );
+  const childrenById = new Map();
+  for (const category of categoryList) {
+    const list = childrenById.get(category.parent_category_id) ?? [];
+    list.push(category.id);
+    childrenById.set(category.parent_category_id, list);
+  }
+  const incomeRoots = new Set(income?.category_ids ?? []);
+  const isIncomeCategory = (categoryId) => {
+    let current = categoryById.get(categoryId);
+    const visited = new Set();
+    while (current && !visited.has(current.id)) {
+      if (incomeRoots.has(current.id)) return true;
+      visited.add(current.id);
+      current = categoryById.get(current.parent_category_id);
+    }
+    return false;
+  };
+  const directActualById = new Map();
   for (const transaction of expanded) {
     if (
       transaction.pending ||
@@ -375,6 +419,12 @@ export function buildBudgetStatus({
     ) {
       continue;
     }
+    const categoryId =
+      transaction.category_id ??
+      idByPath.get(
+        transaction.category_primary ?? "Uncategorized",
+      );
+    if (!categoryId || isIncomeCategory(categoryId)) continue;
     if (
       transaction.amount_minor > 0 &&
       /\b(income|payroll|deposit|interest_earned)\b/i.test(
@@ -383,58 +433,205 @@ export function buildBudgetStatus({
     ) {
       continue;
     }
-    const category = transaction.category_primary ?? "Uncategorized";
-    actualByCategory.set(
-      category,
-      (actualByCategory.get(category) ?? 0) - transaction.amount_minor,
+    directActualById.set(
+      categoryId,
+      (directActualById.get(categoryId) ?? 0) -
+        transaction.amount_minor,
     );
   }
-  for (const [category, amount] of actualByCategory) {
-    actualByCategory.set(category, Math.max(0, amount));
+  const planById = new Map(
+    budgetLines.map((line) => {
+      const categoryId =
+        line.category_id ?? idByPath.get(line.category);
+      return [
+        categoryId,
+        {
+          ...line,
+          category_id: categoryId,
+          amount_minor: Number(line.amount_minor),
+          tracking_mode: line.tracking_mode ?? "tracked",
+        },
+      ];
+    }).filter(([categoryId]) => categoryId),
+  );
+  if (!categories.length) {
+    for (const categoryId of directActualById.keys()) {
+      if (planById.has(categoryId)) continue;
+      const category = categoryById.get(categoryId);
+      planById.set(categoryId, {
+        category_id: categoryId,
+        category: category?.path ?? categoryId,
+        amount_minor: 0,
+        tracking_mode: "tracked",
+        version: 0,
+        has_budget: false,
+      });
+    }
   }
-
-  const planByCategory = new Map(
-    budgetLines.map((line) => [
-      line.category,
-      Number(line.amount_minor),
-    ]),
-  );
-  const versionByCategory = new Map(
-    budgetLines.map((line) => [
-      line.category,
-      Number(line.version ?? 0),
-    ]),
-  );
-  const categories = [...new Set([
-    ...planByCategory.keys(),
-    ...actualByCategory.keys(),
-  ])].sort(compareBudgetCategories);
-  const lines = categories.map((category) => {
-    const planned = planByCategory.get(category) ?? 0;
-    const actual = actualByCategory.get(category) ?? 0;
+  const subtreeActualMemo = new Map();
+  const subtreeActual = (categoryId, visited = new Set()) => {
+    if (subtreeActualMemo.has(categoryId)) {
+      return subtreeActualMemo.get(categoryId);
+    }
+    if (visited.has(categoryId)) return 0;
+    const nextVisited = new Set(visited).add(categoryId);
+    const value =
+      (directActualById.get(categoryId) ?? 0) +
+      (childrenById.get(categoryId) ?? []).reduce(
+        (sum, childId) =>
+          sum + subtreeActual(childId, nextVisited),
+        0,
+      );
+    subtreeActualMemo.set(categoryId, value);
+    return value;
+  };
+  const selectedChildren = new Map();
+  for (const categoryId of planById.keys()) {
+    const parentId = categoryById.get(categoryId)?.parent_category_id;
+    if (parentId && planById.has(parentId)) {
+      const list = selectedChildren.get(parentId) ?? [];
+      list.push(categoryId);
+      selectedChildren.set(parentId, list);
+    }
+  }
+  const selectedRoots = [...planById.keys()].filter((categoryId) => {
+    const parentId = categoryById.get(categoryId)?.parent_category_id;
+    return !parentId || !planById.has(parentId);
+  });
+  const informationalRootsWithin = (categoryId) => {
+    const result = [];
+    const visit = (parentId, inheritedInformational) => {
+      for (const childId of selectedChildren.get(parentId) ?? []) {
+        const child = planById.get(childId);
+        const informational =
+          inheritedInformational ||
+          child.tracking_mode === "informational";
+        if (!inheritedInformational && informational) {
+          result.push(childId);
+        } else {
+          visit(childId, informational);
+        }
+      }
+    };
+    visit(categoryId, false);
+    return result;
+  };
+  const makeNode = (
+    categoryId,
+    depth = 0,
+    inheritedInformational = false,
+  ) => {
+    const category = categoryById.get(categoryId) ?? {
+      id: categoryId,
+      name: planById.get(categoryId)?.category ?? categoryId,
+      path: planById.get(categoryId)?.category ?? categoryId,
+      parent_category_id: null,
+    };
+    const line = planById.get(categoryId);
+    const effectiveInformational =
+      inheritedInformational ||
+      line.tracking_mode === "informational";
+    const planned = line.amount_minor;
+    const actual = subtreeActual(categoryId);
+    const infoRoots = effectiveInformational
+      ? []
+      : informationalRootsWithin(categoryId);
+    const trackedPlanned = effectiveInformational
+      ? 0
+      : Math.max(
+          0,
+          planned -
+            infoRoots.reduce(
+              (sum, childId) =>
+                sum + planById.get(childId).amount_minor,
+              0,
+            ),
+        );
+    const trackedActual = effectiveInformational
+      ? 0
+      : Math.max(
+          0,
+          actual -
+            infoRoots.reduce(
+              (sum, childId) => sum + subtreeActual(childId),
+              0,
+            ),
+        );
+    const childNodes = (selectedChildren.get(categoryId) ?? [])
+      .sort((left, right) =>
+        compareBudgetCategories(
+          categoryById.get(left)?.path ?? left,
+          categoryById.get(right)?.path ?? right,
+        ),
+      )
+      .map((childId) =>
+        makeNode(childId, depth + 1, effectiveInformational),
+      );
     return {
-      category,
-      version: versionByCategory.get(category) ?? 0,
+      category_id: categoryId,
+      parent_category_id: category.parent_category_id ?? null,
+      category: category.path ?? category.name,
+      name: category.name,
+      depth,
+      version: Number(line.version ?? 0),
+      tracking_mode: line.tracking_mode,
+      effective_tracking_mode: effectiveInformational
+        ? "informational"
+        : "tracked",
       planned: money(planned, currency),
       actual: money(actual, currency),
-      remaining: money(planned - actual, currency),
-      over: money(Math.max(0, actual - planned), currency),
+      direct_actual: money(
+        directActualById.get(categoryId) ?? 0,
+        currency,
+      ),
+      tracked_planned: money(trackedPlanned, currency),
+      tracked_actual: money(trackedActual, currency),
+      remaining: effectiveInformational
+        ? null
+        : money(trackedPlanned - trackedActual, currency),
+      over: money(
+        effectiveInformational
+          ? 0
+          : Math.max(0, trackedActual - trackedPlanned),
+        currency,
+      ),
       progress_basis_points:
-        planned === 0
-          ? actual === 0
-            ? 0
-            : null
-          : Math.round((actual * 10_000) / planned),
-      has_budget: planByCategory.has(category),
+        effectiveInformational
+          ? null
+          : trackedPlanned === 0
+            ? trackedActual === 0
+              ? 0
+              : null
+            : Math.round((trackedActual * 10_000) / trackedPlanned),
+      has_budget: line.has_budget !== false,
+      children: childNodes,
     };
-  });
-  const plannedTotal = budgetLines.reduce(
-    (sum, line) => sum + Number(line.amount_minor),
+  };
+  const groups = selectedRoots
+    .sort((left, right) =>
+      compareBudgetCategories(
+        categoryById.get(left)?.path ?? left,
+        categoryById.get(right)?.path ?? right,
+      ),
+    )
+    .map((categoryId) => makeNode(categoryId));
+  const lines = groups.flatMap(flattenBudgetNode);
+  const plannedTotal = groups.reduce(
+    (sum, group) => sum + group.planned.amount_minor,
     0,
   );
-  const actualTotal = [...actualByCategory.values()].reduce(
+  const actualTotal = [...directActualById.values()].reduce(
     (sum, amount) => sum + amount,
     0,
+  );
+  const averageIncome = Number(income?.average_monthly_minor ?? 0);
+  const actualIncome = Number(income?.actual_month_minor ?? 0);
+  const estimatedLeftover = averageIncome - plannedTotal;
+  const actualLeftover = actualIncome - actualTotal;
+  const trackedOver = lines.filter(
+    (line) =>
+      line.effective_tracking_mode === "tracked" &&
+      line.over.amount_minor > 0,
   );
   return {
     month_on: month,
@@ -443,11 +640,28 @@ export function buildBudgetStatus({
     planned_total: money(plannedTotal, currency),
     actual_total: money(actualTotal, currency),
     remaining_total: money(plannedTotal - actualTotal, currency),
-    over_budget_category_count: lines.filter(
-      (line) => line.over.amount_minor > 0,
-    ).length,
+    over_budget_category_count: trackedOver.length,
+    average_monthly_income: money(averageIncome, currency),
+    actual_income: money(actualIncome, currency),
+    estimated_leftover: money(estimatedLeftover, currency),
+    actual_leftover: money(actualLeftover, currency),
+    income_month_count: Number(income?.month_count ?? 0),
+    income_category_ids: income?.category_ids ?? [],
+    plan_status:
+      estimatedLeftover < 0 || trackedOver.length
+        ? "needs_attention"
+        : "on_track",
+    groups,
     lines,
   };
+}
+
+function flattenBudgetNode(node) {
+  const { children, ...flat } = node;
+  return [
+    flat,
+    ...children.flatMap(flattenBudgetNode),
+  ];
 }
 
 export function compareBudgetCategories(left, right) {
@@ -477,6 +691,7 @@ export function expandTransactionsWithSplits(transactions, splits) {
       ...transaction,
       id: `${transaction.id}:${line.id ?? line.line_index}`,
       category_primary: line.category,
+      category_id: line.category_id ?? null,
       category_detailed: null,
       amount_minor: Number(line.amount_minor),
       is_fixed: Boolean(line.is_fixed),

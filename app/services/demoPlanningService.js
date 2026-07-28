@@ -202,6 +202,11 @@ export function createDemoPlanningService({
   const budgetVersions = new Map(
     [...budgetDefaults.keys()].map((category) => [category, 1]),
   );
+  const budgetModes = new Map(
+    [...budgetDefaults.keys()].map((category) => [category, "tracked"]),
+  );
+  let budgetSettingsVersion = 1;
+  let incomeCategoryIds = ["category_income"];
   const auditEvents = [];
   const scheduleRuns = [];
   const idempotentWrites = new Map();
@@ -312,14 +317,18 @@ export function createDemoPlanningService({
         excluded_from_spending: false,
         currency_code: "USD",
         amount_minor: -amount,
-        category_primary: category,
+      category_primary: category,
+      category_id: demoBudgetCategoryId(category),
       }),
     );
     return buildBudgetStatus({
       monthOn: month,
+      categories: demoBudgetCategories(),
       budgetLines: [...values.entries()].map(([category, amount_minor]) => ({
+        category_id: demoBudgetCategoryId(category),
         category,
         amount_minor,
+        tracking_mode: budgetModes.get(category) ?? "tracked",
         version: budgetVersions.get(category) ?? 0,
       })),
       transactions,
@@ -463,7 +472,10 @@ export function createDemoPlanningService({
       };
     },
 
-    async getBudgetStatus({ month_on = null } = {}) {
+    async getBudgetStatus({
+      month_on = null,
+      include_available_categories = false,
+    } = {}) {
       const month = monthStart(
         month_on ?? workspaceDate(now(), "America/Los_Angeles"),
       );
@@ -471,6 +483,36 @@ export function createDemoPlanningService({
         workspaceDate(now(), "America/Los_Angeles"),
       );
       const data = budget(month);
+      delete data.groups;
+      const demoAvailableCategories = demoBudgetCategories();
+      if (include_available_categories) {
+        data.available_categories = demoAvailableCategories;
+      }
+      data.settings_version = budgetSettingsVersion;
+      data.income_category_ids = incomeCategoryIds;
+      data.average_monthly_income = {
+        amount_minor: 930_000,
+        currency: "USD",
+      };
+      data.actual_income = {
+        amount_minor: 930_000,
+        currency: "USD",
+      };
+      data.estimated_leftover = {
+        amount_minor:
+          930_000 - data.planned_total.amount_minor,
+        currency: "USD",
+      };
+      data.actual_leftover = {
+        amount_minor: 930_000 - data.actual_total.amount_minor,
+        currency: "USD",
+      };
+      data.plan_status =
+        data.estimated_leftover.amount_minor < 0 ||
+        data.over_budget_category_count
+          ? "needs_attention"
+          : "on_track";
+      data.is_current_month = month === currentMonth;
       data.has_exact_month_lines =
         month < currentMonth && budgetMonths.has(month);
       data.standing_effective_month_on =
@@ -517,7 +559,10 @@ export function createDemoPlanningService({
     async getPlanningOverview({ month_on = null } = {}) {
       const safeToSpend = state();
       const history = goalCatalog(safeToSpend);
-      const budgetStatus = await service.getBudgetStatus({ month_on });
+      const budgetStatus = await service.getBudgetStatus({
+        month_on,
+        include_available_categories: true,
+      });
       const previousBudgetStatus = await service.getBudgetStatus({
         month_on: previousMonth(budgetStatus.data.month_on),
       });
@@ -1018,37 +1063,189 @@ export function createDemoPlanningService({
       const month = monthStart(
         workspaceDate(now(), "America/Los_Angeles"),
       );
+      const category =
+        input.category ??
+        demoBudgetCategoryName(input.category_id) ??
+        input.category_id;
       const currentVersion =
-        budgetVersions.get(input.category) ?? 0;
+        budgetVersions.get(category) ?? 0;
       if (currentVersion !== Number(input.expected_version)) {
         throw demoConflict(
           "The planning record changed; refresh and try again.",
         );
       }
-      const before = budgetDefaults.has(input.category)
+      const requestedSubtree = new Set(
+        demoBudgetDescendantNames(category),
+      );
+      if (
+        incomeCategoryIds.some((categoryId) => {
+          const incomeName = demoBudgetCategoryName(categoryId);
+          return (
+            requestedSubtree.has(incomeName) ||
+            demoBudgetDescendantNames(incomeName).includes(category)
+          );
+        })
+      ) {
+        throw demoBadRequest(
+          "An income category cannot also be an expense budget.",
+        );
+      }
+      if (
+        category === "Airlines" &&
+        !budgetDefaults.has("Travel")
+      ) {
+        throw demoBadRequest(
+          "Add the parent category to the budget before adding this child.",
+        );
+      }
+      if (
+        category === "Airlines" &&
+        Number(input.amount_minor) >
+          Number(budgetDefaults.get("Travel"))
+      ) {
+        throw demoBadRequest(
+          "Child allocations cannot exceed the parent budget.",
+        );
+      }
+      if (
+        category === "Travel" &&
+        budgetDefaults.has("Airlines") &&
+        Number(input.amount_minor) <
+          Number(budgetDefaults.get("Airlines"))
+      ) {
+        throw demoBadRequest(
+          "This budget cannot be lower than its child allocations.",
+        );
+      }
+      const before = budgetDefaults.has(category)
         ? {
-            category: input.category,
-            amount_minor: budgetDefaults.get(input.category),
+            category,
+            amount_minor: budgetDefaults.get(category),
             version: currentVersion,
           }
         : null;
-      budgetDefaults.set(input.category, Number(input.amount_minor));
+      budgetDefaults.set(category, Number(input.amount_minor));
+      budgetModes.set(
+        category,
+        input.tracking_mode ?? "tracked",
+      );
       const nextVersion = currentVersion + 1;
-      budgetVersions.set(input.category, nextVersion);
+      budgetVersions.set(category, nextVersion);
       const after = {
-        category: input.category,
+        category,
+        category_id: demoBudgetCategoryId(category),
         amount_minor: Number(input.amount_minor),
+        tracking_mode: budgetModes.get(category),
         version: nextVersion,
       };
       const auditId = audit(
         "budget.standing_set",
         "budget_line",
-        `${month}:${input.category}`,
+        `${month}:${category}`,
         actor(actorInput),
         before,
         after,
       );
       return change("Budget saved", { before, after }, auditId);
+    },
+
+    async clearCategoryBudget(input, actorInput) {
+      const category =
+        demoBudgetCategoryName(input.category_id) ?? input.category_id;
+      if (
+        category === "Travel" &&
+        budgetDefaults.has("Airlines") &&
+        input.confirm_descendants !== true
+      ) {
+        throw demoBadRequest(
+          "Confirm removal of descendant budgets: Travel / Airlines.",
+        );
+      }
+      const currentVersion = budgetVersions.get(category) ?? 0;
+      if (currentVersion !== Number(input.expected_version)) {
+        throw demoConflict(
+          "The planning record changed; refresh and try again.",
+        );
+      }
+      const before = budgetDefaults.has(category)
+        ? {
+            category,
+            amount_minor: budgetDefaults.get(category),
+            version: currentVersion,
+          }
+        : null;
+      budgetDefaults.delete(category);
+      budgetModes.delete(category);
+      budgetVersions.set(category, currentVersion + 1);
+      if (category === "Travel") {
+        budgetDefaults.delete("Airlines");
+        budgetModes.delete("Airlines");
+        budgetVersions.set(
+          "Airlines",
+          (budgetVersions.get("Airlines") ?? 0) + 1,
+        );
+      }
+      const auditId = audit(
+        "budget.standing_removed",
+        "budget_line",
+        category,
+        actor(actorInput),
+        before,
+        null,
+      );
+      return change("Budget removed", { before, after: null }, auditId);
+    },
+
+    async setBudgetIncomeCategories(input, actorInput) {
+      if (budgetSettingsVersion !== Number(input.expected_version)) {
+        throw demoConflict(
+          "The planning record changed; refresh and try again.",
+        );
+      }
+      const before = {
+        income_category_ids: incomeCategoryIds,
+        version: budgetSettingsVersion,
+      };
+      const nextIncomeCategoryIds = [
+        ...new Set(input.income_category_ids),
+      ];
+      const selectedIncomeNames = new Set(
+        nextIncomeCategoryIds.flatMap((categoryId) =>
+          demoBudgetDescendantNames(
+            demoBudgetCategoryName(categoryId),
+          ),
+        ),
+      );
+      if (
+        [...budgetDefaults.keys()].some(
+          (budgetName) =>
+            selectedIncomeNames.has(budgetName) ||
+            nextIncomeCategoryIds.some((categoryId) =>
+              demoBudgetDescendantNames(budgetName).includes(
+                demoBudgetCategoryName(categoryId),
+              ),
+            ),
+        )
+      ) {
+        throw demoBadRequest(
+          "Remove a category from the expense budget before using it as income.",
+        );
+      }
+      incomeCategoryIds = nextIncomeCategoryIds;
+      budgetSettingsVersion += 1;
+      const after = {
+        income_category_ids: incomeCategoryIds,
+        version: budgetSettingsVersion,
+      };
+      const auditId = audit(
+        "budget.income_categories_set",
+        "budget_settings",
+        "shared",
+        actor(actorInput),
+        before,
+        after,
+      );
+      return change("Income categories saved", { before, after }, auditId);
     },
 
     async splitTransaction(_input, actorInput) {
@@ -1109,6 +1306,8 @@ export function createDemoPlanningService({
         set_goal_funding_schedule: "setGoalFundingSchedule",
         finish_finance_goal: "finishFinanceGoal",
         set_category_budget: "setCategoryBudget",
+        clear_category_budget: "clearCategoryBudget",
+        set_budget_income_categories: "setBudgetIncomeCategories",
         split_transaction: "splitTransaction",
       };
       const method = methods[operation];
@@ -1421,6 +1620,51 @@ function previousMonth(monthOn) {
   const date = new Date(`${monthStart(monthOn)}T00:00:00.000Z`);
   date.setUTCMonth(date.getUTCMonth() - 1);
   return date.toISOString().slice(0, 7) + "-01";
+}
+
+function demoBudgetCategoryId(name) {
+  return `category_${String(name)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_|_$/g, "")}`;
+}
+
+function demoBudgetCategories() {
+  return [
+    "Income",
+    "Housing",
+    "Groceries",
+    "Dining",
+    "Shopping",
+    "Travel",
+    "Airlines",
+    "Utilities",
+    "Fees & Interest",
+    "Other",
+  ].map((name) => ({
+    id: demoBudgetCategoryId(name),
+    name,
+    path:
+      name === "Airlines"
+        ? "Travel / Airlines"
+        : name,
+    parent_category_id:
+      name === "Airlines"
+        ? demoBudgetCategoryId("Travel")
+        : null,
+    is_system: name === "Other",
+  }));
+}
+
+function demoBudgetCategoryName(categoryId) {
+  return demoBudgetCategories().find(
+    (category) => category.id === categoryId,
+  )?.name;
+}
+
+function demoBudgetDescendantNames(name) {
+  if (!name) return [];
+  return name === "Travel" ? ["Travel", "Airlines"] : [name];
 }
 
 function demoBadRequest(message) {

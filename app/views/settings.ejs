@@ -18,6 +18,50 @@
     const weeklyRule = configuredRules["weekly.spend_less"] || {};
     const subscriptionRule = configuredRules["subscriptions.expensive"] || {};
     const concentrationRule = configuredRules["investments.concentration"] || {};
+    const currentInsightStatus =
+      typeof insightStatus !== "undefined" && insightStatus
+        ? insightStatus
+        : {
+            state: "never_run",
+            can_run: true,
+            pause_reasons: [],
+            last_run_at: null,
+            last_run_status: null,
+            next_scheduled_at: null,
+            last_findings_generated_at: null,
+            active_count: 0,
+            archived_count: 0,
+            total_count: 0,
+          };
+    const insightStatusLabels = {
+      paused: "Paused",
+      running: "Running",
+      queued: "Queued",
+      failed: "Failed",
+      ready: "Ready",
+      never_run: "Never run",
+    };
+    const insightStatusCopy = {
+      paused: "Connected data is stale or incomplete, so the last good findings stay in place.",
+      running: "Recurring detection and insight generation are running now.",
+      queued: "An insight run is waiting for the worker.",
+      failed: "The last insight job failed. Check connections, then run it again.",
+      ready: "Insights run after fresh syncs and during the nightly refresh.",
+      never_run: "No insight run has completed yet.",
+    };
+    const insightTimestamp = (value) => {
+      if (!value) return "Never";
+      const date = new Date(value);
+      return Number.isFinite(date.getTime())
+        ? date.toLocaleString("en-US", {
+            month: "short",
+            day: "numeric",
+            year: "numeric",
+            hour: "numeric",
+            minute: "2-digit",
+          })
+        : "Never";
+    };
     const settingsAccounts =
       typeof accounts !== "undefined" ? accounts : [];
     const settingsManualAssets =
@@ -85,6 +129,7 @@
       <a href="#connections">Connections</a>
       <a href="#account-groups">Account groups</a>
       <a href="#manual-assets">Manual assets</a>
+      <a href="#insights">Insights</a>
       <a href="#insight-rules">Insight rules</a>
       <a href="#access">Access</a>
     </nav>
@@ -364,6 +409,95 @@
       </div>
     </section>
 
+
+    <section id="insights" class="card settings-card" data-insight-admin>
+      <div class="settings-card__heading">
+        <div>
+          <h2>Insight status</h2>
+          <p><%= insightStatusCopy[currentInsightStatus.state] || insightStatusCopy.never_run %></p>
+        </div>
+        <span class="status-pill status-pill--insight-<%= currentInsightStatus.state %>">
+          <i class="ph <%= currentInsightStatus.state === 'ready' ? 'ph-check-circle' : currentInsightStatus.state === 'running' || currentInsightStatus.state === 'queued' ? 'ph-spinner-gap' : currentInsightStatus.state === 'failed' ? 'ph-warning-circle' : 'ph-pause-circle' %>" aria-hidden="true"></i>
+          <%= insightStatusLabels[currentInsightStatus.state] || "Unknown" %>
+        </span>
+      </div>
+
+      <% if (currentInsightStatus.state === "paused" && currentInsightStatus.pause_reasons?.length) { %>
+        <div class="insight-admin__pause-reasons" role="status">
+          <strong>Why it’s paused</strong>
+          <ul>
+            <% currentInsightStatus.pause_reasons.forEach((reason) => { %>
+              <li><%= reason.message || reason %></li>
+            <% }) %>
+          </ul>
+        </div>
+      <% } %>
+
+      <dl class="insight-admin__facts">
+        <div>
+          <dt>Last run</dt>
+          <dd>
+            <% if (currentInsightStatus.last_run_at) { %>
+              <time datetime="<%= currentInsightStatus.last_run_at %>" data-local-date-time="<%= currentInsightStatus.last_run_at %>" data-local-date-time-style="transaction"><%= insightTimestamp(currentInsightStatus.last_run_at) %></time>
+            <% } else { %>
+              Never
+            <% } %>
+          </dd>
+          <small><%= currentInsightStatus.last_run_status ? `Job ${currentInsightStatus.last_run_status}` : "No recorded attempt" %></small>
+        </div>
+        <div>
+          <dt>Last findings</dt>
+          <dd>
+            <% if (currentInsightStatus.last_findings_generated_at) { %>
+              <time datetime="<%= currentInsightStatus.last_findings_generated_at %>" data-local-date-time="<%= currentInsightStatus.last_findings_generated_at %>" data-local-date-time-style="transaction"><%= insightTimestamp(currentInsightStatus.last_findings_generated_at) %></time>
+            <% } else { %>
+              Never
+            <% } %>
+          </dd>
+          <small>Most recent generated set</small>
+        </div>
+        <div>
+          <dt>Next scheduled run</dt>
+          <dd>
+            <% if (currentInsightStatus.next_scheduled_at) { %>
+              <time datetime="<%= currentInsightStatus.next_scheduled_at %>" data-local-date-time="<%= currentInsightStatus.next_scheduled_at %>" data-local-date-time-style="transaction"><%= insightTimestamp(currentInsightStatus.next_scheduled_at) %></time>
+            <% } else { %>
+              Not scheduled
+            <% } %>
+          </dd>
+          <small>Nightly refresh</small>
+        </div>
+        <div>
+          <dt>Stored insights</dt>
+          <dd><%= currentInsightStatus.active_count %> active · <%= currentInsightStatus.archived_count %> archived</dd>
+          <small><%= currentInsightStatus.total_count %> total</small>
+        </div>
+      </dl>
+
+      <div class="insight-admin__actions">
+        <span class="save-status" role="status" aria-live="polite" data-insight-admin-status></span>
+        <button
+          class="button button--dark"
+          type="button"
+          data-insights-run
+          <%= ["running", "queued"].includes(currentInsightStatus.state) ? "disabled" : "" %>
+        >
+          <i class="ph ph-play" aria-hidden="true"></i>
+          Run insights now
+        </button>
+        <button
+          class="button button--ghost danger-action"
+          type="button"
+          data-insights-clear
+          data-confirm-message="Clear every generated insight? Feedback, ignored patterns, and recurring corrections will stay. The next run can generate new findings."
+          <%= currentInsightStatus.total_count === 0 ? "disabled" : "" %>
+        >
+          <i class="ph ph-trash" aria-hidden="true"></i>
+          Clear all insights
+        </button>
+      </div>
+      <p class="card-note">Clearing removes generated findings and summaries. It keeps your feedback and classification corrections so the same nonsense stays dead.</p>
+    </section>
 
     <section id="insight-rules" class="card settings-card">
       <div class="settings-card__heading">

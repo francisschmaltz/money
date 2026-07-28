@@ -388,13 +388,24 @@ test("transactions page presents provider categories and dates as human text", a
     posted_on: new Date("2026-07-27T00:00:00.000Z"),
     category_detailed: "FOOD_AND_DRINK_RESTAURANT",
   };
+  const mergedRestaurant = {
+    ...transaction({
+      id: "merged-restaurant",
+      postedOn: "2026-07-26",
+      amountMinor: -4_200,
+      category: "Food & Drink",
+      merchant: "Current category wins",
+    }),
+    category_id: "category-food-and-drink",
+    category_detailed: "FOOD_AND_DRINK_RESTAURANT",
+  };
   const repository = {
     async getDataFreshness() {
       return FRESHNESS;
     },
     async listTransactions() {
       return {
-        transactions: [restaurant],
+        transactions: [restaurant, mergedRestaurant],
         pageInfo: { has_more: false, next_cursor: null },
       };
     },
@@ -429,6 +440,12 @@ test("transactions page presents provider categories and dates as human text", a
   assert.equal(
     result.transactions[0].detailedCategoryValue,
     "FOOD_AND_DRINK_RESTAURANT",
+  );
+  assert.equal(
+    result.transactions.find(
+      (transaction) => transaction.id === "merged-restaurant",
+    ).category,
+    "Food & Drink",
   );
   assert.equal(result.transactions[0].date, "Jul 27, 2026");
   assert.deepEqual(

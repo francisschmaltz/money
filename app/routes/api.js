@@ -38,6 +38,14 @@ const INSIGHT_REASON_CODES = new Set([
   "wrong_interpretation",
   "other_false_positive",
 ]);
+const INSIGHT_BULK_ACTIONS = new Set([
+  "archive",
+  "ignore",
+  "report_incorrect",
+  "restore",
+  "dismiss",
+  "mark_bad",
+]);
 
 function unavailable(response, capability) {
   response.status(503).json({
@@ -528,7 +536,23 @@ export function createApiRouter({
   );
 
   router.put(
-    "/api/v1/plan/budget/:category",
+    "/api/v1/plan/budget/settings",
+    requireCsrf,
+    (request, response, next) => {
+      invokePlanWrite(
+        planningService,
+        "set_budget_income_categories",
+        "setBudgetIncomeCategories",
+        request.body ?? {},
+        request.user,
+        response,
+        next,
+      );
+    },
+  );
+
+  router.put(
+    "/api/v1/plan/budget/:categoryId",
     requireCsrf,
     (request, response, next) => {
       invokePlanWrite(
@@ -537,7 +561,26 @@ export function createApiRouter({
         "setCategoryBudget",
         {
           ...(request.body ?? {}),
-          category: request.params.category,
+          category_id: request.params.categoryId,
+        },
+        request.user,
+        response,
+        next,
+      );
+    },
+  );
+
+  router.delete(
+    "/api/v1/plan/budget/:categoryId",
+    requireCsrf,
+    (request, response, next) => {
+      invokePlanWrite(
+        planningService,
+        "clear_category_budget",
+        "clearCategoryBudget",
+        {
+          ...(request.body ?? {}),
+          category_id: request.params.categoryId,
         },
         request.user,
         response,
@@ -1098,6 +1141,32 @@ export function createApiRouter({
     },
   );
 
+  router.put(
+    "/api/v1/transactions/:transactionId/note",
+    requireCsrf,
+    (request, response, next) => {
+      const input = transactionNoteInput(request.body);
+      if (!input) {
+        invalidRequest(
+          response,
+          "note and expected_note_version are required.",
+        );
+        return;
+      }
+      invokeWithActor(
+        financeService,
+        "updateTransactionNote",
+        {
+          transaction_id: request.params.transactionId,
+          ...input,
+        },
+        request.user,
+        response,
+        next,
+      );
+    },
+  );
+
   router.post(
     "/api/v1/transactions/batch-edit",
     requireAdmin,
@@ -1240,6 +1309,30 @@ export function createApiRouter({
           asset_id: request.params.assetId,
           user_id: request.user?.id,
         },
+        response,
+        next,
+      );
+    },
+  );
+
+  router.post(
+    "/api/v1/insights/batch-action",
+    requireAdmin,
+    requireCsrf,
+    (request, response, next) => {
+      const input = insightBatchActionInput(request.body);
+      if (!input) {
+        invalidRequest(
+          response,
+          "Provide 1–100 unique finding_ids, a supported action, and a reason_code only when reporting incorrect insights.",
+        );
+        return;
+      }
+      invokeWithActor(
+        financeService,
+        "batchActOnFindings",
+        input,
+        request.user,
         response,
         next,
       );
@@ -1467,7 +1560,109 @@ export function createApiRouter({
     },
   );
 
+  router.get(
+    "/api/v1/settings/insights/status",
+    requireAdmin,
+    (request, response, next) => {
+      invoke(
+        financeService,
+        "getInsightStatus",
+        {},
+        response,
+        next,
+      );
+    },
+  );
+
+  router.post(
+    "/api/v1/settings/insights/run",
+    requireAdmin,
+    requireCsrf,
+    (request, response, next) => {
+      invokeWithActorAndStatus(
+        financeService,
+        "forceRunInsights",
+        {},
+        request.user,
+        202,
+        response,
+        next,
+      );
+    },
+  );
+
+  router.delete(
+    "/api/v1/settings/insights",
+    requireAdmin,
+    requireCsrf,
+    (request, response, next) => {
+      invokeWithActor(
+        financeService,
+        "clearInsights",
+        {},
+        request.user,
+        response,
+        next,
+      );
+    },
+  );
+
   return router;
+}
+
+function insightBatchActionInput(body = {}) {
+  if (
+    !Array.isArray(body.finding_ids) ||
+    body.finding_ids.length < 1 ||
+    body.finding_ids.length > 100
+  ) {
+    return null;
+  }
+  const findingIds = body.finding_ids.map((value) => {
+    if (typeof value !== "string") return undefined;
+    const normalized = value.trim();
+    return /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(normalized)
+      ? normalized
+      : undefined;
+  });
+  if (
+    findingIds.some((value) => !value) ||
+    new Set(findingIds).size !== findingIds.length
+  ) {
+    return null;
+  }
+
+  const action = stringValue(body.action, 40);
+  if (!INSIGHT_BULK_ACTIONS.has(action)) return null;
+  const hasReasonCode = Object.hasOwn(body, "reason_code");
+  const reasonCode = hasReasonCode
+    ? stringValue(body.reason_code, 40)
+    : undefined;
+  if (
+    action === "report_incorrect" &&
+    !INSIGHT_REASON_CODES.has(reasonCode)
+  ) {
+    return null;
+  }
+  if (
+    action === "mark_bad" &&
+    reasonCode !== undefined &&
+    !INSIGHT_REASON_CODES.has(reasonCode)
+  ) {
+    return null;
+  }
+  if (
+    !["report_incorrect", "mark_bad"].includes(action) &&
+    hasReasonCode
+  ) {
+    return null;
+  }
+
+  return {
+    finding_ids: findingIds,
+    action,
+    ...(reasonCode ? { reason_code: reasonCode } : {}),
+  };
 }
 
 function transactionBatchEditInput(body = {}) {
@@ -1547,6 +1742,31 @@ function transactionBatchEditInput(body = {}) {
   return {
     transaction_ids: transactionIds,
     changes,
+  };
+}
+
+function transactionNoteInput(body = {}) {
+  if (
+    !body ||
+    typeof body !== "object" ||
+    Array.isArray(body) ||
+    Object.keys(body).some(
+      (key) => !["note", "expected_note_version"].includes(key),
+    ) ||
+    !Object.hasOwn(body, "note")
+  ) {
+    return null;
+  }
+  const expectedVersion = exactInteger(body.expected_note_version, {
+    minimum: 0,
+  });
+  if (expectedVersion === undefined) return null;
+  if (body.note !== null && typeof body.note !== "string") return null;
+  const note = body.note == null ? null : body.note.trim();
+  if (note != null && note.length > 2000) return null;
+  return {
+    note: note || null,
+    expected_note_version: expectedVersion,
   };
 }
 

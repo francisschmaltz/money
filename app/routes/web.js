@@ -558,6 +558,23 @@ function demoServiceTransactionForWeb(transaction, demo) {
       stored?.rawName ??
       transaction.description ??
       null,
+    note:
+      transaction.note ??
+      stored?.note ??
+      null,
+    noteVersion: Number(
+      transaction.note_version ??
+      stored?.noteVersion ??
+      0,
+    ),
+    noteUpdatedBy:
+      transaction.note_updated_by ??
+      stored?.noteUpdatedBy ??
+      null,
+    noteUpdatedAt:
+      transaction.note_updated_at ??
+      stored?.noteUpdatedAt ??
+      null,
     category:
       transaction.category_primary ??
       transaction.category ??
@@ -765,6 +782,24 @@ async function demoPageModel(
       typeof financeService?.listTransactionCleanupRules === "function"
         ? await financeService.listTransactionCleanupRules()
         : demo.transactionRules;
+    const insightStatus =
+      typeof financeService?.getInsightStatus === "function"
+        ? await financeService.getInsightStatus()
+        : {
+            state: "ready",
+            can_run: true,
+            pause_reasons: [],
+            freshness_data_as_of: null,
+            current_job_type: null,
+            last_run_at: null,
+            last_run_status: null,
+            last_error: null,
+            next_scheduled_at: null,
+            last_findings_generated_at: null,
+            active_count: 0,
+            archived_count: 0,
+            total_count: 0,
+          };
     const staticCleanup = demoTransactionCleanup(query, demo);
     const transactionCleanup =
       (query.transaction || query.cleanup_q) &&
@@ -783,6 +818,7 @@ async function demoPageModel(
       transactionRules: Array.isArray(listedRules)
         ? listedRules
         : listedRules?.rules ?? demo.transactionRules,
+      insightStatus,
     };
   }
   if (view === "dashboard") {
@@ -821,7 +857,7 @@ async function demoPageModel(
     const matchingTransactions = categoryTransactions.filter(
       (transaction) =>
         (!normalized ||
-          `${transaction.merchant} ${transaction.category} ${transaction.account}`
+          `${transaction.merchant} ${transaction.category} ${transaction.account} ${transaction.note ?? ""}`
             .toLowerCase()
             .includes(normalized)) &&
         (!query.category ||
@@ -870,7 +906,6 @@ async function demoPageModel(
   }
   if (view === "recurring") {
     return {
-      inactiveRecurring: [],
       selectedRecurring:
         [
           ...demo.subscriptions,

@@ -99,7 +99,7 @@ test("transaction timelines and sort choices change the ledger", async ({
   await page.goto("/transactions?period=this-year&sort=category");
   const categories = (
     await page
-      .locator(".transaction-row__main > span")
+      .locator(".transaction-row__category")
       .allTextContents()
   ).map((value) => value.split("·", 1)[0].trim());
   expect(categories).toEqual(
@@ -141,13 +141,13 @@ test("one transaction can change category without creating a rule", async ({
   );
   await page.goto("/transactions?transaction=txn_whole_foods");
 
-  const section = page.locator(".transaction-category-override");
-  const form = section.locator("[data-transaction-category-form]");
+  const section = page.locator(".transaction-organize");
+  const form = section.locator("[data-transaction-organize-form]");
   await expect(form).toBeVisible();
   await expect(
     section.getByText("No automatic cleanup rule is created"),
   ).toBeVisible();
-  await form
+  await page
     .getByLabel("Spending category")
     .selectOption({ label: "Dining" });
   await Promise.all([
@@ -158,12 +158,53 @@ test("one transaction can change category without creating a rule", async ({
           "/api/v1/transactions/batch-edit",
     ),
     form
-      .getByRole("button", { name: "Save for this transaction" })
+      .getByRole("button", { name: "Save changes" })
       .click(),
   ]);
 
   expect(write).toEqual({
     transaction_ids: ["txn_whole_foods"],
     changes: { category_primary: "Dining" },
+  });
+});
+
+test("transaction notes save and the detail body uses the full modal width", async ({
+  page,
+}) => {
+  let write;
+  await page.route(
+    "**/api/v1/transactions/txn_whole_foods/note",
+    async (route) => {
+      write = route.request().postDataJSON();
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          transaction_id: "txn_whole_foods",
+          note: "Dinner with Sam",
+          note_version: 2,
+        }),
+      });
+    },
+  );
+  await page.goto("/transactions?transaction=txn_whole_foods");
+
+  const dialog = page.locator(".entity-detail-dialog--transaction");
+  const body = dialog.locator(".entity-detail-dialog__body--transaction");
+  const widths = await Promise.all([
+    dialog.locator(".entity-detail-dialog__panel").evaluate(
+      (element) => element.getBoundingClientRect().width,
+    ),
+    body.evaluate((element) => element.getBoundingClientRect().width),
+  ]);
+  expect(Math.abs(widths[0] - widths[1])).toBeLessThanOrEqual(1);
+
+  const form = dialog.locator("[data-transaction-note-form]");
+  await form.getByLabel("Transaction note").fill("Dinner with Sam");
+  await form.getByRole("button", { name: "Save note" }).click();
+  await expect(form.getByRole("status")).toHaveText("Note saved");
+  expect(write).toEqual({
+    note: "Dinner with Sam",
+    expected_note_version: 1,
   });
 });

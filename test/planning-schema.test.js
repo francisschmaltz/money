@@ -22,6 +22,10 @@ const goalHistoryMigration = fs.readFileSync(
   new URL("../migrations/016_goal_history.sql", import.meta.url),
   "utf8",
 );
+const hierarchicalBudgetMigration = fs.readFileSync(
+  new URL("../migrations/025_hierarchical_budgets.sql", import.meta.url),
+  "utf8",
+);
 
 test("family planning migration persists every durable planning record", () => {
   for (const table of [
@@ -103,6 +107,34 @@ test("planning writes persist budget and transaction split versions", () => {
   assert.match(
     versionMigration,
     /CREATE TRIGGER a_bump_split_version_before_invalidation[\s\S]*BEFORE UPDATE OF amount_minor, currency_code, pending/,
+  );
+});
+
+test("hierarchical budgets use category IDs and preserve tracking history", () => {
+  assert.match(
+    hierarchicalBudgetMigration,
+    /PRIMARY KEY \(workspace_id, category_id, effective_month_on\)/,
+  );
+  assert.match(
+    hierarchicalBudgetMigration,
+    /PRIMARY KEY \(workspace_id, month_on, category_id\)/,
+  );
+  assert.match(
+    hierarchicalBudgetMigration,
+    /tracking_mode IN \('tracked', 'informational'\)/,
+  );
+  assert.match(hierarchicalBudgetMigration, /is_removed boolean/);
+  assert.match(
+    hierarchicalBudgetMigration,
+    /CREATE TABLE budget_income_categories/,
+  );
+  assert.match(
+    hierarchicalBudgetMigration,
+    /CREATE FUNCTION budget_hierarchy_is_valid/,
+  );
+  assert.match(
+    hierarchicalBudgetMigration,
+    /INSERT INTO budget_lines[\s\S]*GREATEST\([\s\S]*SUM\(/,
   );
 });
 

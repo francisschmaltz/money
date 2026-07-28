@@ -5,6 +5,11 @@ import request from "supertest";
 
 import { createApp } from "../app/app.js";
 import { loadConfig } from "../app/config.js";
+import {
+  FINANCE_TOOL_NAMES,
+  PLANNING_READ_TOOL_NAMES,
+  PLANNING_WRITE_TOOL_NAMES,
+} from "../app/mcp/constants.js";
 import { createDemoFinanceService } from "../app/services/demoFinanceService.js";
 import { createDemoPlanningService } from "../app/services/demoPlanningService.js";
 
@@ -48,8 +53,16 @@ test("HTTP MCP discovery separates read and plan-write credentials", async () =>
   const readNames = read.body.result.tools.map((tool) => tool.name);
   const writeNames = write.body.result.tools.map((tool) => tool.name);
 
-  assert.equal(readNames.length, 15);
-  assert.equal(writeNames.length, 24);
+  assert.equal(
+    readNames.length,
+    FINANCE_TOOL_NAMES.length + PLANNING_READ_TOOL_NAMES.length,
+  );
+  assert.equal(
+    writeNames.length,
+    FINANCE_TOOL_NAMES.length +
+      PLANNING_READ_TOOL_NAMES.length +
+      PLANNING_WRITE_TOOL_NAMES.length,
+  );
   assert.ok(readNames.includes("get_safe_to_spend"));
   assert.equal(readNames.includes("create_finance_goal"), false);
   assert.ok(readNames.includes("get_transaction_goal_spending"));
@@ -57,6 +70,8 @@ test("HTTP MCP discovery separates read and plan-write credentials", async () =>
   assert.ok(writeNames.includes("create_finance_goal"));
   assert.ok(writeNames.includes("spend_from_finance_goal"));
   assert.ok(writeNames.includes("reverse_goal_spend"));
+  assert.ok(writeNames.includes("clear_category_budget"));
+  assert.ok(writeNames.includes("set_budget_income_categories"));
 });
 
 test("only the plan credential can execute an idempotent audited write", async () => {
@@ -124,7 +139,10 @@ test("the Plan page renders the daily number, goals, schedules, and budgets", as
   assert.match(response.text, /<h2 id="budget-heading">Budget<\/h2>/);
   assert.match(response.text, /Previous month actual/);
   assert.match(response.text, /budget-row--total/);
-  assert.match(response.text, /href="\/transactions\?category=Dining"/);
+  assert.match(
+    response.text,
+    /href="\/transactions\?category=category_dining"/,
+  );
   assert.match(response.text, /\$71\.46 over/);
   assert.match(response.text, /\$65\.70 under/);
   assert.doesNotMatch(
@@ -138,16 +156,16 @@ test("the Plan page renders the daily number, goals, schedules, and budgets", as
 
   const totalIndex = response.text.indexOf("budget-row--total");
   const utilitiesIndex = response.text.indexOf(
-    'href="/transactions?category=Utilities"',
+    'href="/transactions?category=category_utilities"',
   );
   const otherIndex = response.text.indexOf(
-    'href="/transactions?category=Other"',
+    'href="/transactions?category=category_other"',
   );
   assert.ok(totalIndex >= 0 && totalIndex < otherIndex);
   assert.ok(utilitiesIndex >= 0 && utilitiesIndex < otherIndex);
   assert.match(
     response.text,
-    /href="\/transactions\?category=Dining">Dining<\/a><\/span>\s*<span role="cell">\$450\.00<\/span>\s*<span role="cell">\$521\.46<\/span>[\s\S]*?<span role="cell">\$460\.00<\/span>/,
+    /href="\/transactions\?category=category_dining">Dining<\/a>[\s\S]*?<span role="cell">\$450\.00<\/span>\s*<span role="cell">\$521\.46<\/span>[\s\S]*?<span role="cell">\$460\.00<\/span>/,
   );
 });
 
@@ -163,7 +181,7 @@ test("the budget is view-only until edit mode is explicit", async () => {
     .expect(200);
 
   assert.match(response.text, /Done<\/a>/);
-  assert.match(response.text, /Add a budget category/);
+  assert.match(response.text, /Add or configure categories/);
   assert.match(
     response.text,
     /data-endpoint="\/api\/v1\/plan\/budget"/,

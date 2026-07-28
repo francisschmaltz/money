@@ -248,7 +248,7 @@
             );
           %>
           <% if (dashboardInsight) { %>
-            <%- include("partials/insight-card", { insight: dashboardInsight }) %>
+            <%- include("partials/insight-card", { insight: dashboardInsight, lifecycleControls: true }) %>
           <% } else { %>
             <article class="card insight-card">
               <h3>No finding needs attention.</h3>
