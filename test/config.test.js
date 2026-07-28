@@ -102,6 +102,30 @@ test("development config supports explicit demo mode", () => {
   assert.deepEqual(readiness(config), { ready: true, failures: [] });
 });
 
+test("demo scenario defaults safely and accepts the UX stress fixture", () => {
+  const defaults = loadConfig({
+    NODE_ENV: "test",
+    DEMO_MODE: "true",
+  });
+  const stress = loadConfig({
+    NODE_ENV: "test",
+    DEMO_MODE: "true",
+    DEMO_SCENARIO: "ux-stress",
+  });
+
+  assert.equal(defaults.demoScenario, "default");
+  assert.equal(stress.demoScenario, "ux-stress");
+  assert.throws(
+    () =>
+      loadConfig({
+        NODE_ENV: "test",
+        DEMO_MODE: "true",
+        DEMO_SCENARIO: "surprise",
+      }),
+    /Invalid option/,
+  );
+});
+
 test("production readiness reports every missing auth and service secret", () => {
   const config = loadConfig({
     NODE_ENV: "production",

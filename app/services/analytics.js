@@ -2,6 +2,7 @@ import {
   canonicalSecurityType,
   isCashSecurity,
 } from "./investmentSecurities.js";
+import { createHash } from "node:crypto";
 
 const DAY_MS = 86_400_000;
 
@@ -574,10 +575,18 @@ export function buildSpendingSummary({
   currentPeriod,
   previousPeriod,
   groupBy = "category",
+  segmentLimit = null,
+  includeSegmentDetails = false,
   currency = "USD",
 }) {
   if (!["category", "merchant", "account"].includes(groupBy)) {
     throw new TypeError("groupBy must be category, merchant, or account");
+  }
+  if (
+    segmentLimit != null &&
+    (!Number.isInteger(segmentLimit) || segmentLimit < 1)
+  ) {
+    throw new TypeError("segmentLimit must be a positive integer");
   }
   const current = spendingTransactions(
     transactions,
@@ -593,55 +602,72 @@ export function buildSpendingSummary({
   const previousTotal = sumSpend(previous);
   const grouped = groupSpendingTransactions(current, groupBy);
   const previousGrouped = groupSpendingTransactions(previous, groupBy);
-  const segments = [...grouped.entries()]
-    .filter(([, value]) => value.amount > 0)
-    .map(([label, value]) => {
-      const previousAmount = Math.max(
-        0,
-        previousGrouped.get(label)?.amount ?? 0,
-      );
-      return {
-        label,
-        amount: money(value.amount, currency),
-        previous_amount: money(previousAmount, currency),
-        count: value.count,
-        share_basis_points:
-          total === 0 ? 0 : Math.round((value.amount / total) * 10_000),
-        trend: {
-          amount: money(value.amount - previousAmount, currency),
-          percent_basis_points: percentChangeBasisPoints(
-            value.amount,
-            previousAmount,
+  const interval = spendingSeriesInterval(currentPeriod);
+  const rankedGroups = [...grouped.values()]
+    .filter((value) => value.amount !== 0)
+    .sort((a, b) => b.amount - a.amount);
+  const visibleGroups =
+    segmentLimit == null || rankedGroups.length <= segmentLimit
+      ? rankedGroups
+      : [
+          ...rankedGroups.slice(0, segmentLimit),
+          combineSpendingGroups(
+            rankedGroups.slice(segmentLimit),
+            groupBy,
           ),
-          direction:
-            value.amount === previousAmount
-              ? "flat"
-              : value.amount > previousAmount
-                ? "up"
-                : "down",
-        },
-      };
-    })
-    .sort((a, b) => b.amount.amount_minor - a.amount.amount_minor);
-
-  const daily = new Map();
-  for (const transaction of current) {
-    daily.set(
-      transaction.posted_on,
-      (daily.get(transaction.posted_on) ?? 0) + -transaction.amount_minor,
-    );
-  }
-  const series = [];
-  for (
-    let timestamp = dateOnly(currentPeriod.start_on);
-    timestamp < dateOnly(currentPeriod.end_on);
-    timestamp = shiftDateOnly(timestamp, 1)
-  ) {
-    series.push({
-      timestamp,
-      value: money(daily.get(timestamp) ?? 0, currency),
-    });
-  }
+        ];
+  const segments = visibleGroups.map((value) => {
+    const previousAmount =
+      value.key === `${groupBy}-other`
+        ? value.source_keys.reduce(
+            (sum, key) =>
+              sum + (previousGrouped.get(key)?.amount ?? 0),
+            0,
+          )
+        : previousGrouped.get(value.key)?.amount ?? 0;
+    const segment = {
+      label: value.label,
+      amount: money(value.amount, currency),
+      previous_amount: money(previousAmount, currency),
+      count: value.count,
+      share_basis_points:
+        total <= 0 ? 0 : Math.round((value.amount / total) * 10_000),
+      trend: {
+        amount: money(value.amount - previousAmount, currency),
+        percent_basis_points: percentChangeBasisPoints(
+          value.amount,
+          previousAmount,
+        ),
+        direction:
+          value.amount === previousAmount
+            ? "flat"
+            : value.amount > previousAmount
+              ? "up"
+              : "down",
+      },
+    };
+    if (includeSegmentDetails) {
+      segment.key = value.key;
+      segment.series = buildSpendingSeries(
+        value.transactions,
+        currentPeriod,
+        interval,
+        currency,
+      );
+    }
+    return segment;
+  });
+  const series = buildSpendingSeries(
+    current,
+    currentPeriod,
+    interval,
+    currency,
+  );
+  const eligibility = spendingEligibility(
+    transactions,
+    currentPeriod,
+    currency,
+  );
 
   return {
     currency,
@@ -657,7 +683,10 @@ export function buildSpendingSummary({
         total === previousTotal ? "flat" : total > previousTotal ? "up" : "down",
     },
     transaction_count: uniqueSpendingTransactionCount(current),
+    has_eligible_spending: current.length > 0,
+    eligibility,
     segments,
+    series_interval: interval,
     series,
   };
 }
@@ -665,24 +694,177 @@ export function buildSpendingSummary({
 function groupSpendingTransactions(transactions, groupBy) {
   const grouped = new Map();
   for (const transaction of transactions) {
-    const key =
-      groupBy === "category"
-        ? topLevelCategory(
-            transaction.category_primary ?? "Uncategorized",
-          )
-        : groupBy === "merchant"
-          ? transaction.merchant_name ?? transaction.name ?? "Unknown"
-          : transaction.account_name ?? "Account";
+    const label = spendingGroupLabel(transaction, groupBy);
+    const key = spendingSegmentKey(groupBy, label);
     const entry = grouped.get(key) ?? {
+      key,
+      label,
       amount: 0,
       transactionIds: new Set(),
+      transactions: [],
+      source_keys: [key],
     };
     entry.amount += -transaction.amount_minor;
     entry.transactionIds.add(spendingTransactionIdentity(transaction));
     entry.count = entry.transactionIds.size;
+    entry.transactions.push(transaction);
     grouped.set(key, entry);
   }
   return grouped;
+}
+
+function spendingGroupLabel(transaction, groupBy) {
+  const fallback =
+    groupBy === "category"
+      ? "Uncategorized"
+      : groupBy === "merchant"
+        ? "Unknown merchant"
+        : "Unknown account";
+  const value =
+    groupBy === "category"
+      ? topLevelCategory(transaction.category_primary ?? fallback)
+      : groupBy === "merchant"
+        ? transaction.merchant_name ?? transaction.name
+        : transaction.account_name;
+  return String(value ?? "").trim() || fallback;
+}
+
+function spendingSegmentKey(groupBy, label) {
+  const normalized = String(label)
+    .normalize("NFKC")
+    .trim()
+    .toLocaleLowerCase("en-US")
+    .replace(/\s+/g, " ");
+  const slug =
+    normalized
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "")
+      .slice(0, 36) || "unknown";
+  const digest = createHash("sha256")
+    .update(`${groupBy}\0${normalized}`)
+    .digest("hex")
+    .slice(0, 10);
+  return `${groupBy}-${slug}-${digest}`;
+}
+
+function combineSpendingGroups(groups, groupBy) {
+  const transactionIds = new Set();
+  for (const group of groups) {
+    for (const transactionId of group.transactionIds) {
+      transactionIds.add(transactionId);
+    }
+  }
+  return {
+    key: `${groupBy}-other`,
+    label: "Other",
+    amount: groups.reduce((sum, group) => sum + group.amount, 0),
+    transactionIds,
+    transactions: groups.flatMap((group) => group.transactions),
+    source_keys: groups.map((group) => group.key),
+    count: transactionIds.size,
+  };
+}
+
+function spendingSeriesInterval(period) {
+  const duration = differenceInDays(
+    dateOnly(period.start_on),
+    dateOnly(period.end_on),
+  );
+  if (duration <= 45) return "day";
+  if (duration <= 180) return "week";
+  return "month";
+}
+
+function buildSpendingSeries(
+  transactions,
+  period,
+  interval,
+  currency,
+) {
+  const startOn = dateOnly(period.start_on);
+  const endOn = dateOnly(period.end_on);
+  const buckets = new Map();
+  for (
+    let timestamp = startOn;
+    timestamp < endOn;
+    timestamp = shiftDateOnly(timestamp, 1)
+  ) {
+    const key = spendingBucketStart(timestamp, interval, startOn);
+    if (!buckets.has(key)) buckets.set(key, 0);
+  }
+  for (const transaction of transactions) {
+    const key = spendingBucketStart(
+      transaction.posted_on,
+      interval,
+      startOn,
+    );
+    buckets.set(
+      key,
+      (buckets.get(key) ?? 0) - transaction.amount_minor,
+    );
+  }
+  return [...buckets.entries()].map(([timestamp, amount]) => ({
+    timestamp,
+    value: money(amount, currency),
+  }));
+}
+
+function spendingBucketStart(timestamp, interval, periodStartOn) {
+  if (interval === "day") return timestamp;
+  const naturalStart = bucketStart(timestamp, interval);
+  return naturalStart < periodStartOn ? periodStartOn : naturalStart;
+}
+
+function spendingEligibility(transactions, period, currency) {
+  const matched = new Set();
+  const eligible = new Set();
+  const reasons = {
+    pending: new Set(),
+    income: new Set(),
+    excluded_from_spending: new Set(),
+    other_currency: new Set(),
+    zero_amount: new Set(),
+  };
+  for (const transaction of transactions) {
+    if (
+      transaction.posted_on < period.start_on ||
+      transaction.posted_on >= period.end_on
+    ) {
+      continue;
+    }
+    const identity = spendingTransactionIdentity(transaction);
+    matched.add(identity);
+    if (transaction.currency_code !== currency) {
+      reasons.other_currency.add(identity);
+    } else if (transaction.pending) {
+      reasons.pending.add(identity);
+    } else if (transaction.excluded_from_spending) {
+      reasons.excluded_from_spending.add(identity);
+    } else if (
+      transaction.amount_minor > 0 &&
+      isIncomeTransaction(transaction)
+    ) {
+      reasons.income.add(identity);
+    } else if (transaction.amount_minor === 0) {
+      reasons.zero_amount.add(identity);
+    } else {
+      eligible.add(identity);
+    }
+  }
+  return {
+    matched_transaction_count: matched.size,
+    eligible_transaction_count: eligible.size,
+    excluded_transaction_count: Math.max(
+      0,
+      matched.size - eligible.size,
+    ),
+    reasons: Object.fromEntries(
+      Object.entries(reasons).map(([key, values]) => [
+        key,
+        values.size,
+      ]),
+    ),
+  };
 }
 
 function topLevelCategory(category) {
@@ -1274,10 +1456,10 @@ function cashFlowTotals(transactions, currency) {
 }
 
 function sumSpend(transactions) {
-  return Math.max(0, transactions.reduce(
+  return transactions.reduce(
     (sum, transaction) => sum - transaction.amount_minor,
     0,
-  ));
+  );
 }
 
 function isIncomeTransaction(transaction) {

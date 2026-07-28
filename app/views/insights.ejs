@@ -115,7 +115,10 @@
           <input type="checkbox" data-insight-select-all>
           Select all shown
         </label>
-        <strong data-insight-selected-count>0 selected</strong>
+        <strong role="status" aria-live="polite" aria-atomic="true" data-insight-selected-count>
+          <span aria-hidden="true" data-insight-selected-count-visible>0 selected</span>
+          <span class="sr-only" data-insight-selection-announcement>0 insights selected. Choose an action.</span>
+        </strong>
         <label class="insight-selection-bar__field">
           <span class="sr-only">Action for selected insights</span>
           <select data-insight-bulk-action>

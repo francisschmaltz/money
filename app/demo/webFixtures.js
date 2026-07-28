@@ -4,6 +4,16 @@ import {
   CREDIT_SCORE_PRESETS,
 } from "../services/creditScoreTracking.js";
 import { DEMO_IDS } from "./fixtureIds.js";
+import {
+  buildDefaultAccounts,
+  buildDefaultPortfolioHoldings,
+  buildDefaultRecurringPayments,
+  buildDefaultTransactions,
+} from "./defaultScenario.js";
+import {
+  buildUxStressTransactions,
+  uxStressAccount,
+} from "./uxStressScenario.js";
 
 const usd = (amountMinor) => ({
   amount_minor: amountMinor,
@@ -61,185 +71,180 @@ function presentInsights(sections) {
   );
 }
 
-const transactions = [
-  {
-    id: DEMO_IDS.transactions.wholeFoods,
-    date: "Jul 25, 2026",
-    dateIso: "2026-07-25",
-    dateTime: "2026-07-25T20:34:00.000Z",
-    merchant: "Whole Foods Market",
-    rawMerchant: "WHOLE FOODS MKT #1024",
-    rawName: "WHOLE FOODS MKT #1024",
-    note: "Dinner supplies for the family visit",
-    noteVersion: 1,
-    noteUpdatedBy: "demo-user",
-    noteUpdatedAt: "2026-07-25T21:10:00.000Z",
-    category: "Groceries",
-    tags: ["Household"],
-    account: "Everyday checking",
-    amount: usd(-13_842),
-    icon: "ph-shopping-cart",
-    status: "posted",
+export function demoInsightSectionsForWeb(
+  insightData,
+  fallbackSections = [],
+) {
+  const fallbackById = new Map(
+    fallbackSections.flatMap((sections) =>
+      Object.values(sections ?? {})
+        .flat()
+        .map((finding) => [finding.id, finding]),
+    ),
+  );
+  return Object.fromEntries(
+    ["weekly", "investments", "subscriptions"].map((family) => [
+      family,
+      (insightData?.[family]?.findings ?? []).map((finding) => {
+        const fallback = fallbackById.get(finding.id);
+        const state = finding.state ?? fallback?.state ?? "active";
+        return presentInsightForWeb(
+          {
+            ...finding,
+            ...(fallback ?? {}),
+            id: finding.id,
+            family,
+            state,
+            isCurrent: state === "active",
+          },
+          { family, timeframe: fallback?.timeframe },
+        );
+      }),
+    ]),
+  );
+}
+
+export function demoTransactionForWeb(transaction) {
+  const dateIso = transaction.posted_on ?? transaction.date;
+  const date =
+    {
+      [DEMO_IDS.transactions.wholeFoods]: "Jul 25, 2026",
+      [DEMO_IDS.transactions.appleServices]: "Jul 24, 2026",
+    }[transaction.id] ?? dateIso;
+  return {
+    id: transaction.id,
+    date,
+    dateIso,
+    dateTime: transaction.posted_at ?? null,
+    merchant: transaction.display_name ?? transaction.merchant,
+    rawMerchant: transaction.raw_merchant,
+    rawName: transaction.raw_name,
+    note: transaction.note,
+    noteVersion: transaction.note_version,
+    noteUpdatedBy: transaction.note_updated_by,
+    noteUpdatedAt: transaction.note_updated_at,
+    category: transaction.category_primary ?? transaction.category,
+    tags: [...(transaction.tags ?? [])],
+    accountId: transaction.account.id,
+    account:
+      transaction.account.id === "account_sapphire"
+        ? "Sapphire card"
+        : transaction.account.name,
+    amount: { ...transaction.amount },
+    icon: transaction.icon ?? "ph-receipt",
+    status: transaction.pending ? "pending" : "posted",
+    excludedFromSpending: Boolean(
+      transaction.excluded_from_spending,
+    ),
+    postedAt: transaction.posted_at ?? null,
+    postedOn: transaction.posted_on ?? transaction.date,
+  };
+}
+
+const accountPresentation = Object.freeze({
+  account_checking: {
+    type: "Checking",
+    icon: "ph-bank",
+    tone: "green",
+    freshness: "Synced 12 min ago",
   },
-  {
-    id: DEMO_IDS.transactions.conEdison,
-    date: "2026-07-25",
-    merchant: "Con Edison",
-    category: "Utilities",
-    account: "Everyday checking",
-    amount: usd(-18_419),
-    icon: "ph-lightning",
-    status: "pending",
+  account_savings: {
+    type: "Savings",
+    icon: "ph-piggy-bank",
+    tone: "green",
+    freshness: "Synced 12 min ago",
   },
-  {
-    id: DEMO_IDS.transactions.appleServices,
-    date: "Jul 24, 2026",
-    dateIso: "2026-07-24",
-    dateTime: null,
-    merchant: "Apple Services",
-    category: "Subscriptions",
-    account: "Sapphire card",
-    amount: usd(-2_803),
-    icon: "ph-device-mobile",
-    status: "posted",
+  account_sapphire: {
+    type: "Credit card",
+    icon: "ph-credit-card",
+    tone: "blue",
+    freshness: "Synced 18 min ago",
   },
-  {
-    id: "txn_004",
-    date: "2026-07-24",
-    merchant: "Blue Bottle Coffee",
-    category: "Dining",
-    account: "Sapphire card",
-    amount: usd(-1_275),
-    icon: "ph-coffee",
-    status: "posted",
+  account_brokerage: {
+    type: "Investment",
+    icon: "ph-chart-line-up",
+    tone: "black",
+    freshness: "Synced 2 hr ago",
   },
-  {
-    id: DEMO_IDS.transactions.payroll,
-    date: "2026-07-23",
-    merchant: "Acme Payroll",
-    category: "Income",
-    account: "Everyday checking",
-    amount: usd(465_000),
-    icon: "ph-buildings",
-    status: "posted",
+  account_roth: {
+    type: "Investment",
+    icon: "ph-chart-line-up",
+    tone: "black",
+    freshness: "Synced 2 hr ago",
   },
-  {
-    id: "txn_006",
-    date: "2026-07-22",
-    merchant: "MTA OMNY",
-    category: "Transportation",
-    account: "Sapphire card",
-    amount: usd(-3_400),
-    icon: "ph-train",
-    status: "posted",
+  account_401k: {
+    type: "Investment",
+    icon: "ph-briefcase",
+    tone: "blue",
+    freshness: "Synced yesterday",
   },
-  {
-    id: "txn_007",
-    date: "2026-07-21",
-    merchant: "Fidelis Care",
-    category: "Bills",
-    account: "Everyday checking",
-    amount: usd(-40_804),
-    icon: "ph-heartbeat",
-    status: "posted",
+  account_personal_loan: {
+    type: "Personal loan",
+    icon: "ph-receipt",
+    tone: "neutral",
+    freshness: "Synced 12 min ago",
   },
-  {
-    id: DEMO_IDS.transactions.delta,
-    date: "2026-07-20",
-    merchant: "Delta Air Lines",
-    category: "Travel",
-    account: "Sapphire card",
-    amount: usd(-48_620),
-    icon: "ph-airplane-tilt",
-    status: "posted",
+  account_amex: {
+    type: "Credit card",
+    icon: "ph-credit-card",
+    tone: "blue",
+    freshness: "Synced 24 min ago",
   },
-  {
-    id: "txn_009",
-    date: "2026-07-19",
-    merchant: "Target",
-    category: "Shopping",
-    account: "Sapphire card",
-    amount: usd(-8_639),
-    icon: "ph-shopping-bag",
-    status: "posted",
-  },
-  {
-    id: DEMO_IDS.transactions.googleWorkspace,
-    date: "2026-07-18",
-    merchant: "Google Workspace",
-    category: "Subscriptions",
-    account: "Everyday checking",
-    amount: usd(-8_564),
-    icon: "ph-browser",
-    status: "posted",
-  },
-  {
-    id: "txn_011",
-    date: "2026-07-18",
-    merchant: "Seacomm Transfer",
-    category: "Transfer",
-    account: "High-yield savings",
-    amount: usd(60_000),
-    icon: "ph-arrows-left-right",
-    status: "posted",
-  },
-  {
-    id: "txn_012",
-    date: "2026-07-17",
-    merchant: "Trader Joe's",
-    category: "Groceries",
-    account: "Everyday checking",
-    amount: usd(-7_694),
-    icon: "ph-basket",
-    status: "posted",
-  },
-  {
-    id: "txn_013",
-    date: "2026-07-16",
-    merchant: "Seacomm Overdraft Fee",
-    category: "Fees & Interest",
-    account: "Everyday checking",
-    amount: usd(-3_500),
-    icon: "ph-coins",
-    status: "posted",
-  },
-  {
-    id: "txn_014",
-    date: "2026-07-15",
-    merchant: "Personal Loan Interest",
-    category: "Fees & Interest",
-    account: "Everyday checking",
-    amount: usd(-8_100),
-    icon: "ph-coins",
-    status: "posted",
-  },
-  {
-    id: "txn_015",
-    date: "2026-07-14",
-    merchant: "Whole Foods Mkt 117",
-    rawMerchant: "WHOLEFDS MKT 117",
-    rawName: "WHOLEFDS MKT 117 BROOKLYN",
-    category: "Groceries",
-    tags: [],
-    account: "Sapphire card",
-    amount: usd(-6_249),
-    icon: "ph-shopping-cart",
-    status: "posted",
-  },
-  {
-    id: "txn_016",
-    date: "2026-07-09",
-    merchant: "Whole Foods Market",
-    rawMerchant: "WHOLE FOODS MARKET",
-    rawName: "WHOLE FOODS MARKET 1024",
-    category: "Groceries",
-    tags: ["Food"],
-    account: "Everyday checking",
-    amount: usd(-9_184),
-    icon: "ph-shopping-cart",
-    status: "posted",
-  },
-];
+});
+
+export function demoAccountForWeb(account) {
+  const presentation = accountPresentation[account.id] ?? {
+    type:
+      account.subtype === "credit_card"
+        ? "Credit card"
+        : account.type === "depository"
+          ? "Bank account"
+          : account.type === "investment"
+            ? "Investment"
+            : account.type ?? "Account",
+    icon:
+      account.subtype === "credit_card"
+        ? "ph-credit-card"
+        : "ph-bank",
+    tone: "neutral",
+    freshness: "Synced recently",
+  };
+  const balance = account.current_balance
+    ? {
+        ...account.current_balance,
+        amount_minor: account.is_liability
+          ? -Math.abs(account.current_balance.amount_minor)
+          : account.current_balance.amount_minor,
+      }
+    : null;
+  return {
+    id: account.id,
+    institution: account.institution_name,
+    name: account.name,
+    type: presentation.type,
+    mask: account.mask,
+    balance,
+    available: account.available_balance
+      ? { ...account.available_balance }
+      : account.available_credit
+        ? { ...account.available_credit }
+        : null,
+    creditLimit: account.credit_limit
+      ? { ...account.credit_limit }
+      : null,
+    balanceGroup: account.balance_group,
+    balanceGroupOverride:
+      account.balance_group_override ?? null,
+    icon: presentation.icon,
+    tone: presentation.tone,
+    freshness: presentation.freshness,
+    syncedAt: account.freshness?.synced_at ?? null,
+  };
+}
+
+const transactions = buildDefaultTransactions().map(
+  demoTransactionForWeb,
+);
 
 const transactionRules = [
   {
@@ -260,176 +265,69 @@ const transactionRules = [
   },
 ];
 
-const subscriptions = [
-  {
-    id: DEMO_IDS.recurring.googleWorkspace,
-    name: "Google Workspace",
-    cadence: "Monthly",
-    account: "Everyday checking",
-    amount: usd(8_564),
-    annual: usd(102_768),
-    icon: "ph-browser",
-    state: "active",
-    next: "Aug 18",
-    type: "subscription",
-    category: "Software & services",
-    detectedType: "subscription",
-    classificationSignals: {
-      subscription_signal: true,
-      occurrence_count: 7,
-      interval_fit_basis_points: 10_000,
-      amount_variation_basis_points: 0,
-      classification_confidence_basis_points: 9_900,
+function compactDemoDate(value) {
+  if (!value) return "Unknown";
+  const date = new Date(`${String(value).slice(0, 10)}T00:00:00.000Z`);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    timeZone: "UTC",
+  }).format(date);
+}
+
+export function demoRecurringForWeb(stream) {
+  return {
+    id: stream.id,
+    name: stream.service,
+    cadence:
+      stream.cadence === "monthly" ? "Monthly" : stream.cadence,
+    accountId: stream.account?.id ?? null,
+    account:
+      stream.account?.id === "account_sapphire"
+        ? "Sapphire card"
+        : stream.account?.name ?? "Unknown account",
+    amount: {
+      ...(stream.expected_amount ?? stream.monthly_equivalent),
     },
-    transactions: [
-      {
-        id: DEMO_IDS.transactions.googleWorkspace,
-        merchant: "Google Workspace",
-        date: "Jul 18, 2026",
-        amount: usd(-8_564),
-      },
-    ],
-  },
-  {
-    id: DEMO_IDS.recurring.adobe,
-    name: "Adobe Creative Cloud",
-    cadence: "Monthly",
-    account: "Sapphire card",
-    amount: usd(6_999),
-    annual: usd(83_988),
-    icon: "ph-bezier-curve",
-    state: "active",
-    next: "Aug 3",
-    category: "Software & services",
-  },
-  {
-    id: DEMO_IDS.recurring.appleServices,
-    name: "Apple Services",
-    cadence: "Monthly",
-    account: "Sapphire card",
-    amount: usd(2_803),
-    annual: usd(33_636),
-    icon: "ph-device-mobile",
-    state: "active",
-    next: "Aug 24",
-    category: "Software & services",
-  },
-  {
-    id: DEMO_IDS.recurring.squarespace,
-    name: "Squarespace Website",
-    cadence: "Monthly",
-    account: "Everyday checking",
-    amount: usd(2_500),
-    annual: usd(30_000),
-    icon: "ph-squares-four",
-    state: "active",
-    next: "Aug 8",
-    category: "Software & services",
-  },
-  {
-    id: DEMO_IDS.recurring.disneyPlus,
-    name: "Disney+",
-    cadence: "Monthly",
-    account: "Sapphire card",
-    amount: usd(1_999),
-    annual: usd(23_988),
-    icon: "ph-television",
-    state: "active",
-    next: "Aug 11",
-    category: "Entertainment",
-  },
-  {
-    id: DEMO_IDS.recurring.iCloud,
-    name: "iCloud+",
-    cadence: "Monthly",
-    account: "Sapphire card",
-    amount: usd(999),
-    annual: usd(11_988),
-    icon: "ph-cloud",
-    state: "active",
-    next: "Aug 14",
-    category: "Software & services",
-  },
-];
-
-const bills = [
-  {
-    id: DEMO_IDS.recurring.fidelis,
-    name: "Fidelis Care",
-    cadence: "Monthly",
-    account: "Everyday checking",
-    amount: usd(40_804),
-    icon: "ph-heartbeat",
-    next: "Aug 21",
-    category: "Health",
-  },
-  {
-    id: DEMO_IDS.recurring.conEdison,
-    name: "Con Edison",
-    cadence: "Monthly",
-    account: "Everyday checking",
-    amount: usd(18_419),
-    icon: "ph-lightning",
-    next: "Aug 25",
-    category: "Utilities",
-  },
-  {
-    id: DEMO_IDS.recurring.verizonFios,
-    name: "Verizon Fios",
-    cadence: "Monthly",
-    account: "Sapphire card",
-    amount: usd(8_999),
-    icon: "ph-wifi-high",
-    next: "Aug 9",
-    category: "Utilities",
-  },
-  {
-    id: DEMO_IDS.recurring.geico,
-    name: "GEICO",
-    cadence: "Monthly",
-    account: "Everyday checking",
-    amount: usd(14_622),
-    icon: "ph-car",
-    next: "Aug 15",
-    category: "Insurance",
-  },
-];
-
-const frequentSpending = [
-  {
-    id: DEMO_IDS.recurring.shell,
-    name: "Shell Oil",
-    cadence: "Monthly",
-    account: "Sapphire card",
-    amount: usd(4_820),
-    annual: usd(57_840),
-    icon: "ph-gas-pump",
-    state: "active",
-    next: "Unknown",
-    type: "frequent_spending",
-    category: "Transportation",
-    detectedType: "frequent_spending",
+    annual: { ...stream.annual_equivalent },
+    icon: stream.icon ?? "ph-repeat",
+    state: stream.status ?? "active",
+    next: compactDemoDate(stream.next_estimated_date),
+    type: stream.type,
+    category: stream.category ?? null,
+    detectedType: stream.detected_type ?? stream.type,
     classificationSignals: {
-      hard_negative: true,
-      occurrence_count: 4,
-      interval_fit_basis_points: 8_000,
-      amount_variation_basis_points: 900,
-      classification_confidence_basis_points: 9_000,
+      ...(stream.classification_signals ?? {}),
     },
-    transactions: [],
-  },
-];
+    transactions: (stream.transactions ?? []).map((transaction) => ({
+      ...transaction,
+      date: compactDemoDate(transaction.date),
+      amount: { ...transaction.amount },
+    })),
+  };
+}
 
-const accounts = [
-  { id: "acc_001", institution: "Seacomm Federal Credit Union", name: "Everyday checking", type: "Checking", mask: "4821", balance: usd(845_329), available: usd(815_329), balanceGroup: "cash", balanceGroupOverride: null, icon: "ph-bank", tone: "green", freshness: "Synced 12 min ago" },
-  { id: "acc_002", institution: "Seacomm Federal Credit Union", name: "High-yield savings", type: "Savings", mask: "1038", balance: usd(3_642_451), available: usd(3_642_451), balanceGroup: "cash", balanceGroupOverride: null, icon: "ph-piggy-bank", tone: "green", freshness: "Synced 12 min ago" },
-  { id: "acc_003", institution: "Chase", name: "Sapphire Preferred", type: "Credit card", mask: "9204", balance: usd(-193_240), available: usd(506_760), creditLimit: usd(700_000), balanceGroup: "credit_card", balanceGroupOverride: null, icon: "ph-credit-card", tone: "blue", freshness: "Synced 18 min ago" },
-  { id: "acc_004", institution: "Vanguard", name: "Brokerage", type: "Investment", mask: "7714", balance: usd(6_342_941), balanceGroup: "taxable_investment", balanceGroupOverride: null, icon: "ph-chart-line-up", tone: "black", freshness: "Synced 2 hr ago" },
-  { id: "acc_005", institution: "Vanguard", name: "Roth IRA", type: "Investment", mask: "3009", balance: usd(2_694_508), balanceGroup: "retirement", balanceGroupOverride: null, icon: "ph-chart-line-up", tone: "black", freshness: "Synced 2 hr ago" },
-  { id: "acc_006", institution: "Fidelity", name: "401(k)", type: "Investment", mask: "2881", balance: usd(3_330_100), balanceGroup: "retirement", balanceGroupOverride: null, icon: "ph-briefcase", tone: "blue", freshness: "Synced yesterday" },
-  { id: "acc_007", institution: "Seacomm Federal Credit Union", name: "Personal loan", type: "Personal loan", mask: "6418", balance: usd(-1_618_327), balanceGroup: "loan", balanceGroupOverride: null, icon: "ph-receipt", tone: "neutral", freshness: "Synced 12 min ago" },
-  { id: "acc_008", institution: "American Express", name: "Blue Cash Preferred", type: "Credit card", mask: "1184", balance: usd(-88_223), available: usd(411_777), creditLimit: usd(500_000), balanceGroup: "credit_card", balanceGroupOverride: null, icon: "ph-credit-card", tone: "blue", freshness: "Synced 24 min ago" },
-];
+export function demoRecurringSections(streams) {
+  const presented = streams.map(demoRecurringForWeb);
+  return {
+    subscriptions: presented.filter(
+      (stream) => stream.type === "subscription",
+    ),
+    bills: presented.filter((stream) => stream.type === "bill"),
+    frequentSpending: presented.filter(
+      (stream) => stream.type === "frequent_spending",
+    ),
+  };
+}
+
+const {
+  subscriptions,
+  bills,
+  frequentSpending,
+} = demoRecurringSections(buildDefaultRecurringPayments());
+
+const accounts = buildDefaultAccounts().map(demoAccountForWeb);
 
 const manualAssets = [
   {
@@ -627,14 +525,82 @@ const categories = [
   spendingCategory({ label: "Other", amountMinor: 12_500, previousMinor: 25_500, percent: 2, count: 5, color: "#666666", icon: "ph-dots-three" }),
 ];
 
-const holdings = [
-  { id: DEMO_IDS.holdings.vti, securityId: "security_vti", symbol: "VTI", name: "Vanguard Total Stock Market ETF", account: "Brokerage", securityType: "equity", value: usd(3_827_442), costBasis: usd(3_050_400), price: usd(258_262), priceAsOf: "2026-07-26", allocation: 31, change: 2.4, shares: "14.82", scope: "trading" },
-  { id: "holding_vxus", securityId: "security_vxus", symbol: "VXUS", name: "Vanguard Total International Stock ETF", account: "Brokerage", securityType: "equity", value: usd(2_455_810), costBasis: usd(1_943_400), price: usd(63_937), priceAsOf: "2026-07-26", allocation: 20, change: 1.1, shares: "38.41", scope: "trading" },
-  { id: "holding_vmfxx", securityId: "security_vmfxx", symbol: "VMFXX", name: "Vanguard Federal Money Market", account: "Brokerage", securityType: "cash", value: usd(59_689), costBasis: usd(59_689), price: usd(100), priceAsOf: "2026-07-26", allocation: 0.5, change: 0.1, shares: "596.89", scope: "trading" },
-  { id: "holding_bnd", securityId: "security_bnd", symbol: "BND", name: "Vanguard Total Bond Market ETF", account: "Roth IRA", securityType: "fixed_income", value: usd(2_061_884), costBasis: usd(1_640_000), price: usd(73_770), priceAsOf: "2026-07-26", allocation: 17, change: -0.3, shares: "27.95", scope: "retirement" },
-  { id: "holding_aapl", securityId: "security_aapl", symbol: "AAPL", name: "Apple Inc.", account: "Roth IRA", securityType: "equity", value: usd(1_790_441), costBasis: usd(1_435_000), price: usd(211_636), priceAsOf: "2026-07-26", allocation: 14, change: 3.8, shares: "8.46", scope: "retirement" },
-  { id: "holding_target", securityId: "security_target", symbol: "Other", name: "Retirement target-date funds", account: "401(k)", securityType: "mixed", value: usd(2_172_283), costBasis: usd(1_745_400), price: null, priceAsOf: "2026-07-26", allocation: 17.5, change: 0.7, shares: "—", scope: "retirement" },
-];
+export function demoHoldingForWeb(holding) {
+  const value =
+    holding.value ??
+    (Number.isSafeInteger(holding.value_minor)
+      ? usd(holding.value_minor)
+      : null);
+  const costBasis =
+    holding.cost_basis ??
+    (Number.isSafeInteger(holding.cost_basis_minor)
+      ? usd(holding.cost_basis_minor)
+      : null);
+  const price =
+    holding.price ??
+    (Number.isSafeInteger(holding.price_minor)
+      ? usd(holding.price_minor)
+      : null);
+  const allocation =
+    Number.isSafeInteger(holding.allocation_basis_points)
+      ? holding.allocation_basis_points / 100
+      : Number(holding.allocation ?? 0);
+  return {
+    id: holding.id,
+    securityId: holding.security_id,
+    symbol:
+      holding.display_symbol ??
+      holding.symbol ??
+      holding.ticker_symbol,
+    name: holding.display_name ?? holding.name,
+    account: holding.account_name ?? holding.account ?? null,
+    securityType: holding.security_type,
+    value,
+    costBasis,
+    price,
+    priceAsOf: holding.price_as_of ?? "2026-07-26",
+    allocation,
+    change: Number(holding.change_percent ?? 0),
+    shares:
+      holding.shares_label ??
+      (Number.isFinite(holding.quantity)
+        ? String(holding.quantity)
+        : "—"),
+    scope:
+      holding.scope ??
+      (holding.balance_group === "retirement"
+        ? "retirement"
+        : "trading"),
+  };
+}
+
+const accountNamesById = new Map(
+  buildDefaultAccounts().map((account) => [account.id, account.name]),
+);
+const canonicalHoldings = buildDefaultPortfolioHoldings().map((holding) =>
+  demoHoldingForWeb({
+    ...holding,
+    account_name: accountNamesById.get(holding.account_id) ?? null,
+    balance_group:
+      holding.account_id === "account_brokerage"
+        ? "taxable_investment"
+        : "retirement",
+  }),
+);
+const canonicalPortfolioMinor = canonicalHoldings.reduce(
+  (sum, holding) => sum + holding.value.amount_minor,
+  0,
+);
+const holdings = canonicalHoldings.map((holding) => ({
+  ...holding,
+  allocation:
+    canonicalPortfolioMinor === 0
+      ? 0
+      : Math.round(
+          (holding.value.amount_minor / canonicalPortfolioMinor) *
+            10_000,
+        ) / 100,
+}));
 
 function buildDemoWebFixtures() {
   return {
@@ -652,7 +618,39 @@ function buildDemoWebFixtures() {
   };
 }
 
-export function buildDemoModel() {
+export function buildDemoModel({ scenario = "default" } = {}) {
+  const stressTransactions =
+    scenario === "ux-stress"
+      ? buildUxStressTransactions().map(demoTransactionForWeb)
+      : [];
+  const modelTransactions = [...transactions, ...stressTransactions];
+  const modelAccounts =
+    scenario === "ux-stress"
+      ? [...accounts, demoAccountForWeb(uxStressAccount())]
+      : accounts;
+  const accountTotal = (balanceGroup) =>
+    modelAccounts
+      .filter((account) => account.balanceGroup === balanceGroup)
+      .reduce(
+        (sum, account) =>
+          sum + Math.abs(account.balance?.amount_minor ?? 0),
+        0,
+      );
+  const cashMinor = accountTotal("cash");
+  const taxableMinor = accountTotal("taxable_investment");
+  const retirementMinor = accountTotal("retirement");
+  const creditCardMinor = accountTotal("credit_card");
+  const loanMinor = accountTotal("loan");
+  const manualAssetMinor = manualAssets.reduce(
+    (sum, asset) => sum + (asset.value?.amount_minor ?? 0),
+    0,
+  );
+  const assetsMinor =
+    cashMinor + taxableMinor + retirementMinor + manualAssetMinor;
+  const liabilitiesMinor = creditCardMinor + loanMinor;
+  const cashBalanceMinor = cashMinor + taxableMinor;
+  const shortTermWorthMinor = cashBalanceMinor - creditCardMinor;
+  const netWorthMinor = assetsMinor - liabilitiesMinor;
   const spendingDetails = {
     total: usd(412684),
     previousTotal: usd(460500),
@@ -690,10 +688,10 @@ export function buildDemoModel() {
     ],
   };
   const currentWealth = {
-    cash: 10830721,
-    short_term: 10549258,
-    retirement: 6024608,
-    net_worth: 18427000,
+    cash: cashBalanceMinor,
+    short_term: shortTermWorthMinor,
+    retirement: retirementMinor,
+    net_worth: netWorthMinor,
   };
   const buildHistory = (labels, ratios, period) => ({
     labels,
@@ -978,20 +976,20 @@ export function buildDemoModel() {
     viewer: { id: "demo-user", name: "Francis", email: "francis@example.com", initials: "FS", is_admin: true },
     freshness: "Updated 12 minutes ago",
     overview: {
-      netWorth: usd(18427000),
+      netWorth: usd(netWorthMinor),
       netWorthChange: usd(219100),
       netWorthChangePercent: 1.2,
-      assets: usd(20326790),
-      liabilities: usd(1899790),
-      cash: usd(4487780),
-      cashBalance: usd(10830721),
-      shortTermWorth: usd(10549258),
-      taxableInvestments: usd(6342941),
-      retirementInvestments: usd(6024608),
-      manualAssetValue: usd(3471461),
-      creditCardLiabilities: usd(281463),
-      loanLiabilities: usd(1618327),
-      portfolio: usd(12367549),
+      assets: usd(assetsMinor),
+      liabilities: usd(liabilitiesMinor),
+      cash: usd(cashMinor),
+      cashBalance: usd(cashBalanceMinor),
+      shortTermWorth: usd(shortTermWorthMinor),
+      taxableInvestments: usd(taxableMinor),
+      retirementInvestments: usd(retirementMinor),
+      manualAssetValue: usd(manualAssetMinor),
+      creditCardLiabilities: usd(creditCardMinor),
+      loanLiabilities: usd(loanMinor),
+      portfolio: usd(taxableMinor + retirementMinor),
       spending: usd(412684),
       income: usd(930000),
       cashFlow: usd(517316),
@@ -999,12 +997,12 @@ export function buildDemoModel() {
     },
     categories,
     spendingDetails,
-    transactions,
+    transactions: modelTransactions,
     transactionRules,
     subscriptions,
     bills,
     frequentSpending,
-    accounts,
+    accounts: modelAccounts,
     manualAssets,
     holdings,
     insights,
@@ -1029,8 +1027,8 @@ export function buildDemoModel() {
     },
     allocation: holdings.map((holding) => ({ label: holding.symbol, value: holding.allocation })),
     searchSeed: [
-      ...transactions.map((item) => ({ entityType: "transaction", group: "Transactions", title: item.merchant, meta: `${item.category} · ${item.account}`, url: `/transactions?transaction=${item.id}`, icon: item.icon })),
-      ...accounts.map((item) => ({ entityType: "account", group: "Accounts", title: item.name, meta: `${item.institution} · ${item.type}`, url: `/accounts#account-${encodeURIComponent(item.id)}`, icon: item.icon })),
+      ...modelTransactions.map((item) => ({ entityType: "transaction", group: "Transactions", title: item.merchant, meta: `${item.category} · ${item.account}`, url: `/transactions?transaction=${item.id}`, icon: item.icon })),
+      ...modelAccounts.map((item) => ({ entityType: "account", group: "Accounts", title: item.name, meta: `${item.institution} · ${item.type}`, url: `/accounts#account-${encodeURIComponent(item.id)}`, icon: item.icon })),
       ...subscriptions.map((item) => ({ entityType: "recurring", group: "Recurring", title: item.name, meta: `${item.cadence} · ${item.account}`, url: `/recurring?item=${item.id}`, icon: item.icon })),
       ...manualAssets.map((item) => ({ entityType: "manual_asset", group: "Assets", title: item.name, meta: `Manual ${item.assetType} · valued ${item.valuedOn}`, url: `/accounts#asset-${encodeURIComponent(item.id)}`, icon: "ph-car" })),
       ...Object.values(insights).flat().map((item) => ({ entityType: "insight", group: "Insights", title: item.title, meta: item.type, searchText: `${item.title} ${item.copy} ${item.type} ${item.family}`, url: `/insights?finding=${encodeURIComponent(item.id)}`, icon: item.icon })),

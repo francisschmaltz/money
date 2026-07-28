@@ -94,7 +94,7 @@
               data-account-id="<%= account.id %>"
             >
               <span class="account-icon account-icon--<%= account.tone %>"><i class="ph <%= account.icon %>"></i></span>
-              <span>
+              <span class="account-row__identity">
                 <strong
                   data-account-display-name="<%= account.id %>"
                   data-account-provider-name="<%= account.name %>"
@@ -102,7 +102,7 @@
                 <small><%= account.type %> · •••• <%= account.mask %></small>
                 <em class="balance-group-label"><%= accountGroupLabels[account.balanceGroup] || "Unclassified" %></em>
               </span>
-              <span><strong><%= formatMoney(account.balance) %></strong><small><%= account.available ? `${formatMoney(account.available)} available` : "Current value" %></small></span>
+              <span class="account-row__balance"><strong><%= formatMoney(account.balance) %></strong><small><%= account.available ? `${formatMoney(account.available)} available` : "Current value" %></small></span>
               <span class="account-row__actions">
                 <button
                   class="button button--secondary account-row__edit"
@@ -165,12 +165,12 @@
             class="account-row <%= viewer?.is_admin ? '' : 'account-row--readonly' %>"
           >
             <span class="account-icon"><i class="ph <%= manualAssetType(asset) === 'vehicle' ? 'ph-car' : manualAssetType(asset) === 'real_estate' ? 'ph-house-line' : 'ph-cube' %>"></i></span>
-            <span>
+            <span class="account-row__identity">
               <strong><%= asset.name %></strong>
               <small><%= manualAssetType(asset).replaceAll("_", " ") %> · valued <%= asset.valuedOn || asset.asOf || "recently" %></small>
               <em class="balance-group-label">Other asset</em>
             </span>
-            <span><strong><%= formatMoney(asset.value) %></strong><small>Manual value</small></span>
+            <span class="account-row__balance"><strong><%= formatMoney(asset.value) %></strong><small>Manual value</small></span>
             <% if (viewer?.is_admin) { %>
               <a class="button button--secondary account-row__edit" href="/settings?asset=<%= encodeURIComponent(asset.id) %>#asset-<%= encodeURIComponent(asset.id) %>" aria-label="Edit <%= asset.name %>">Edit</a>
             <% } %>

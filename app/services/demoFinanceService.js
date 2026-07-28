@@ -10,6 +10,17 @@ import {
   buildCreditScoreSummary,
 } from "./creditScoreTracking.js";
 import { DEMO_IDS } from "../demo/fixtureIds.js";
+import {
+  buildDefaultAccounts,
+  buildDefaultBudgetDefaults,
+  buildDefaultPortfolioHoldings,
+  buildDefaultRecurringPayments,
+  buildDefaultTransactions,
+} from "../demo/defaultScenario.js";
+import {
+  buildUxStressTransactions,
+  uxStressAccount,
+} from "../demo/uxStressScenario.js";
 
 const money = (amountMinor, currency = "USD") => ({
   amount_minor: amountMinor,
@@ -62,7 +73,9 @@ const evidence = (entityType, entityId, label, path) => ({
 
 const weeklyFindings = [
   {
-    id: "finding_weekly_dining",
+    id: DEMO_IDS.insights.weeklyDining,
+    family: "weekly",
+    state: "active",
     type: "spend_less",
     severity: "attention",
     title: "Dining jumped 38% this week",
@@ -92,7 +105,9 @@ const weeklyFindings = [
     actions: ["review", "recategorize", "dismiss"],
   },
   {
-    id: "finding_weekly_coffee",
+    id: DEMO_IDS.insights.weeklyCoffee,
+    family: "weekly",
+    state: "active",
     type: "better_habits",
     severity: "info",
     title: "Five small coffee stops added up",
@@ -122,7 +137,9 @@ const weeklyFindings = [
     actions: ["review", "mark_expected", "dismiss"],
   },
   {
-    id: "finding_weekly_travel",
+    id: DEMO_IDS.insights.weeklyTravel,
+    family: "weekly",
+    state: "active",
     type: "needs_review",
     severity: "attention",
     title: "One travel charge explains the spike",
@@ -149,7 +166,9 @@ const weeklyFindings = [
 
 const investmentFindings = [
   {
-    id: "finding_investment_performance",
+    id: DEMO_IDS.insights.investmentPerformance,
+    family: "investments",
+    state: "active",
     type: "performance",
     severity: "info",
     title: "Portfolio gained 1.8% this month",
@@ -175,7 +194,9 @@ const investmentFindings = [
     actions: ["review", "dismiss"],
   },
   {
-    id: "finding_investment_concentration",
+    id: DEMO_IDS.insights.investmentConcentration,
+    family: "investments",
+    state: "active",
     type: "concentration",
     severity: "attention",
     title: "VTI is 31% of the portfolio",
@@ -202,7 +223,9 @@ const investmentFindings = [
 
 const subscriptionFindings = [
   {
-    id: "finding_subscription_duplicate",
+    id: DEMO_IDS.insights.subscriptionDuplicate,
+    family: "subscriptions",
+    state: "active",
     type: "possible_duplicate",
     severity: "attention",
     title: "Two Apple service charges may overlap",
@@ -232,7 +255,9 @@ const subscriptionFindings = [
     actions: ["confirm", "dismiss"],
   },
   {
-    id: "finding_subscription_expensive",
+    id: DEMO_IDS.insights.subscriptionExpensive,
+    family: "subscriptions",
+    state: "active",
     type: "expensive",
     severity: "info",
     title: "Google Workspace is the priciest subscription",
@@ -257,149 +282,93 @@ const subscriptionFindings = [
   },
 ];
 
-const accounts = [
-  {
-    id: "account_checking",
-    institution_id: "institution_seacomm",
-    institution_name: "Seacomm Federal Credit Union",
-    name: "Everyday checking",
-    mask: "4821",
-    type: "depository",
-    subtype: "checking",
-    balance_group: "cash",
-    current_balance: money(845_329),
-    available_balance: money(815_329),
-    is_liability: false,
-    active: true,
-    freshness: FRESHNESS,
-  },
-  {
-    id: "account_savings",
-    institution_id: "institution_seacomm",
-    institution_name: "Seacomm Federal Credit Union",
-    name: "High-yield savings",
-    mask: "1038",
-    type: "depository",
-    subtype: "savings",
-    balance_group: "cash",
-    current_balance: money(3_642_451),
-    available_balance: money(3_642_451),
-    is_liability: false,
-    active: true,
-    freshness: FRESHNESS,
-  },
-  {
-    id: "account_sapphire",
-    institution_id: "institution_chase",
-    institution_name: "Chase",
-    name: "Sapphire Preferred",
-    mask: "9204",
-    type: "credit",
-    subtype: "credit_card",
-    balance_group: "credit_card",
-    current_balance: money(281_463),
-    available_balance: money(721_537),
-    credit_limit: money(1_000_000),
-    is_liability: true,
-    active: true,
-    freshness: FRESHNESS,
-  },
-  {
-    id: "account_brokerage",
-    institution_id: "institution_vanguard",
-    institution_name: "Vanguard",
-    name: "Brokerage",
-    mask: "7714",
-    type: "investment",
-    subtype: "brokerage",
-    balance_group: "taxable_investment",
-    current_balance: money(6_342_941),
-    available_balance: null,
-    is_liability: false,
-    active: true,
-    freshness: FRESHNESS,
-  },
-  {
-    id: "account_roth",
-    institution_id: "institution_vanguard",
-    institution_name: "Vanguard",
-    name: "Roth IRA",
-    mask: "3009",
-    type: "investment",
-    subtype: "roth",
-    balance_group: "retirement",
-    current_balance: money(2_694_508),
-    available_balance: null,
-    is_liability: false,
-    active: true,
-    freshness: FRESHNESS,
-  },
-  {
-    id: "account_401k",
-    institution_id: "institution_fidelity",
-    institution_name: "Fidelity",
-    name: "401(k)",
-    mask: "2881",
-    type: "investment",
-    subtype: "401k",
-    balance_group: "retirement",
-    current_balance: money(3_330_100),
-    available_balance: null,
-    is_liability: false,
-    active: true,
-    freshness: FRESHNESS,
-  },
-  {
-    id: "account_personal_loan",
-    institution_id: "institution_seacomm",
-    institution_name: "Seacomm Federal Credit Union",
-    name: "Personal loan",
-    mask: "6418",
-    type: "loan",
-    subtype: "personal",
-    balance_group: "loan",
-    current_balance: money(1_618_327),
-    available_balance: null,
-    is_liability: true,
-    active: true,
-    freshness: FRESHNESS,
-  },
-];
+function buildDemoInsightFindings() {
+  return structuredClone([
+    ...weeklyFindings,
+    ...investmentFindings,
+    ...subscriptionFindings,
+    {
+      ...weeklyFindings[0],
+      id: DEMO_IDS.insights.archivedWeeklyDining,
+      state: "archived",
+    },
+    {
+      ...subscriptionFindings[0],
+      id: DEMO_IDS.insights.archivedSubscriptionDuplicate,
+      state: "bad",
+    },
+  ]);
+}
 
 const creditSnapshots = [
   {
     account_id: "account_sapphire",
     snapshot_on: "2026-06-26",
-    current_balance_minor: 326_900,
-    credit_limit_minor: 1_000_000,
+    current_balance_minor: 248_000,
+    credit_limit_minor: 700_000,
+    currency_code: "USD",
+  },
+  {
+    account_id: "account_amex",
+    snapshot_on: "2026-06-26",
+    current_balance_minor: 103_000,
+    credit_limit_minor: 500_000,
     currency_code: "USD",
   },
   {
     account_id: "account_sapphire",
     snapshot_on: "2026-07-03",
-    current_balance_minor: 301_250,
-    credit_limit_minor: 1_000_000,
+    current_balance_minor: 220_000,
+    credit_limit_minor: 700_000,
+    currency_code: "USD",
+  },
+  {
+    account_id: "account_amex",
+    snapshot_on: "2026-07-03",
+    current_balance_minor: 92_000,
+    credit_limit_minor: 500_000,
     currency_code: "USD",
   },
   {
     account_id: "account_sapphire",
     snapshot_on: "2026-07-10",
-    current_balance_minor: 344_820,
-    credit_limit_minor: 1_000_000,
+    current_balance_minor: 198_000,
+    credit_limit_minor: 700_000,
+    currency_code: "USD",
+  },
+  {
+    account_id: "account_amex",
+    snapshot_on: "2026-07-10",
+    current_balance_minor: 81_000,
+    credit_limit_minor: 500_000,
     currency_code: "USD",
   },
   {
     account_id: "account_sapphire",
     snapshot_on: "2026-07-17",
-    current_balance_minor: 238_400,
-    credit_limit_minor: 1_000_000,
+    current_balance_minor: 165_000,
+    credit_limit_minor: 700_000,
+    currency_code: "USD",
+  },
+  {
+    account_id: "account_amex",
+    snapshot_on: "2026-07-17",
+    current_balance_minor: 75_000,
+    credit_limit_minor: 500_000,
     currency_code: "USD",
   },
   {
     account_id: "account_sapphire",
     snapshot_on: "2026-07-24",
-    current_balance_minor: 281_463,
-    credit_limit_minor: 1_000_000,
+    current_balance_minor: 193_240,
+    credit_limit_minor: 700_000,
+    currency_code: "USD",
+  },
+  {
+    account_id: "account_amex",
+    snapshot_on: "2026-07-24",
+    current_balance_minor: 88_223,
+    credit_limit_minor: 500_000,
     currency_code: "USD",
   },
 ];
@@ -429,156 +398,13 @@ function analyticsAccount(account) {
   };
 }
 
-const portfolioHoldings = [
-  {
-    id: DEMO_IDS.holdings.vti,
-    security_id: "security_vti",
-    account_id: "account_brokerage",
-    ticker_symbol: "VTI",
-    name: "Vanguard Total Stock Market ETF",
-    security_type: "equity",
-    value_minor: 3_827_442,
-    start_value_minor: 3_720_000,
-    week_change_minor: 30_000,
-    quantity: 14.82,
-  },
-  {
-    id: "holding_vxus",
-    security_id: "security_vxus",
-    account_id: "account_brokerage",
-    ticker_symbol: "VXUS",
-    name: "Vanguard Total International Stock ETF",
-    security_type: "equity",
-    value_minor: 2_455_810,
-    start_value_minor: 2_370_000,
-    week_change_minor: 18_000,
-    quantity: 38.41,
-  },
-  {
-    id: "holding_vmfxx",
-    security_id: "security_vmfxx",
-    account_id: "account_brokerage",
-    ticker_symbol: "VMFXX",
-    name: "Vanguard Federal Money Market",
-    security_type: "cash",
-    value_minor: 59_689,
-    start_value_minor: 60_000,
-    week_change_minor: 3_000,
-    quantity: 596.89,
-  },
-  {
-    id: "holding_bnd",
-    security_id: "security_bnd",
-    account_id: "account_roth",
-    ticker_symbol: "BND",
-    name: "Vanguard Total Bond Market ETF",
-    security_type: "fixed_income",
-    value_minor: 2_061_884,
-    start_value_minor: 2_000_000,
-    week_change_minor: 12_000,
-    quantity: 27.95,
-  },
-  {
-    id: "holding_aapl",
-    security_id: "security_aapl",
-    account_id: "account_roth",
-    ticker_symbol: "AAPL",
-    name: "Apple Inc.",
-    security_type: "equity",
-    value_minor: 1_790_441,
-    start_value_minor: 1_750_000,
-    week_change_minor: 15_000,
-    quantity: 8.46,
-  },
-  {
-    id: "holding_target",
-    security_id: "security_target",
-    account_id: "account_401k",
-    ticker_symbol: "TARGET",
-    name: "Retirement target-date fund",
-    security_type: "mixed",
-    value_minor: 2_172_283,
-    start_value_minor: 2_128_449,
-    week_change_minor: 10_420,
-    quantity: 31.02,
-  },
-];
+const portfolioHoldings = buildDefaultPortfolioHoldings();
 
 const contributionsByAccount = new Map([
   ["account_brokerage", 70_000],
   ["account_roth", 20_000],
   ["account_401k", 30_000],
 ]);
-
-const transactions = [
-  {
-    id: DEMO_IDS.transactions.wholeFoods,
-    date: "2026-07-25",
-    merchant: "Whole Foods Market",
-    description: "Whole Foods Market",
-    raw_merchant: "WHOLE FOODS MKT #1024",
-    raw_name: "WHOLE FOODS MKT #1024",
-    display_name: "Whole Foods Market",
-    note: "Dinner supplies for the family visit",
-    note_version: 1,
-    note_updated_by: "demo-user",
-    note_updated_at: "2026-07-25T21:10:00.000Z",
-    category: "Groceries",
-    account: {
-      id: "account_checking",
-      name: "Everyday checking",
-      mask: "4821",
-      institution: "Seacomm Federal Credit Union",
-    },
-    amount: money(-13_842),
-    pending: false,
-  },
-  {
-    id: DEMO_IDS.transactions.conEdison,
-    date: "2026-07-25",
-    merchant: "Con Edison",
-    description: "Con Edison",
-    category: "Utilities",
-    account: {
-      id: "account_checking",
-      name: "Everyday checking",
-      mask: "4821",
-      institution: "Seacomm Federal Credit Union",
-    },
-    amount: money(-18_419),
-    pending: true,
-  },
-  {
-    id: DEMO_IDS.transactions.appleServices,
-    date: "2026-07-24",
-    merchant: "Apple Services",
-    description: "AAPL SRV 0042",
-    category: "Subscriptions",
-    account: {
-      id: "account_sapphire",
-      name: "Sapphire Preferred",
-      mask: "9204",
-      institution: "Chase",
-    },
-    amount: money(-2_803),
-    pending: false,
-  },
-  {
-    id: DEMO_IDS.transactions.payroll,
-    date: "2026-07-23",
-    merchant: "Acme Payroll",
-    description: "Payroll deposit",
-    category: "Income",
-    account: {
-      id: "account_checking",
-      name: "Everyday checking",
-      mask: "4821",
-      institution: "Seacomm Federal Credit Union",
-    },
-    amount: money(465_000),
-    pending: false,
-  },
-];
 
 const DEMO_TRANSACTION_TAGS = Object.freeze([
   "Business",
@@ -604,6 +430,71 @@ const DEMO_TRANSACTION_CLEANUP_RULES = Object.freeze([
     updated_at: "2026-07-27T10:00:00.000Z",
   },
 ]);
+
+function demoCategoryId(path) {
+  return `category_${String(path)
+    .normalize("NFKD")
+    .replace(/\p{Diacritic}/gu, "")
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")}`;
+}
+
+function buildDemoSpendingCategories(transactions) {
+  const planned = buildDefaultBudgetDefaults();
+  const paths = new Set([
+    ...planned.keys(),
+    ...transactions.map(
+      (transaction) =>
+        transaction.category_primary ?? transaction.category,
+    ),
+    "Other",
+  ]);
+  return [...paths]
+    .filter(Boolean)
+    .sort((left, right) => {
+      if (left === "Other") return 1;
+      if (right === "Other") return -1;
+      return left.localeCompare(right);
+    })
+    .map((path) => ({
+      id: demoCategoryId(path),
+      name: path,
+      path,
+      depth: 0,
+      classification: ["Housing", "Utilities", "Bills"].includes(path)
+        ? "fixed"
+        : "flexible",
+      parent_category_id: null,
+      version: 1,
+      aliases: [{ label: path }],
+      is_system: path === "Other",
+      status: "active",
+      budget_line_count: planned.has(path) ? 1 : 0,
+      merged_into_category_id: null,
+      merged_into_path: null,
+      merged_transaction_ids: [],
+    }));
+}
+
+function demoCategoryError(message, statusCode = 400) {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  error.expose = true;
+  return error;
+}
+
+function cloneDemoCategory(category) {
+  const {
+    merged_transaction_ids: ignoredMergedTransactionIds,
+    ...publicCategory
+  } = category;
+  return {
+    ...publicCategory,
+    aliases: (category.aliases ?? []).map((alias) => ({ ...alias })),
+  };
+}
 
 function cloneDemoTransaction(transaction) {
   const rawMerchant = transaction.raw_merchant ?? transaction.merchant;
@@ -644,6 +535,65 @@ function normalizedMatchText(value) {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, " ")
     .trim();
+}
+
+function encodeDemoTransactionCursor(offset) {
+  return Buffer.from(
+    JSON.stringify({ kind: "demo-transactions", offset }),
+  ).toString("base64url");
+}
+
+function decodeDemoTransactionCursor(cursor) {
+  if (!cursor) return 0;
+  try {
+    const parsed = JSON.parse(
+      Buffer.from(cursor, "base64url").toString("utf8"),
+    );
+    if (
+      parsed.kind !== "demo-transactions" ||
+      !Number.isSafeInteger(parsed.offset) ||
+      parsed.offset < 0
+    ) {
+      throw new TypeError();
+    }
+    return parsed.offset;
+  } catch {
+    const error = new TypeError("Invalid transaction cursor");
+    error.statusCode = 400;
+    throw error;
+  }
+}
+
+function compareDemoServiceTransactions(left, right, sort) {
+  const newestFirst =
+    String(right.posted_on ?? right.date).localeCompare(
+      String(left.posted_on ?? left.date),
+    ) || String(right.id).localeCompare(String(left.id));
+  if (sort === "merchant" || sort === "category") {
+    const leftValue =
+      sort === "merchant"
+        ? left.display_name ?? left.merchant
+        : left.category_primary ?? left.category;
+    const rightValue =
+      sort === "merchant"
+        ? right.display_name ?? right.merchant
+        : right.category_primary ?? right.category;
+    return (
+      String(leftValue ?? "").localeCompare(
+        String(rightValue ?? ""),
+        undefined,
+        { sensitivity: "base" },
+      ) || newestFirst
+    );
+  }
+  if (sort === "cost") {
+    const leftAmount = Number(left.amount?.amount_minor ?? 0);
+    const rightAmount = Number(right.amount?.amount_minor ?? 0);
+    const leftSpend = leftAmount < 0 ? Math.abs(leftAmount) : -1;
+    const rightSpend = rightAmount < 0 ? Math.abs(rightAmount) : -1;
+    return rightSpend - leftSpend || newestFirst;
+  }
+  return newestFirst;
 }
 
 function cloneTransactionCleanupRule(rule) {
@@ -855,56 +805,16 @@ function transactionMatchRow(
   };
 }
 
-const recurring = [
-  {
-    id: DEMO_IDS.recurring.googleWorkspace,
-    service: "Google Workspace",
-    service_family: "google_workspace",
-    type: "subscription",
-    cadence: "monthly",
-    expected_amount: money(8_564),
-    monthly_equivalent: money(8_564),
-    annual_equivalent: money(102_768),
-    next_estimated_date: "2026-08-18",
-    confidence_basis_points: 9_800,
-    status: "active",
-    account: {
-      id: "account_checking",
-      name: "Everyday checking",
-    },
-  },
-  {
-    id: DEMO_IDS.recurring.fidelis,
-    service: "Fidelis Care",
-    service_family: "fidelis_care",
-    type: "bill",
-    cadence: "monthly",
-    expected_amount: money(40_804),
-    monthly_equivalent: money(40_804),
-    annual_equivalent: money(489_648),
-    next_estimated_date: "2026-08-21",
-    confidence_basis_points: 9_400,
-    status: "active",
-    account: {
-      id: "account_checking",
-      name: "Everyday checking",
-    },
-  },
-];
-
 export class DemoFinanceService {
+  #scenario;
+  #accounts;
   #accountGroups = new Map();
-  #transactions = transactions.map(cloneDemoTransaction);
-  #transactionBaselines = new Map(
-    this.#transactions.map((transaction) => [
-      transaction.id,
-      {
-        display_name: transaction.display_name,
-        category_primary: transaction.category_primary,
-        tags: [...transaction.tags],
-      },
-    ]),
-  );
+  #transactions;
+  #recurring;
+  #transactionBaselines;
+  #spendingCategories;
+  #spendingCategorySequence = 1;
+  #insightFindings;
   #manualTransactionFields = new Map();
   #availableTransactionTags = new Set(DEMO_TRANSACTION_TAGS);
   #transactionCleanupRules = new Map(
@@ -945,9 +855,9 @@ export class DemoFinanceService {
     last_error: null,
     next_scheduled_at: "2026-07-28T09:00:00.000Z",
     last_findings_generated_at: "2026-07-27T09:02:00.000Z",
-    active_count: 8,
+    active_count: 7,
     archived_count: 2,
-    total_count: 10,
+    total_count: 9,
   };
   #creditScoreSources = [
     {
@@ -1002,7 +912,42 @@ export class DemoFinanceService {
     },
   ];
 
-  constructor() {
+  constructor({ scenario = "default" } = {}) {
+    this.#scenario = scenario;
+    const defaultAccounts = buildDefaultAccounts();
+    this.#accounts =
+      scenario === "ux-stress"
+        ? [...defaultAccounts, uxStressAccount()]
+        : defaultAccounts;
+    this.#transactions = [
+      ...buildDefaultTransactions(),
+      ...(scenario === "ux-stress"
+        ? buildUxStressTransactions()
+        : []),
+    ].map(cloneDemoTransaction);
+    this.#recurring = buildDefaultRecurringPayments();
+    this.#insightFindings = new Map(
+      buildDemoInsightFindings().map((finding) => [
+        finding.id,
+        finding,
+      ]),
+    );
+    this.#spendingCategories = new Map(
+      buildDemoSpendingCategories(this.#transactions).map((category) => [
+        category.id,
+        category,
+      ]),
+    );
+    this.#transactionBaselines = new Map(
+      this.#transactions.map((transaction) => [
+        transaction.id,
+        {
+          display_name: transaction.display_name,
+          category_primary: transaction.category_primary,
+          tags: [...transaction.tags],
+        },
+      ]),
+    );
     this.#refreshTransactionCleanupRuleApplications();
   }
 
@@ -1104,8 +1049,154 @@ export class DemoFinanceService {
     }
   }
 
+  #refreshSpendingCategoryPaths() {
+    const resolvePath = (category, seen = new Set()) => {
+      if (!category) return null;
+      if (seen.has(category.id)) {
+        throw demoCategoryError(
+          "A category cannot be nested under itself or a descendant.",
+        );
+      }
+      if (!category.parent_category_id) return category.name;
+      const parent = this.#spendingCategories.get(
+        category.parent_category_id,
+      );
+      if (!parent || parent.status !== "active") {
+        throw demoCategoryError("Parent category not found", 404);
+      }
+      return `${resolvePath(parent, new Set([...seen, category.id]))} / ${category.name}`;
+    };
+    for (const category of this.#spendingCategories.values()) {
+      if (category.status === "active") {
+        category.path = resolvePath(category);
+        category.depth = category.path.split(" / ").length - 1;
+      }
+    }
+  }
+
+  #spendingCategoryByPath(path, excludingId = null) {
+    const normalized = normalizedMatchText(path);
+    return [...this.#spendingCategories.values()].find(
+      (category) =>
+        category.id !== excludingId &&
+        category.status === "active" &&
+        normalizedMatchText(category.path) === normalized,
+    );
+  }
+
+  #assertSpendingCategoryVersion(category, expectedVersion) {
+    const version = Number(expectedVersion);
+    if (!Number.isSafeInteger(version) || version < 1) {
+      throw demoCategoryError(
+        "expected_version must be a positive integer",
+      );
+    }
+    if (version !== category.version) {
+      throw demoCategoryError(
+        "The category changed before this edit. Refresh and try again.",
+        409,
+      );
+    }
+  }
+
+  #createSpendingCategoryRecord({
+    name,
+    classification = "flexible",
+    parentCategoryId = null,
+  }) {
+    const normalizedName = String(name ?? "").trim();
+    if (!normalizedName || normalizedName.length > 100) {
+      throw demoCategoryError(
+        "name must be between 1 and 100 characters",
+      );
+    }
+    if (!["fixed", "flexible"].includes(classification)) {
+      throw demoCategoryError(
+        "classification must be fixed or flexible",
+      );
+    }
+    const parent = parentCategoryId
+      ? this.#spendingCategories.get(parentCategoryId)
+      : null;
+    if (
+      parentCategoryId &&
+      (!parent || parent.status !== "active" || parent.is_system)
+    ) {
+      throw demoCategoryError("Parent category not found", 404);
+    }
+    const path = parent
+      ? `${parent.path} / ${normalizedName}`
+      : normalizedName;
+    if (this.#spendingCategoryByPath(path)) {
+      throw demoCategoryError(
+        "That category name or alias already exists. Merge it instead.",
+        409,
+      );
+    }
+    const baseId = demoCategoryId(path);
+    let id = baseId;
+    while (this.#spendingCategories.has(id)) {
+      id = `${baseId}_${this.#spendingCategorySequence}`;
+      this.#spendingCategorySequence += 1;
+    }
+    const category = {
+      id,
+      name: normalizedName,
+      path,
+      depth: parent ? parent.depth + 1 : 0,
+      classification,
+      parent_category_id: parent?.id ?? null,
+      version: 1,
+      aliases: [{ label: path }],
+      is_system: false,
+      status: "active",
+      budget_line_count: 0,
+      merged_into_category_id: null,
+      merged_into_path: null,
+      merged_transaction_ids: [],
+    };
+    this.#spendingCategories.set(id, category);
+    return category;
+  }
+
+  #publicSpendingCategory(category) {
+    const transactionCount =
+      category.status === "merged"
+        ? category.merged_transaction_ids.length
+        : this.#transactions.filter(
+            (transaction) =>
+              (transaction.category_primary ??
+                transaction.category) === category.path,
+          ).length;
+    return {
+      ...cloneDemoCategory(category),
+      transaction_count: transactionCount,
+      merged_into_path: category.merged_into_category_id
+        ? this.#spendingCategories.get(
+            category.merged_into_category_id,
+          )?.path ?? category.merged_into_path
+        : null,
+    };
+  }
+
+  #reassignCategoryTransactions(fromPath, toPath) {
+    const transactionIds = [];
+    for (const transaction of this.#transactions) {
+      if (
+        (transaction.category_primary ?? transaction.category) !==
+        fromPath
+      ) {
+        continue;
+      }
+      transaction.category_primary = toPath;
+      transaction.category = toPath;
+      transactionIds.push(transaction.id);
+    }
+    return transactionIds;
+  }
+
   #accountCards() {
-    const groupedAccounts = accounts.map((account) => {
+    const groupedAccounts = this.#accounts.map((account) => {
       const hasOverride =
         this.#accountGroups.has(account.id) &&
         this.#accountGroups.get(account.id) != null;
@@ -1208,7 +1299,35 @@ export class DemoFinanceService {
     });
   }
 
-  async getFinanceInsights({ section = "all" } = {}) {
+  async getFinanceInsights({
+    section = "all",
+    view = "active",
+  } = {}) {
+    if (
+      !["all", "weekly", "investments", "subscriptions"].includes(
+        section,
+      )
+    ) {
+      throw new TypeError(
+        "section must be all, weekly, investments, or subscriptions",
+      );
+    }
+    const insightView = view === "archive" ? "archive" : "active";
+    const visibleFindings = [...this.#insightFindings.values()].filter(
+      (finding) =>
+        insightView === "active"
+          ? finding.state === "active"
+          : finding.state !== "active",
+    );
+    const findingsFor = (family) =>
+      structuredClone(
+        visibleFindings.filter(
+          (finding) => finding.family === family,
+        ),
+      );
+    const currentWeekly = findingsFor("weekly");
+    const currentInvestments = findingsFor("investments");
+    const currentSubscriptions = findingsFor("subscriptions");
     const all = {
       weekly: {
         period: {
@@ -1217,8 +1336,8 @@ export class DemoFinanceService {
           previous_start: "2026-07-12",
           previous_end: "2026-07-19",
         },
-        summary: { finding_count: weeklyFindings.length },
-        findings: weeklyFindings,
+        summary: { finding_count: currentWeekly.length },
+        findings: currentWeekly,
       },
       investments: {
         summary: {
@@ -1226,14 +1345,14 @@ export class DemoFinanceService {
           one_week_change: money(88_420),
           one_month_change: money(339_100),
         },
-        findings: investmentFindings,
+        findings: currentInvestments,
       },
       subscriptions: {
         summary: {
           monthly_equivalent: money(23_864),
           annual_equivalent: money(286_368),
         },
-        findings: subscriptionFindings,
+        findings: currentSubscriptions,
       },
     };
     const selected =
@@ -1244,23 +1363,14 @@ export class DemoFinanceService {
       (total, value) => total + value.findings.length,
       0,
     );
-    const summaries = {
-      weekly:
-        "Three weekly findings are ready: dining increased 38%, five coffee stops totaled $46.25, and one $486.20 flight explains the travel spike. Data is fresh as of July 26 at 6:42 PM UTC.",
-      investments:
-        "Two investment findings are ready: estimated monthly performance is positive $2,191 after separating $1,200 of contributions, and VTI is 31% of the portfolio. Data is fresh as of July 26 at 6:42 PM UTC.",
-      subscriptions:
-        "Two subscription findings are ready: two Apple service charges may overlap, and Google Workspace costs $85.64 a month. Data is fresh as of July 26 at 6:42 PM UTC.",
-      all:
-        "Seven finance findings are ready across weekly changes, investments, and subscriptions. Dining increased 38%, estimated monthly investment performance is positive $2,191 after contributions, and two Apple service charges may overlap. Data is fresh as of July 26 at 6:42 PM UTC.",
-    };
     return result({
       title: section === "all" ? "Finance insights" : `${section} insights`,
       subtitle: `${count} findings`,
       path: section === "all" ? "/insights" : `/insights#${section}`,
-      summary: summaries[section],
+      summary: `${count} ${insightView === "archive" ? "past" : "active"} finance finding${count === 1 ? "" : "s"} ${count === 1 ? "is" : "are"} available. Data is fresh as of July 26 at 6:42 PM UTC.`,
       data: {
         section,
+        view: insightView,
         ...selected,
         finding_count: count,
         freshness: FRESHNESS,
@@ -1324,6 +1434,447 @@ export class DemoFinanceService {
         freshness: FRESHNESS,
       },
     });
+  }
+
+  async listSpendingCategories(input = {}) {
+    this.#refreshSpendingCategoryPaths();
+    const includeMerged =
+      input.includeMerged === true || input.include_merged === true;
+    return {
+      categories: [...this.#spendingCategories.values()]
+        .filter(
+          (category) =>
+            includeMerged || category.status === "active",
+        )
+        .map((category) => this.#publicSpendingCategory(category))
+        .sort((left, right) => {
+          const leftOther = left.is_system || left.path === "Other";
+          const rightOther =
+            right.is_system || right.path === "Other";
+          if (leftOther !== rightOther) return leftOther ? 1 : -1;
+          return left.path.localeCompare(right.path);
+        }),
+    };
+  }
+
+  async createSpendingCategory(input = {}) {
+    const category = this.#createSpendingCategoryRecord({
+      name: input.name,
+      classification: input.classification ?? "flexible",
+      parentCategoryId:
+        input.parentCategoryId ??
+        input.parent_category_id ??
+        null,
+    });
+    return {
+      created: true,
+      category: this.#publicSpendingCategory(category),
+    };
+  }
+
+  async updateSpendingCategory(input = {}) {
+    const categoryId =
+      input.categoryId ?? input.category_id ?? null;
+    const category = this.#spendingCategories.get(categoryId);
+    if (!category || category.status !== "active") {
+      throw demoCategoryError("Category not found", 404);
+    }
+    if (category.is_system) {
+      throw demoCategoryError(
+        "Other is permanent and cannot be edited.",
+      );
+    }
+    this.#assertSpendingCategoryVersion(
+      category,
+      input.expectedVersion ?? input.expected_version,
+    );
+    const hasName = Object.hasOwn(input, "name");
+    const hasClassification = Object.hasOwn(
+      input,
+      "classification",
+    );
+    const hasParent =
+      Object.hasOwn(input, "parentCategoryId") ||
+      Object.hasOwn(input, "parent_category_id");
+    if (!hasName && !hasClassification && !hasParent) {
+      throw demoCategoryError(
+        "At least one category field is required",
+      );
+    }
+    const oldPaths = new Map(
+      [...this.#spendingCategories.values()].map((candidate) => [
+        candidate.id,
+        candidate.path,
+      ]),
+    );
+    const before = {
+      name: category.name,
+      classification: category.classification,
+      parent_category_id: category.parent_category_id,
+    };
+    const restore = () => {
+      Object.assign(category, before);
+      for (const candidate of this.#spendingCategories.values()) {
+        if (!oldPaths.has(candidate.id)) continue;
+        candidate.path = oldPaths.get(candidate.id);
+        candidate.depth = candidate.path.split(" / ").length - 1;
+      }
+    };
+    try {
+      if (hasName) {
+        const name = String(input.name ?? "").trim();
+        if (!name || name.length > 100) {
+          throw demoCategoryError(
+            "name must be between 1 and 100 characters",
+          );
+        }
+        category.name = name;
+      }
+      if (hasClassification) {
+        if (!["fixed", "flexible"].includes(input.classification)) {
+          throw demoCategoryError(
+            "classification must be fixed or flexible",
+          );
+        }
+        category.classification = input.classification;
+      }
+      if (hasParent) {
+        const parentCategoryId =
+          input.parentCategoryId ??
+          input.parent_category_id ??
+          null;
+        if (parentCategoryId === category.id) {
+          throw demoCategoryError(
+            "A category cannot be nested under itself or a descendant.",
+          );
+        }
+        category.parent_category_id = parentCategoryId || null;
+      }
+      this.#refreshSpendingCategoryPaths();
+      const conflict = this.#spendingCategoryByPath(
+        category.path,
+        category.id,
+      );
+      if (conflict) {
+        throw demoCategoryError(
+          "That category name or alias already exists. Merge it instead.",
+          409,
+        );
+      }
+    } catch (error) {
+      restore();
+      throw error;
+    }
+    for (const candidate of this.#spendingCategories.values()) {
+      const oldPath = oldPaths.get(candidate.id);
+      if (
+        candidate.status === "active" &&
+        oldPath &&
+        oldPath !== candidate.path
+      ) {
+        candidate.aliases = [
+          ...(candidate.aliases ?? []),
+          { label: oldPath },
+        ];
+        this.#reassignCategoryTransactions(oldPath, candidate.path);
+      }
+    }
+    category.version += 1;
+    return {
+      updated: true,
+      category: this.#publicSpendingCategory(category),
+    };
+  }
+
+  async mergeSpendingCategories(input = {}) {
+    const rawSourceIds =
+      input.sourceCategoryIds ?? input.source_category_ids;
+    if (
+      !Array.isArray(rawSourceIds) ||
+      rawSourceIds.length < 1 ||
+      rawSourceIds.length > 100
+    ) {
+      throw demoCategoryError(
+        "source_category_ids must contain between 1 and 100 categories",
+      );
+    }
+    const sourceIds = [...new Set(rawSourceIds.map(String))];
+    if (sourceIds.length !== rawSourceIds.length) {
+      throw demoCategoryError(
+        "source_category_ids must be unique",
+      );
+    }
+    const sources = sourceIds.map((id) =>
+      this.#spendingCategories.get(id),
+    );
+    if (
+      sources.some(
+        (category) => !category || category.status !== "active",
+      )
+    ) {
+      throw demoCategoryError(
+        "One or more categories were not found",
+        404,
+      );
+    }
+    if (sources.some((category) => category.is_system)) {
+      throw demoCategoryError(
+        "Other cannot be edited, merged, or used as a merge destination.",
+      );
+    }
+    const destinationInput = input.destination;
+    if (
+      !destinationInput ||
+      typeof destinationInput !== "object" ||
+      Array.isArray(destinationInput)
+    ) {
+      throw demoCategoryError("destination is required");
+    }
+    const destinationId =
+      destinationInput.categoryId ??
+      destinationInput.category_id ??
+      null;
+    if (destinationId && sourceIds.includes(destinationId)) {
+      throw demoCategoryError(
+        "A category cannot be merged into itself",
+      );
+    }
+    const existingDestination = destinationId
+      ? this.#spendingCategories.get(destinationId)
+      : null;
+    if (
+      destinationId &&
+      (!existingDestination ||
+        existingDestination.status !== "active")
+    ) {
+      throw demoCategoryError("Destination category not found", 404);
+    }
+    if (existingDestination?.is_system) {
+      throw demoCategoryError(
+        "Other cannot be edited, merged, or used as a merge destination.",
+      );
+    }
+    const expectedVersions =
+      input.expectedVersions ?? input.expected_versions;
+    if (
+      !expectedVersions ||
+      typeof expectedVersions !== "object" ||
+      Array.isArray(expectedVersions)
+    ) {
+      throw demoCategoryError("expected_versions is required");
+    }
+    for (const category of [
+      ...sources,
+      ...(existingDestination ? [existingDestination] : []),
+    ]) {
+      this.#assertSpendingCategoryVersion(
+        category,
+        expectedVersions[category.id],
+      );
+    }
+    const newDestinationParentId =
+      destinationInput.parentCategoryId ??
+      destinationInput.parent_category_id ??
+      null;
+    if (
+      !existingDestination &&
+      newDestinationParentId &&
+      sourceIds.includes(newDestinationParentId)
+    ) {
+      throw demoCategoryError(
+        "The destination parent category is invalid",
+      );
+    }
+    const destination =
+      existingDestination ??
+      this.#createSpendingCategoryRecord({
+        name: destinationInput.name,
+        classification:
+          destinationInput.classification ?? "flexible",
+        parentCategoryId:
+          newDestinationParentId,
+      });
+    const oldPaths = new Map(
+      [...this.#spendingCategories.values()].map((category) => [
+        category.id,
+        category.path,
+      ]),
+    );
+    for (const candidate of this.#spendingCategories.values()) {
+      if (candidate.status !== "active") {
+        continue;
+      }
+      let parentId = candidate.parent_category_id;
+      while (parentId && sourceIds.includes(parentId)) {
+        parentId =
+          this.#spendingCategories.get(parentId)
+            ?.parent_category_id ?? null;
+      }
+      candidate.parent_category_id = parentId;
+    }
+    this.#refreshSpendingCategoryPaths();
+    for (const candidate of this.#spendingCategories.values()) {
+      const oldPath = oldPaths.get(candidate.id);
+      if (
+        candidate.status === "active" &&
+        oldPath &&
+        oldPath !== candidate.path
+      ) {
+        candidate.aliases = [
+          ...(candidate.aliases ?? []),
+          { label: oldPath },
+        ];
+        if (!sourceIds.includes(candidate.id)) {
+          candidate.version += 1;
+        }
+        this.#reassignCategoryTransactions(oldPath, candidate.path);
+      }
+    }
+    const destinationAliases = new Map(
+      (destination.aliases ?? []).map((alias) => [
+        normalizedMatchText(alias.label),
+        alias,
+      ]),
+    );
+    for (const source of sources) {
+      const sourcePath = source.path;
+      const transactionIds = this.#reassignCategoryTransactions(
+        sourcePath,
+        destination.path,
+      );
+      source.status = "merged";
+      source.merged_into_category_id = destination.id;
+      source.merged_into_path = destination.path;
+      source.merged_transaction_ids = transactionIds;
+      source.version += 1;
+      for (const alias of [
+        { label: sourcePath },
+        ...(source.aliases ?? []),
+      ]) {
+        destinationAliases.set(
+          normalizedMatchText(alias.label),
+          { ...alias },
+        );
+      }
+    }
+    destination.aliases = [...destinationAliases.values()];
+    if (
+      existingDestination &&
+      oldPaths.get(destination.id) === destination.path
+    ) {
+      destination.version += 1;
+    }
+    return {
+      merged: true,
+      category: this.#publicSpendingCategory(destination),
+    };
+  }
+
+  async deleteSpendingCategory(input = {}) {
+    const categoryId =
+      input.categoryId ?? input.category_id ?? null;
+    const category = this.#spendingCategories.get(categoryId);
+    if (!category || category.status !== "active") {
+      throw demoCategoryError("Category not found", 404);
+    }
+    if (category.is_system) {
+      throw demoCategoryError(
+        "Other is permanent and cannot be deleted.",
+      );
+    }
+    this.#assertSpendingCategoryVersion(
+      category,
+      input.expectedVersion ?? input.expected_version,
+    );
+    const fallback = [...this.#spendingCategories.values()].find(
+      (candidate) => candidate.is_system,
+    );
+    const oldPaths = new Map(
+      [...this.#spendingCategories.values()].map((candidate) => [
+        candidate.id,
+        candidate.path,
+      ]),
+    );
+    this.#reassignCategoryTransactions(category.path, fallback.path);
+    for (const child of this.#spendingCategories.values()) {
+      if (child.parent_category_id === category.id) {
+        child.parent_category_id = category.parent_category_id;
+      }
+    }
+    this.#spendingCategories.delete(category.id);
+    this.#refreshSpendingCategoryPaths();
+    for (const candidate of this.#spendingCategories.values()) {
+      const oldPath = oldPaths.get(candidate.id);
+      if (
+        candidate.status === "active" &&
+        oldPath &&
+        oldPath !== candidate.path
+      ) {
+        candidate.aliases = [
+          ...(candidate.aliases ?? []),
+          { label: oldPath },
+        ];
+        candidate.version += 1;
+        this.#reassignCategoryTransactions(oldPath, candidate.path);
+      }
+    }
+    return {
+      deleted: true,
+      category_id: category.id,
+      moved_to_category: this.#publicSpendingCategory(fallback),
+    };
+  }
+
+  async splitSpendingCategory(input = {}) {
+    const categoryId =
+      input.categoryId ?? input.category_id ?? null;
+    const category = this.#spendingCategories.get(categoryId);
+    if (!category) {
+      throw demoCategoryError("Category not found", 404);
+    }
+    if (category.status !== "merged") {
+      throw demoCategoryError(
+        "Only a merged category can be split out",
+      );
+    }
+    this.#assertSpendingCategoryVersion(
+      category,
+      input.expectedVersion ?? input.expected_version,
+    );
+    const destination = this.#spendingCategories.get(
+      category.merged_into_category_id,
+    );
+    if (!destination || destination.status !== "active") {
+      throw demoCategoryError("Destination category not found", 404);
+    }
+    const restoreIds = new Set(category.merged_transaction_ids);
+    for (const transaction of this.#transactions) {
+      if (
+        restoreIds.has(transaction.id) &&
+        (transaction.category_primary ?? transaction.category) ===
+          destination.path
+      ) {
+        transaction.category_primary = category.path;
+        transaction.category = category.path;
+      }
+    }
+    const sourceLabels = new Set(
+      [category.path, ...(category.aliases ?? []).map((alias) => alias.label)]
+        .map(normalizedMatchText),
+    );
+    destination.aliases = (destination.aliases ?? []).filter(
+      (alias) => !sourceLabels.has(normalizedMatchText(alias.label)),
+    );
+    destination.version += 1;
+    category.status = "active";
+    category.merged_into_category_id = null;
+    category.merged_into_path = null;
+    category.merged_transaction_ids = [];
+    category.version += 1;
+    return {
+      split: true,
+      category: this.#publicSpendingCategory(category),
+    };
   }
 
   async getCreditSummary({ period = "1m" } = {}) {
@@ -1489,14 +2040,43 @@ export class DemoFinanceService {
     status = "all",
     search = null,
     query = null,
+    startOn = null,
+    start_on = null,
+    endOn = null,
+    end_on = null,
+    accountId = null,
+    account_id = null,
+    category = null,
+    sort = "date",
     limit = 50,
+    cursor = null,
   } = {}) {
     const normalizedSearch = normalizedMatchText(search ?? query);
+    const effectiveStart = startOn ?? start_on;
+    const effectiveEnd = endOn ?? end_on;
+    const effectiveAccount = accountId ?? account_id;
+    const boundedLimit = Math.max(
+      1,
+      Math.min(100, Number(limit) || 50),
+    );
+    const offset = decodeDemoTransactionCursor(cursor);
     const filtered = this.#transactions
       .filter((transaction) => {
         if (status === "pending") return transaction.pending;
         if (status === "posted") return !transaction.pending;
         return true;
+      })
+      .filter((transaction) => {
+        const date = transaction.posted_on ?? transaction.date;
+        return (
+          (!effectiveStart || date >= effectiveStart) &&
+          (!effectiveEnd || date < effectiveEnd) &&
+          (!effectiveAccount ||
+            transaction.account.id === effectiveAccount) &&
+          (!category ||
+            transaction.category_primary === category ||
+            transaction.category === category)
+        );
       })
       .filter(
         (transaction) =>
@@ -1513,16 +2093,26 @@ export class DemoFinanceService {
             ].join(" "),
           ).includes(normalizedSearch),
       )
-      .slice(0, limit)
+      .sort((left, right) =>
+        compareDemoServiceTransactions(left, right, sort),
+      );
+    const page = filtered
+      .slice(offset, offset + boundedLimit)
       .map(publicDemoTransaction);
     return result({
       title: "Transactions",
-      subtitle: `${filtered.length} shown`,
+      subtitle: `${page.length} shown`,
       path: "/transactions",
-      summary: `${filtered.length} recent transactions returned, including ${filtered.filter((transaction) => transaction.pending).length} pending. Data is fresh as of July 26 at 6:42 PM UTC.`,
+      summary: `${page.length} recent transactions returned, including ${page.filter((transaction) => transaction.pending).length} pending. Data is fresh as of July 26 at 6:42 PM UTC.`,
       data: {
-        transactions: filtered,
-        page_info: { has_more: false, next_cursor: null },
+        transactions: page,
+        page_info: {
+          has_more: offset + page.length < filtered.length,
+          next_cursor:
+            offset + page.length < filtered.length
+              ? encodeDemoTransactionCursor(offset + page.length)
+              : null,
+        },
         freshness: FRESHNESS,
       },
     });
@@ -1609,7 +2199,7 @@ export class DemoFinanceService {
   }
 
   async listRecurringPayments({ kind = "all", limit = 50 } = {}) {
-    const streams = recurring
+    const streams = this.#recurring
       .filter((stream) => {
         if (kind === "subscriptions") return stream.type === "subscription";
         if (kind === "bills") return stream.type === "bill";
@@ -1629,7 +2219,7 @@ export class DemoFinanceService {
         kind,
         monthly_equivalent: money(monthly),
         annual_equivalent: money(monthly * 12),
-        recurring_payments: streams,
+        recurring_payments: structuredClone(streams),
         page_info: { has_more: false, next_cursor: null },
         freshness: FRESHNESS,
       },
@@ -1775,24 +2365,36 @@ export class DemoFinanceService {
       account_id: holding.account_id,
       account_name: accountNames.get(holding.account_id) ?? null,
       name: holding.name,
+      display_name: holding.display_name ?? holding.name,
       ticker_symbol: holding.ticker_symbol,
       symbol: holding.ticker_symbol,
+      display_symbol:
+        holding.display_symbol ?? holding.ticker_symbol,
       security_type: holding.security_type,
       balance_group: holding.balance_group,
       value: money(holding.value_minor),
       cost_basis: money(
-        Math.round(holding.start_value_minor * 0.82),
+        holding.cost_basis_minor ??
+          Math.round(holding.start_value_minor * 0.82),
       ),
       quantity: holding.quantity,
       price:
-        holding.quantity > 0
+        Number.isSafeInteger(holding.price_minor)
+          ? money(holding.price_minor)
+          : holding.quantity > 0 && holding.price_minor !== null
           ? money(Math.round(holding.value_minor / holding.quantity))
           : null,
       allocation_basis_points:
         total === 0
           ? 0
           : Math.round((holding.value_minor / total) * 10_000),
-      price_as_of: "2026-07-26",
+      price_as_of: holding.price_as_of ?? "2026-07-26",
+      change_percent: holding.change_percent ?? 0,
+      shares_label:
+        holding.shares_label ??
+        (Number.isFinite(holding.quantity)
+          ? String(holding.quantity)
+          : "—"),
     }));
     const allocationGroups = new Map();
     for (const holding of scoped) {
@@ -1875,20 +2477,12 @@ export class DemoFinanceService {
         group_count: 0,
       };
     }
-    const insightItems = [
-      ...weeklyFindings.map((finding) => ({
+    const insightItems = [...this.#insightFindings.values()]
+      .filter((finding) => finding.state === "active")
+      .map((finding) => ({
         finding,
-        family: "weekly",
-      })),
-      ...investmentFindings.map((finding) => ({
-        finding,
-        family: "investments",
-      })),
-      ...subscriptionFindings.map((finding) => ({
-        finding,
-        family: "subscriptions",
-      })),
-    ];
+        family: finding.family,
+      }));
     const items = [
       ...this.#transactions.map((transaction) => ({
         entityType: "transaction",
@@ -1914,7 +2508,7 @@ export class DemoFinanceService {
         url: `/accounts#account-${encodeURIComponent(account.id)}`,
         icon: "ph-bank",
       })),
-      ...recurring.map((stream) => ({
+      ...this.#recurring.map((stream) => ({
         entityType: "recurring",
         group: "Recurring",
         title: stream.service,
@@ -2413,8 +3007,89 @@ export class DemoFinanceService {
     };
   }
 
-  async actOnFinding(input) {
-    return { updated: true, finding: input };
+  #syncInsightStatusCounts() {
+    const findings = [...this.#insightFindings.values()];
+    const activeCount = findings.filter(
+      (finding) => finding.state === "active",
+    ).length;
+    this.#insightStatus = {
+      ...this.#insightStatus,
+      active_count: activeCount,
+      archived_count: findings.length - activeCount,
+      total_count: findings.length,
+    };
+  }
+
+  #validateInsightCorrection(findings, reasonCode) {
+    if (
+      reasonCode === "not_subscription" &&
+      findings.some(
+        (finding) =>
+          finding.family !== "subscriptions" ||
+          !finding.evidence?.some((entry) =>
+            ["recurring", "recurring_stream"].includes(
+              entry.entity_type,
+            ),
+          ),
+      )
+    ) {
+      const error = new TypeError(
+        "Not a subscription only applies to subscription insights with recurring evidence",
+      );
+      error.statusCode = 400;
+      throw error;
+    }
+  }
+
+  async actOnFinding(input = {}) {
+    const findingId = input.findingId ?? input.finding_id;
+    const requestedAction = input.action;
+    const action =
+      requestedAction === "dismiss"
+        ? "ignore"
+        : requestedAction === "mark_bad"
+          ? "report_incorrect"
+          : requestedAction;
+    const finding = this.#insightFindings.get(findingId);
+    if (!finding) {
+      const error = new Error("Insight finding could not be found");
+      error.statusCode = 404;
+      throw error;
+    }
+    const reasonCode =
+      input.reasonCode ??
+      input.reason_code ??
+      (requestedAction === "mark_bad"
+        ? "other_false_positive"
+        : null);
+    this.#validateInsightCorrection([finding], reasonCode);
+    if (action === "delete") {
+      this.#insightFindings.delete(findingId);
+      this.#syncInsightStatusCounts();
+      return {
+        updated: true,
+        deleted: true,
+        demo: true,
+        action,
+        finding_id: findingId,
+      };
+    }
+    const state = {
+      archive: "archived",
+      ignore: "dismissed",
+      report_incorrect: "bad",
+      restore: "active",
+    }[action];
+    if (state) finding.state = state;
+    this.#syncInsightStatusCounts();
+    return {
+      updated: true,
+      demo: true,
+      action,
+      state: finding.state,
+      finding_id: findingId,
+      ...(reasonCode ? { reason_code: reasonCode } : {}),
+    };
   }
 
   async batchActOnFindings(input = {}) {
@@ -2432,38 +3107,8 @@ export class DemoFinanceService {
       (requestedAction === "mark_bad"
         ? "other_false_positive"
         : null);
-    const findings = [
-      ...weeklyFindings.map((finding) => ({
-        ...finding,
-        family: "weekly",
-      })),
-      ...investmentFindings.map((finding) => ({
-        ...finding,
-        family: "investments",
-      })),
-      ...subscriptionFindings.map((finding) => ({
-        ...finding,
-        family: "subscriptions",
-      })),
-    ];
-    const findingById = new Map(
-      findings.map((finding) => [finding.id, finding]),
-    );
-    const webFindingAliases = new Map([
-      [DEMO_IDS.insights.weeklyDining, findings[0]],
-      [DEMO_IDS.insights.weeklyCoffee, findings[1]],
-      [DEMO_IDS.insights.weeklyTravel, findings[2]],
-      ["ins_inv_001", findings[3]],
-      ["ins_inv_002", findings[4]],
-      [DEMO_IDS.insights.subscriptionDuplicate, findings[5]],
-      [DEMO_IDS.insights.subscriptionExpensive, findings[6]],
-      ["ins_week_archive_001", findings[0]],
-      ["ins_sub_archive_001", findings[5]],
-    ]);
-    const selected = findingIds.map(
-      (findingId) =>
-        findingById.get(findingId) ??
-        webFindingAliases.get(findingId),
+    const selected = findingIds.map((findingId) =>
+      this.#insightFindings.get(findingId),
     );
     if (selected.some((finding) => !finding)) {
       const error = new Error(
@@ -2472,34 +3117,27 @@ export class DemoFinanceService {
       error.statusCode = 404;
       throw error;
     }
-    if (
-      reasonCode === "not_subscription" &&
-      selected.some(
-        (finding) =>
-          finding.family !== "subscriptions" ||
-          !finding.evidence?.some((entry) =>
-            ["recurring", "recurring_stream"].includes(
-              entry.entity_type,
-            ),
-          ),
-      )
-    ) {
-      const error = new TypeError(
-        "Not a subscription only applies to subscription insights with recurring evidence",
-      );
+    this.#validateInsightCorrection(selected, reasonCode);
+    const state = {
+      archive: "archived",
+      ignore: "dismissed",
+      report_incorrect: "bad",
+      restore: "active",
+    }[action];
+    if (!state) {
+      const error = new TypeError("Unsupported insight action");
       error.statusCode = 400;
       throw error;
     }
+    for (const finding of selected) {
+      finding.state = state;
+    }
+    this.#syncInsightStatusCounts();
     return {
       updated: true,
       demo: true,
       action,
-      state: {
-        archive: "archived",
-        ignore: "dismissed",
-        report_incorrect: "bad",
-        restore: "active",
-      }[action],
+      state,
       updated_count: selected.length,
       finding_ids: findingIds,
       ...(reasonCode ? { reason_code: reasonCode } : {}),
@@ -2528,6 +3166,8 @@ export class DemoFinanceService {
   }
 
   async clearInsights() {
+    const findingsDeleted = this.#insightFindings.size;
+    this.#insightFindings.clear();
     this.#insightStatus = {
       ...this.#insightStatus,
       active_count: 0,
@@ -2538,9 +3178,9 @@ export class DemoFinanceService {
     return {
       cleared: true,
       demo: true,
-      findings_deleted: 10,
+      findings_deleted: findingsDeleted,
       narratives_deleted: 3,
-      search_documents_deleted: 10,
+      search_documents_deleted: findingsDeleted,
       feedback_preserved: true,
       recurring_corrections_preserved: true,
     };
@@ -2554,7 +3194,9 @@ export class DemoFinanceService {
     ) {
       throw new TypeError("Invalid recurring classification");
     }
-    const stream = recurring.find((candidate) => candidate.id === streamId);
+    const stream = this.#recurring.find(
+      (candidate) => candidate.id === streamId,
+    );
     if (!stream) {
       const error = new Error("Recurring stream not found");
       error.statusCode = 404;
@@ -2577,7 +3219,9 @@ export class DemoFinanceService {
     const accountId = input.accountId ?? input.account_id;
     const balanceGroup =
       input.balanceGroup ?? input.balance_group ?? null;
-    const account = accounts.find((candidate) => candidate.id === accountId);
+    const account = this.#accounts.find(
+      (candidate) => candidate.id === accountId,
+    );
     if (!account) {
       const error = new Error("Account not found");
       error.statusCode = 404;
@@ -2778,6 +3422,6 @@ function demoCreditPeriod(value) {
   }[name];
 }
 
-export function createDemoFinanceService() {
-  return new DemoFinanceService();
+export function createDemoFinanceService(options = {}) {
+  return new DemoFinanceService(options);
 }

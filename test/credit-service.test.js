@@ -229,18 +229,24 @@ test("demo credit data follows the production shape and exposes manual scores th
   });
 
   assert.equal(credit.data.period.name, "1m");
-  assert.equal(credit.data.summary.card_count, 1);
+  assert.equal(credit.data.summary.card_count, 2);
   assert.equal(
     credit.data.summary.total_credit_limit.amount_minor,
-    1_000_000,
+    1_200_000,
   );
   assert.equal(
-    accounts.data.groups[0].accounts[0].credit_limit.amount_minor,
-    1_000_000,
+    accounts.data.groups
+      .flatMap((group) => group.accounts)
+      .reduce(
+        (sum, account) =>
+          sum + account.credit_limit.amount_minor,
+        0,
+      ),
+    1_200_000,
   );
   assert.equal(
     accounts.data.credit_summary.utilization_basis_points,
-    2_815,
+    2_346,
   );
   assert.equal(FINANCE_TOOL_NAMES.length, 10);
   assert.equal(

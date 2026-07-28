@@ -106,7 +106,7 @@ test("Plaid OAuth callback renders a resumable authenticated return page", async
   assert.match(response.text, /data-page="plaid-oauth"/);
   assert.match(response.text, /data-plaid-oauth-return/);
   assert.match(response.text, /Returning to Plaid/);
-  assert.match(response.text, /\/js\/money\.js\?v=25/);
+  assert.match(response.text, /\/js\/money\.js\?v=26/);
   assert.doesNotMatch(response.text, /data-search-dialog/);
 });
 
@@ -304,7 +304,7 @@ test("transactions puts detailed spending analysis before the ledger", async () 
     query: {
       period: "30",
       q: "coffee",
-      account: "acc_001",
+      account: "account_checking",
     },
   });
   const spendingPosition = html.indexOf(
@@ -321,23 +321,23 @@ test("transactions puts detailed spending analysis before the ledger", async () 
   assert.match(html, /10\.4% less than the prior period/);
   assert.match(
     html,
-    />38<small>Pending activity is excluded<\/small><\/dd>/,
+    />38<small>Posted spending and refunds; pending and excluded activity is omitted<\/small><\/dd>/,
   );
   assert.match(html, /\$108\.60/);
   assert.match(html, /data-chart="spending"/);
   assert.match(html, /data-chart="line"/);
   assert.match(html, /Daily spending for Jul 1, 2026–Jul 26, 2026/);
-  assert.match(html, /35% · 2 purchases/);
+  assert.match(html, /35% · 2 transactions/);
   assert.match(
     html,
-    /href="\/transactions\?period=30&amp;q=coffee&amp;account=acc_001&amp;category=Housing"/,
+    /href="\/transactions\?q=coffee&amp;period=30&amp;account=account_checking&amp;category=Housing"/,
   );
   assert.match(html, />Posted spending</);
-  assert.match(html, /<h3>All categories<\/h3>/);
+  assert.match(html, /<h3 data-spending-segment-heading>All categories<\/h3>/);
   assert.doesNotMatch(html, /<h3>Top categories<\/h3>/);
   assert.match(html, /Fees &amp; Interest/);
   assert.equal(
-    (html.match(/class="spending-detail-category"/g) ?? []).length,
+    (html.match(/data-spending-segment-item/g) ?? []).length,
     demo.spendingDetails.categories.length,
   );
   assert.match(
@@ -613,7 +613,7 @@ test("accounts show inventory with local rename and direct Settings controls", a
   const html = await render("accounts", {
     pageTitle: "Accounts",
     activePath: "/accounts",
-    query: { account: "acc_001", asset: "asset_001" },
+    query: { account: "account_checking", asset: "asset_001" },
   });
   assert.match(html, /Cash balance/);
   assert.match(html, /\$108,307\.21/);
@@ -624,12 +624,12 @@ test("accounts show inventory with local rename and direct Settings controls", a
   assert.match(html, /Manually tracked assets/);
   assert.match(html, /2024 vehicle/);
   assert.match(html, /\$34,714\.61/);
-  assert.match(html, /id="account-acc_001"/);
-  assert.match(html, /data-account-alias-edit="acc_001"/);
-  assert.match(html, /data-account-display-name="acc_001"/);
+  assert.match(html, /id="account-account_checking"/);
+  assert.match(html, /data-account-alias-edit="account_checking"/);
+  assert.match(html, /data-account-display-name="account_checking"/);
   assert.match(html, /data-account-alias-dialog/);
   assert.match(html, /Plaid’s original name stays untouched/);
-  assert.match(html, /href="\/settings#account-acc_001"/);
+  assert.match(html, /href="\/settings#account-account_checking"/);
   assert.match(
     html,
     /href="\/settings\?asset=asset_001#asset-asset_001"/,
@@ -637,6 +637,33 @@ test("accounts show inventory with local rename and direct Settings controls", a
   assert.doesNotMatch(html, /\/accounts\?account=/);
   assert.doesNotMatch(html, /Selected account/);
   assert.doesNotMatch(html, /Close account details/);
+});
+
+test("demo account state survives an accounts page-model refresh", async () => {
+  const financeService = createDemoFinanceService();
+  await financeService.updateAccountBalanceGroup({
+    account_id: "account_brokerage",
+    balance_group: "retirement",
+  });
+  const app = express();
+  app.set("views", viewsRoot);
+  app.set("view engine", "ejs");
+  app.use(
+    createWebRouter({
+      demoMode: true,
+      financeService,
+    }),
+  );
+
+  const response = await request(app).get("/accounts").expect(200);
+  const brokerageRow = response.text.match(
+    /id="account-account_brokerage"[\s\S]*?<\/div>\s*<\/section>/,
+  )?.[0];
+
+  assert.ok(brokerageRow);
+  assert.match(brokerageRow, /Retirement/);
+  assert.match(response.text, /\$44,877\.80/);
+  assert.doesNotMatch(response.text, /\$108,307\.21/);
 });
 
 test("accounts expose exact sync instants for local browser formatting", async () => {
@@ -675,7 +702,7 @@ test("backend account controls stay admin-only while local aliases stay availabl
   });
   assert.match(html, /href="\/accounts" aria-current="page"/);
   assert.match(html, /account-row--readonly/);
-  assert.match(html, /data-account-alias-edit="acc_001"/);
+  assert.match(html, /data-account-alias-edit="account_checking"/);
   assert.doesNotMatch(html, /href="\/settings#account-/);
   assert.doesNotMatch(html, /Connect account/);
   assert.doesNotMatch(html, /Manage manual assets/);
@@ -820,7 +847,7 @@ test("settings exposes account grouping and manual asset CRUD controls", async (
     query: { asset: "asset_001" },
   });
   assert.match(html, /data-account-group-form/);
-  assert.match(html, /id="account-acc_001"/);
+  assert.match(html, /id="account-account_checking"/);
   assert.match(html, /value="taxable_investment"/);
   assert.match(html, /Cash balance minus credit-card debt/);
   assert.match(html, /data-manual-asset-create/);
@@ -876,11 +903,16 @@ test("settings shows insight status, timestamps, and admin run and clear control
   assert.match(html, /4 active · 2 archived/);
   assert.match(html, /data-insights-run/);
   assert.match(html, />\s*Run insights now\s*</);
+  assert.match(html, /class="insight-admin__danger"/);
+  assert.match(html, /data-insights-clear-dialog-open/);
+  assert.match(html, /<dialog[\s\S]*data-insights-clear-dialog/);
+  assert.match(html, /Remove 6 stored insights/);
+  assert.match(html, /Clear 6 insights/);
   assert.match(html, /data-insights-clear/);
   assert.match(html, />\s*Clear all insights\s*</);
   assert.match(
     html,
-    /Feedback, ignored patterns, and recurring corrections will stay/,
+    /Feedback, ignored patterns, and classification corrections remain/,
   );
 });
 
@@ -1057,7 +1089,7 @@ test("Format Rules cleanup preloads raw values and leaves fuzzy rows unchecked",
         category_primary: "Groceries",
         tags: ["Household"],
         posted_on: "2026-07-25",
-        account_id: "acc_001",
+        account_id: "account_checking",
         account_name: "Everyday checking",
         amount: { amount_minor: -13_842, currency: "USD" },
         similarity_basis_points: 10_000,
@@ -1073,7 +1105,7 @@ test("Format Rules cleanup preloads raw values and leaves fuzzy rows unchecked",
           category_primary: "Groceries",
           tags: [],
           posted_on: "2026-07-14",
-          account_id: "acc_003",
+          account_id: "account_sapphire",
           account_name: "Sapphire card",
           amount: { amount_minor: -6_249, currency: "USD" },
           similarity_basis_points: 7_642,
@@ -1090,7 +1122,7 @@ test("Format Rules cleanup preloads raw values and leaves fuzzy rows unchecked",
     2,
   );
   assert.match(html, /Provider: WHOLE FOODS MKT #1024/);
-  assert.match(html, /data-account-display-name="acc_001"/);
+  assert.match(html, /data-account-display-name="account_checking"/);
   assert.match(html, /76% match/);
   assert.match(
     html,

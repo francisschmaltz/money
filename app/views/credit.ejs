@@ -501,15 +501,15 @@
       <div class="split-metrics split-metrics--three credit-totals">
         <div>
           <span>Total credit limit</span>
-          <strong><%= formatMoney(creditSummary.total_credit_limit) %></strong>
+          <strong><%= formatMoney(creditSummary.total_credit_limit, { fractionDigits: 0 }) %></strong>
         </div>
         <div>
           <span>Balance owed</span>
-          <strong><%= formatMoney(creditSummary.total_balance_owed) %></strong>
+          <strong><%= formatMoney(creditSummary.total_balance_owed, { fractionDigits: 0 }) %></strong>
         </div>
         <div>
           <span>Available credit</span>
-          <strong class="<%= creditSummary.available_credit?.amount_minor < 0 ? 'money-negative' : '' %>"><%= formatMoney(creditSummary.available_credit) %></strong>
+          <strong class="<%= creditSummary.available_credit?.amount_minor < 0 ? 'money-negative' : '' %>"><%= formatMoney(creditSummary.available_credit, { fractionDigits: 0 }) %></strong>
         </div>
       </div>
 
@@ -594,6 +594,7 @@
                 <span
                   class="credit-utilization-bar <%= card.over_limit ? 'credit-utilization-bar--over' : '' %>"
                   role="meter"
+                  aria-label="<%= card.name %> utilization"
                   aria-valuemin="0"
                   aria-valuemax="100"
                   aria-valuenow="<%= utilizationBarWidth.toFixed(1) %>"

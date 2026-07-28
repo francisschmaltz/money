@@ -22,12 +22,21 @@ export const DEMO_IDS = Object.freeze({
   }),
   holdings: Object.freeze({
     vti: "holding_vti",
+    vxus: "holding_vxus",
+    vmfxx: "holding_vmfxx",
+    bnd: "holding_bnd",
+    aapl: "holding_aapl",
+    target: "holding_target",
   }),
   insights: Object.freeze({
     weeklyDining: "ins_week_001",
     weeklyCoffee: "ins_week_002",
     weeklyTravel: "ins_week_003",
+    investmentPerformance: "ins_inv_001",
+    investmentConcentration: "ins_inv_002",
     subscriptionDuplicate: "ins_sub_001",
     subscriptionExpensive: "ins_sub_002",
+    archivedWeeklyDining: "ins_week_archive_001",
+    archivedSubscriptionDuplicate: "ins_sub_archive_001",
   }),
 });

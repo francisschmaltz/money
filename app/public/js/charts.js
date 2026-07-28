@@ -24,6 +24,20 @@
     }
   };
 
+  const chartFallback = (
+    canvas,
+    message = "Chart unavailable. The numeric summary is still current.",
+  ) => {
+    if (!canvas || canvas.dataset.chartFallback === "true") return;
+    canvas.dataset.chartFallback = "true";
+    canvas.hidden = true;
+    const fallback = document.createElement("p");
+    fallback.className = "card-note chart-fallback";
+    fallback.setAttribute("role", "status");
+    fallback.textContent = message;
+    canvas.insertAdjacentElement("afterend", fallback);
+  };
+
   const shared = {
     responsive: true,
     maintainAspectRatio: false,
@@ -300,6 +314,9 @@
   function initialize() {
     if (!window.Chart) {
       document.documentElement.dataset.charts = "unavailable";
+      document
+        .querySelectorAll("canvas[data-chart]")
+        .forEach((canvas) => chartFallback(canvas));
       return;
     }
     document.querySelectorAll("canvas[data-chart]").forEach((canvas) => {
@@ -307,12 +324,20 @@
       canvas.dataset.chartReady = "true";
       const type = canvas.dataset.chart;
       let chart = null;
-      if (type === "line") chart = lineChart(canvas);
-      if (type === "spending") chart = spendingChart(canvas);
-      if (type === "doughnut") chart = doughnutChart(canvas);
-      if (type === "credit") chart = creditChart(canvas);
-      if (type === "credit-score") chart = creditScoreChart(canvas);
-      if (chart) canvas.moneyChart = chart;
+      try {
+        if (type === "line") chart = lineChart(canvas);
+        if (type === "spending") chart = spendingChart(canvas);
+        if (type === "doughnut") chart = doughnutChart(canvas);
+        if (type === "credit") chart = creditChart(canvas);
+        if (type === "credit-score") chart = creditScoreChart(canvas);
+        if (chart) {
+          canvas.moneyChart = chart;
+        } else {
+          chartFallback(canvas);
+        }
+      } catch {
+        chartFallback(canvas);
+      }
     });
   }
 

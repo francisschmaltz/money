@@ -50,13 +50,13 @@
           </form>
         </div>
       </details>
-      <button class="icon-button mobile-menu-trigger" type="button" data-mobile-menu aria-label="Open navigation" aria-expanded="false">
+      <button class="icon-button mobile-menu-trigger" type="button" data-mobile-menu aria-label="Open navigation" aria-expanded="false" aria-controls="mobile-navigation">
         <i class="ph ph-list" aria-hidden="true"></i>
       </button>
     </div>
   </div>
 
-  <nav class="mobile-nav" aria-label="Mobile navigation" data-mobile-nav hidden>
+  <nav id="mobile-navigation" class="mobile-nav" aria-label="Mobile navigation" data-mobile-nav hidden inert>
     <% [
       ["/", "Dashboard", "ph-squares-four"],
       ["/plan", "Plan", "ph-target"],

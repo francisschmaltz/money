@@ -443,7 +443,7 @@
               Never
             <% } %>
           </dd>
-          <small><%= currentInsightStatus.last_run_status ? `Job ${currentInsightStatus.last_run_status}` : "No recorded attempt" %></small>
+          <dd class="insight-admin__fact-note"><%= currentInsightStatus.last_run_status ? `Job ${currentInsightStatus.last_run_status}` : "No recorded attempt" %></dd>
         </div>
         <div>
           <dt>Last findings</dt>
@@ -454,7 +454,7 @@
               Never
             <% } %>
           </dd>
-          <small>Most recent generated set</small>
+          <dd class="insight-admin__fact-note">Most recent generated set</dd>
         </div>
         <div>
           <dt>Next scheduled run</dt>
@@ -465,12 +465,12 @@
               Not scheduled
             <% } %>
           </dd>
-          <small>Nightly refresh</small>
+          <dd class="insight-admin__fact-note">Nightly refresh</dd>
         </div>
         <div>
           <dt>Stored insights</dt>
           <dd><%= currentInsightStatus.active_count %> active · <%= currentInsightStatus.archived_count %> archived</dd>
-          <small><%= currentInsightStatus.total_count %> total</small>
+          <dd class="insight-admin__fact-note"><%= currentInsightStatus.total_count %> total</dd>
         </div>
       </dl>
 
@@ -485,18 +485,65 @@
           <i class="ph ph-play" aria-hidden="true"></i>
           Run insights now
         </button>
+      </div>
+
+      <div class="insight-admin__danger">
+        <div>
+          <strong>Clear generated insights</strong>
+          <p>
+            Remove <%= currentInsightStatus.total_count %> stored <%= currentInsightStatus.total_count === 1 ? "insight" : "insights" %>.
+            Feedback and classification corrections stay in place.
+          </p>
+        </div>
         <button
-          class="button button--ghost danger-action"
+          class="button button--secondary danger-action"
           type="button"
-          data-insights-clear
-          data-confirm-message="Clear every generated insight? Feedback, ignored patterns, and recurring corrections will stay. The next run can generate new findings."
+          data-insights-clear-dialog-open
+          aria-haspopup="dialog"
+          aria-controls="insight-clear-dialog"
           <%= currentInsightStatus.total_count === 0 ? "disabled" : "" %>
         >
           <i class="ph ph-trash" aria-hidden="true"></i>
           Clear all insights
         </button>
       </div>
-      <p class="card-note">Clearing removes generated findings and summaries. It keeps your feedback and classification corrections so the same nonsense stays dead.</p>
+
+      <dialog
+        class="insight-confirm-dialog"
+        id="insight-clear-dialog"
+        data-insights-clear-dialog
+        aria-labelledby="insight-clear-dialog-title"
+        aria-describedby="insight-clear-dialog-description"
+      >
+        <div class="insight-confirm-dialog__body">
+          <span class="insight-confirm-dialog__icon" aria-hidden="true"><i class="ph ph-trash"></i></span>
+          <div>
+            <h3 id="insight-clear-dialog-title">Clear all generated insights?</h3>
+            <p id="insight-clear-dialog-description">
+              This permanently removes <strong><%= currentInsightStatus.total_count %> stored <%= currentInsightStatus.total_count === 1 ? "insight" : "insights" %></strong>
+              and their summaries. Feedback, ignored patterns, and classification corrections remain, so the same nonsense stays dead.
+            </p>
+          </div>
+        </div>
+        <p
+          class="save-status insight-confirm-dialog__status"
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+          data-insights-clear-dialog-status
+        ></p>
+        <div class="insight-confirm-dialog__actions">
+          <button class="button button--secondary" type="button" data-insights-clear-dialog-close>Cancel</button>
+          <button
+            class="button button--dark button--danger"
+            type="button"
+            data-insights-clear
+            <%= currentInsightStatus.total_count === 0 ? "disabled" : "" %>
+          >
+            Clear <%= currentInsightStatus.total_count %> <%= currentInsightStatus.total_count === 1 ? "insight" : "insights" %>
+          </button>
+        </div>
+      </dialog>
     </section>
 
     <section id="insight-rules" class="card settings-card">

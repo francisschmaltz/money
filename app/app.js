@@ -322,6 +322,7 @@ export function createApp({
       financeService,
       planningService,
       demoMode: config.demoMode,
+      demoScenario: config.demoScenario,
     }),
   );
 

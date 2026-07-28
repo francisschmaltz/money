@@ -72,11 +72,14 @@
               <p class="trend trend--positive"><i class="ph ph-arrow-up-right"></i>+$2,191 estimated performance this month</p>
             <% } %>
           </div>
-          <div class="period-select">
+          <nav
+            class="period-select period-select--portfolio"
+            aria-label="Portfolio timeframe"
+          >
             <% [["1w", "1W"], ["1m", "1M"], ["1y", "1Y"], ["all", "All"]].forEach(([value, label]) => { %>
               <a href="/portfolio?period=<%= value %>&amp;scope=<%= selectedScope %>" aria-current="<%= selectedPeriod === value ? 'true' : 'false' %>"><%= label %></a>
             <% }) %>
-          </div>
+          </nav>
         </div>
         <div class="chart-frame chart-frame--portfolio">
           <canvas
@@ -159,19 +162,18 @@
       </section>
     <% } %>
 
-    <section class="card holdings-card">
+    <section class="card holdings-card" aria-labelledby="portfolio-holdings-heading">
       <div class="card-heading">
-        <div><p class="card-kicker"><%= portfolioScopeLabels[selectedScope] %></p><h2>Holdings</h2></div>
+        <div><p class="card-kicker"><%= portfolioScopeLabels[selectedScope] %></p><h2 id="portfolio-holdings-heading">Holdings</h2></div>
         <a class="quiet-link" href="/accounts">Investment accounts <i class="ph ph-arrow-right"></i></a>
       </div>
-      <div class="holdings-table" role="table" aria-label="Portfolio holdings">
-        <div class="holdings-row holdings-row--header" role="row">
+      <div class="holdings-table">
+        <div class="holdings-row holdings-row--header" aria-hidden="true">
           <span>Holding</span><span>Value</span><span>Allocation</span><span>Selected period</span>
         </div>
         <% holdings.forEach((holding) => { %>
           <a
             class="holdings-row"
-            role="row"
             href="/portfolio?period=<%= selectedPeriod %>&amp;scope=<%= selectedScope %>&amp;holding=<%= encodeURIComponent(holding.selectionKey || holding.symbol) %>"
             data-detail-dialog-link
             aria-current="<%= activeHolding && (activeHolding.selectionKey || activeHolding.symbol) === (holding.selectionKey || holding.symbol) ? "true" : "false" %>"

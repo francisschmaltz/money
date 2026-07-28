@@ -153,13 +153,39 @@
     const button = document.querySelector("[data-mobile-menu]");
     const nav = document.querySelector("[data-mobile-nav]");
     if (!button || !nav) return;
-    button.addEventListener("click", () => {
-      const willOpen = nav.hidden;
-      nav.hidden = !willOpen;
-      button.setAttribute("aria-expanded", String(willOpen));
+
+    const setOpen = (open, { restoreFocus = false } = {}) => {
+      nav.hidden = !open;
+      nav.toggleAttribute("inert", !open);
+      button.setAttribute("aria-expanded", String(open));
+      button.setAttribute(
+        "aria-label",
+        open ? "Close navigation" : "Open navigation",
+      );
       const icon = button.querySelector("i");
-      icon?.classList.toggle("ph-list", !willOpen);
-      icon?.classList.toggle("ph-x", willOpen);
+      icon?.classList.toggle("ph-list", !open);
+      icon?.classList.toggle("ph-x", open);
+      if (!open && restoreFocus) button.focus();
+    };
+
+    button.addEventListener("click", () => {
+      setOpen(nav.hidden, { restoreFocus: !nav.hidden });
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape" || nav.hidden) return;
+      event.preventDefault();
+      setOpen(false, { restoreFocus: true });
+    });
+    document.addEventListener("pointerdown", (event) => {
+      if (
+        nav.hidden ||
+        nav.contains(event.target) ||
+        button.contains(event.target)
+      ) {
+        return;
+      }
+      setOpen(false);
+      window.setTimeout(() => button.focus(), 0);
     });
   }
 
@@ -1016,6 +1042,14 @@
           control.querySelectorAll("button").forEach((item) => item.setAttribute("aria-pressed", String(item === button)));
         });
       });
+      if (control.classList.contains("period-select--portfolio")) {
+        control
+          .querySelector('[aria-current="true"]')
+          ?.scrollIntoView({
+            block: "nearest",
+            inline: "center",
+          });
+      }
     });
   }
 
@@ -1056,6 +1090,58 @@
     const clearInsights = document.querySelector(
       "[data-insights-clear]",
     );
+    const clearInsightsDialog = document.querySelector(
+      "[data-insights-clear-dialog]",
+    );
+    const clearInsightsDialogOpen = document.querySelector(
+      "[data-insights-clear-dialog-open]",
+    );
+    const clearInsightsDialogClose = [
+      ...(clearInsightsDialog?.querySelectorAll(
+        "[data-insights-clear-dialog-close]",
+      ) ?? []),
+    ];
+    const clearInsightsDialogStatus = clearInsightsDialog?.querySelector(
+      "[data-insights-clear-dialog-status]",
+    );
+    let clearInsightsDialogOpener = null;
+    let clearInsightsBusy = false;
+
+    const closeClearInsightsDialog = () => {
+      if (clearInsightsBusy) return;
+      if (clearInsightsDialog?.open) clearInsightsDialog.close();
+    };
+
+    clearInsightsDialogOpen?.addEventListener("click", () => {
+      if (!clearInsightsDialog) return;
+      clearInsightsDialogOpener = clearInsightsDialogOpen;
+      if (clearInsightsDialogStatus) {
+        clearInsightsDialogStatus.textContent = "";
+      }
+      if (!clearInsightsDialog.open) clearInsightsDialog.showModal();
+      window.setTimeout(
+        () =>
+          clearInsightsDialog
+            .querySelector("[data-insights-clear-dialog-close]")
+            ?.focus(),
+        0,
+      );
+    });
+    clearInsightsDialogClose.forEach((button) => {
+      button.addEventListener("click", closeClearInsightsDialog);
+    });
+    clearInsightsDialog?.addEventListener("cancel", (event) => {
+      event.preventDefault();
+      closeClearInsightsDialog();
+    });
+    clearInsightsDialog?.addEventListener("click", (event) => {
+      if (event.target === clearInsightsDialog) {
+        closeClearInsightsDialog();
+      }
+    });
+    clearInsightsDialog?.addEventListener("close", () => {
+      clearInsightsDialogOpener?.focus();
+    });
 
     runInsights?.addEventListener("click", async () => {
       runInsights.disabled = true;
@@ -1085,9 +1171,16 @@
     clearInsights?.addEventListener("click", async () => {
       const warning = clearInsights.dataset.confirmMessage;
       if (warning && !window.confirm(warning)) return;
+      clearInsightsBusy = true;
       clearInsights.disabled = true;
+      clearInsightsDialogClose.forEach((button) => {
+        button.disabled = true;
+      });
       if (insightAdminStatus) {
         insightAdminStatus.textContent = "Clearing insights…";
+      }
+      if (clearInsightsDialogStatus) {
+        clearInsightsDialogStatus.textContent = "Clearing insights…";
       }
       try {
         await requestJson("/api/v1/settings/insights", {
@@ -1096,13 +1189,25 @@
         if (insightAdminStatus) {
           insightAdminStatus.textContent = "Insights cleared.";
         }
+        if (clearInsightsDialogStatus) {
+          clearInsightsDialogStatus.textContent = "Insights cleared.";
+        }
         window.setTimeout(() => window.location.reload(), 600);
       } catch (error) {
+        clearInsightsBusy = false;
         clearInsights.disabled = false;
+        clearInsightsDialogClose.forEach((button) => {
+          button.disabled = false;
+        });
+        const message =
+          error.message || "Couldn’t clear insights.";
         if (insightAdminStatus) {
-          insightAdminStatus.textContent =
-            error.message || "Couldn’t clear insights.";
+          insightAdminStatus.textContent = message;
         }
+        if (clearInsightsDialogStatus) {
+          clearInsightsDialogStatus.textContent = message;
+        }
+        window.setTimeout(() => clearInsights.focus(), 0);
       }
     });
 
@@ -1183,6 +1288,9 @@
     const categoryEditToggle = categoryManager?.querySelector(
       "[data-category-edit-toggle]",
     );
+    const categoryMergeStart = categoryManager?.querySelector(
+      "[data-category-merge-start]",
+    );
     const categoryGlobalStatus = categoryManager?.querySelector(
       "[data-category-global-status]",
     );
@@ -1197,6 +1305,9 @@
       categoryEditToggle.textContent = editing
         ? "Save changes"
         : "Edit categories";
+      if (categoryMergeStart) {
+        categoryMergeStart.disabled = editing;
+      }
       categoryEditForms.forEach((form) => {
         form.toggleAttribute("hidden", !editing);
       });
@@ -1360,30 +1471,57 @@
     const mergeNewFields = mergeForm?.querySelector(
       "[data-category-merge-new]",
     );
-    const updateMergeDestination = () => {
-      const createsNew = mergeDestination?.value === "__new__";
-      mergeNewFields?.toggleAttribute("hidden", !createsNew);
-      mergeNewFields
-        ?.querySelector('input[name="name"]')
-        ?.toggleAttribute("required", createsNew);
-    };
-    mergeDestination?.addEventListener(
-      "change",
-      updateMergeDestination,
+    const mergeControls = [
+      ...(categoryManager?.querySelectorAll(
+        "[data-category-merge-control]",
+      ) ?? []),
+    ];
+    const mergeInputs = mergeControls
+      .map((control) => control.querySelector("[data-category-select]"))
+      .filter(Boolean);
+    const mergeRows = mergeInputs
+      .map((input) => input.closest("[data-category-row]"))
+      .filter(Boolean);
+    const mergeSummary = mergeForm?.querySelector(
+      "[data-category-merge-summary]",
     );
-    updateMergeDestination();
-    const updateMergePreview = () => {
-      if (!mergeForm) return;
-      const selectedRows = [
-        ...document.querySelectorAll(
-          "[data-category-row]:has([data-category-select]:checked)",
-        ),
-      ];
-      const status = mergeForm.querySelector("[data-save-status]");
-      if (!status || !selectedRows.length) {
-        if (status) status.textContent = "";
-        return;
+    const mergeStatus = mergeForm?.querySelector("[data-save-status]");
+    const mergeSubmit = mergeForm?.querySelector(
+      'button[type="submit"]',
+    );
+    const mergeCancel = mergeForm?.querySelector(
+      "[data-category-merge-cancel]",
+    );
+    const mergeName = mergeForm?.querySelector('input[name="name"]');
+    let mergeMode = false;
+    let mergeBusy = false;
+
+    const selectedMergeRows = () =>
+      mergeRows.filter(
+        (row) => row.querySelector("[data-category-select]")?.checked,
+      );
+
+    const updateMergeState = () => {
+      if (!mergeForm || !mergeDestination) return;
+      const selectedRows = selectedMergeRows();
+      const selectedIds = new Set(
+        selectedRows.map((row) => row.dataset.categoryId),
+      );
+
+      mergeDestination.querySelectorAll("option").forEach((option) => {
+        if (!option.value || option.value === "__new__") return;
+        const isSource = selectedIds.has(option.value);
+        option.hidden = isSource;
+        option.disabled = isSource;
+      });
+      if (selectedIds.has(mergeDestination.value)) {
+        mergeDestination.value = "";
       }
+
+      const createsNew = mergeDestination.value === "__new__";
+      mergeNewFields?.toggleAttribute("hidden", !createsNew);
+      mergeName?.toggleAttribute("required", createsNew);
+
       const transactionCount = selectedRows.reduce(
         (sum, row) =>
           sum + Number(row.dataset.categoryTransactionCount || 0),
@@ -1394,24 +1532,104 @@
           sum + Number(row.dataset.categoryBudgetCount || 0),
         0,
       );
-      status.textContent = `${selectedRows.length} selected · ${transactionCount} transactions · ${budgetCount} budget lines`;
+      const destinationOption =
+        mergeDestination.selectedOptions?.[0];
+      const destinationLabel = createsNew
+        ? mergeName?.value.trim()
+          ? `New “${mergeName.value.trim()}”`
+          : "New category (name required)"
+        : mergeDestination.value
+          ? destinationOption?.textContent.trim()
+          : "Choose a destination";
+      if (mergeSummary) {
+        mergeSummary.textContent = selectedRows.length
+          ? `${selectedRows.length} selected · Destination: ${destinationLabel} · ${transactionCount} transactions · ${budgetCount} budget lines`
+          : "Select the categories to merge.";
+      }
+
+      const validDestination =
+        Boolean(mergeDestination.value) &&
+        (!createsNew || Boolean(mergeName?.value.trim()));
+      if (mergeSubmit) {
+        mergeSubmit.disabled =
+          mergeBusy || selectedRows.length === 0 || !validDestination;
+      }
+      if (mergeCancel) mergeCancel.disabled = mergeBusy;
     };
-    document
-      .querySelectorAll("[data-category-select]")
-      .forEach((input) =>
-        input.addEventListener("change", updateMergePreview),
-      );
+
+    const setMergeMode = (
+      active,
+      { restoreFocus = false } = {},
+    ) => {
+      if (
+        !categoryManager ||
+        !categoryMergeStart ||
+        !mergeForm
+      ) {
+        return;
+      }
+      mergeMode = active;
+      categoryManager.dataset.categoryMergeMode = String(active);
+      categoryMergeStart.hidden = active;
+      categoryEditToggle?.toggleAttribute("disabled", active);
+      mergeForm.hidden = !active;
+      mergeForm.style.display = active ? "" : "none";
+      mergeForm.toggleAttribute("inert", !active);
+      mergeControls.forEach((control) => {
+        control.hidden = !active;
+        control.style.display = active ? "" : "none";
+      });
+      if (active) {
+        setCategoryEditing(false);
+        if (categoryGlobalStatus) categoryGlobalStatus.textContent = "";
+      } else {
+        mergeInputs.forEach((input) => {
+          input.checked = false;
+        });
+        mergeForm.reset();
+        if (mergeStatus) mergeStatus.textContent = "";
+      }
+      updateMergeState();
+      if (active) {
+        mergeInputs[0]?.focus();
+      } else if (restoreFocus) {
+        categoryMergeStart.focus();
+      }
+    };
+
+    categoryMergeStart?.addEventListener("click", () => {
+      setMergeMode(true);
+    });
+    mergeCancel?.addEventListener("click", () => {
+      if (mergeBusy) return;
+      setMergeMode(false, { restoreFocus: true });
+    });
+    mergeDestination?.addEventListener("change", updateMergeState);
+    mergeName?.addEventListener("input", updateMergeState);
+    mergeInputs.forEach((input) => {
+      input.addEventListener("change", updateMergeState);
+    });
+    mergeRows.forEach((row) => {
+      row.addEventListener("click", (event) => {
+        if (
+          !mergeMode ||
+          event.target.closest(
+            "input, button, a, select, textarea, summary, details, form",
+          )
+        ) {
+          return;
+        }
+        row.querySelector("[data-category-select]")?.click();
+      });
+    });
     mergeForm?.addEventListener("submit", async (event) => {
       event.preventDefault();
-      const selectedRows = [
-        ...document.querySelectorAll(
-          "[data-category-row]:has([data-category-select]:checked)",
-        ),
-      ];
-      const status = mergeForm.querySelector("[data-save-status]");
-      const submit = mergeForm.querySelector('button[type="submit"]');
+      const selectedRows = selectedMergeRows();
       if (!selectedRows.length) {
-        if (status) status.textContent = "Select at least one category";
+        if (mergeStatus) {
+          mergeStatus.textContent = "Select at least one category";
+        }
+        mergeInputs[0]?.focus();
         return;
       }
       const values = new FormData(mergeForm);
@@ -1422,6 +1640,40 @@
       const sourceCategoryIds = selectedRows.map(
         (row) => row.dataset.categoryId,
       );
+      if (
+        !existingDestination &&
+        values.get("destination_category_id") !== "__new__"
+      ) {
+        if (mergeStatus) {
+          mergeStatus.textContent = "Choose a destination";
+        }
+        mergeDestination?.focus();
+        return;
+      }
+      if (
+        values.get("destination_category_id") === "__new__" &&
+        !String(values.get("name") || "").trim()
+      ) {
+        if (mergeStatus) {
+          mergeStatus.textContent = "Enter a name for the destination";
+        }
+        mergeName?.focus();
+        return;
+      }
+      const sourceLabels = selectedRows.map(
+        (row) => row.dataset.categoryPath || "Unnamed category",
+      );
+      const destinationLabel = existingDestination
+        ? mergeDestination?.selectedOptions?.[0]?.textContent.trim()
+        : `new category “${String(values.get("name") || "").trim()}”`;
+      const confirmed = window.confirm(
+        `Merge ${sourceLabels.join(", ")} into ${destinationLabel}? ` +
+          "Old and future transactions will resolve to this destination.",
+      );
+      if (!confirmed) {
+        mergeSubmit?.focus();
+        return;
+      }
       const versionRows = [
         ...selectedRows,
         ...(existingDestination
@@ -1438,8 +1690,9 @@
           Number(row.dataset.categoryVersion),
         ]),
       );
-      submit?.setAttribute("disabled", "");
-      if (status) status.textContent = "Merging…";
+      mergeBusy = true;
+      updateMergeState();
+      if (mergeStatus) mergeStatus.textContent = "Merging…";
       try {
         await requestJson("/api/v1/categories/merge", {
           body: {
@@ -1455,13 +1708,18 @@
             expected_versions: expectedVersions,
           },
         });
-        if (status) status.textContent = "Categories merged";
+        if (mergeStatus) {
+          mergeStatus.textContent = "Categories merged";
+        }
         window.location.reload();
       } catch (error) {
-        if (status) status.textContent = error.message;
-        submit?.removeAttribute("disabled");
+        mergeBusy = false;
+        if (mergeStatus) mergeStatus.textContent = error.message;
+        updateMergeState();
+        mergeSubmit?.focus();
       }
     });
+    setMergeMode(false);
 
     document.querySelectorAll("[data-account-group-form]").forEach((form) => {
       form.addEventListener("submit", async (event) => {
@@ -2296,6 +2554,10 @@
     const dialogCount = root.querySelector("[data-bulk-dialog-count]");
     const submit = root.querySelector("[data-bulk-edit-submit]");
     const status = root.querySelector("[data-bulk-edit-status]");
+    const transactionFilter = document.querySelector(
+      "[data-transaction-filter]",
+    );
+    const pagination = root.querySelector(".pagination");
     const rows = [...root.querySelectorAll("[data-bulk-transaction-row]")];
     const inputs = rows
       .map((row) => row.querySelector("[data-bulk-transaction-select]"))
@@ -2322,6 +2584,12 @@
       const count = selectedInputs().length;
       if (selectedCount) {
         selectedCount.textContent = `${count} selected`;
+        selectedCount.setAttribute(
+          "aria-label",
+          count
+            ? `${count} transaction${count === 1 ? "" : "s"} selected. Edit selected is available.`
+            : "No transactions selected.",
+        );
       }
       if (dialogCount) dialogCount.textContent = String(count);
       if (openEditor) {
@@ -2338,14 +2606,34 @@
       updateSubmit();
     };
 
-    const setSelectionMode = (active) => {
+    const setSelectionMode = (
+      active,
+      { restoreFocus = false } = {},
+    ) => {
       selectionMode = active;
       root.toggleAttribute("data-bulk-selection-mode", active);
       if (start) start.hidden = active;
       if (selectionBar) selectionBar.hidden = !active;
+      if (transactionFilter) {
+        transactionFilter.inert = active;
+        transactionFilter.toggleAttribute(
+          "data-selection-frozen",
+          active,
+        );
+      }
+      if (pagination) pagination.inert = active;
       rows.forEach((row) => {
         const control = row.querySelector(".transaction-select-control");
         if (control) control.hidden = !active;
+        const link = row.querySelector(".transaction-row");
+        if (link) {
+          if (active) {
+            link.setAttribute("aria-disabled", "true");
+          } else {
+            link.removeAttribute("aria-disabled");
+          }
+          link.inert = active;
+        }
       });
       if (!active) {
         editableInputs.forEach((input) => {
@@ -2354,6 +2642,7 @@
         if (dialog?.open) dialog.close();
       }
       updateSelection();
+      if (!active && restoreFocus) start?.focus();
     };
 
     const fieldForToggle = (toggle) => {
@@ -2385,7 +2674,9 @@
 
     root
       .querySelector("[data-bulk-select-cancel]")
-      ?.addEventListener("click", () => setSelectionMode(false));
+      ?.addEventListener("click", () =>
+        setSelectionMode(false, { restoreFocus: true }),
+      );
 
     selectAll?.addEventListener("change", () => {
       editableInputs.forEach((input) => {
@@ -2399,19 +2690,30 @@
     );
 
     rows.forEach((row) => {
-      row.querySelector(".transaction-row")?.addEventListener(
-        "click",
-        (event) => {
-          if (!selectionMode) return;
-          event.preventDefault();
-          const input = row.querySelector(
-            "[data-bulk-transaction-select]",
-          );
-          if (!input || input.disabled) return;
-          input.checked = !input.checked;
-          updateSelection();
-        },
-      );
+      const rowLink = row.querySelector(".transaction-row");
+      row.addEventListener("click", (event) => {
+        if (
+          !selectionMode ||
+          event.target.closest(".transaction-select-control")
+        ) {
+          return;
+        }
+        event.preventDefault();
+        const input = row.querySelector(
+          "[data-bulk-transaction-select]",
+        );
+        if (!input || input.disabled) return;
+        input.click();
+      });
+      rowLink?.addEventListener("auxclick", (event) => {
+        if (selectionMode) event.preventDefault();
+      });
+    });
+
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape" || !selectionMode) return;
+      event.preventDefault();
+      setSelectionMode(false, { restoreFocus: true });
     });
 
     openEditor?.addEventListener("click", () => {
@@ -2708,6 +3010,12 @@
     const selectedCount = root.querySelector(
       "[data-insight-selected-count]",
     );
+    const selectedCountVisible = selectedCount?.querySelector(
+      "[data-insight-selected-count-visible]",
+    );
+    const selectionAnnouncement = selectedCount?.querySelector(
+      "[data-insight-selection-announcement]",
+    );
     const action = root.querySelector("[data-insight-bulk-action]");
     const reasonField = root.querySelector(
       "[data-insight-bulk-reason-field]",
@@ -2730,6 +3038,7 @@
       document.querySelector('meta[name="csrf-token"]')?.content || "";
     let selectionMode = false;
     let contextWasOpen = false;
+    let selectionBusy = false;
 
     const selectedInputs = () =>
       inputs.filter((input) => input.checked);
@@ -2742,9 +3051,28 @@
         selected.every(
           (input) => input.dataset.insightFamily === "subscriptions",
         );
-      if (selectedCount) {
+      if (selectedCountVisible) {
+        selectedCountVisible.textContent = `${count} selected`;
+      } else if (selectedCount) {
         selectedCount.textContent = `${count} selected`;
       }
+      if (selectionAnnouncement) {
+        const availableActions = [
+          ...(action?.querySelectorAll("option[value]") ?? []),
+        ]
+          .filter((option) => option.value && !option.disabled)
+          .map((option) => option.textContent.trim());
+        selectionAnnouncement.textContent =
+          `${count} insight${count === 1 ? "" : "s"} selected. ` +
+          `Available actions: ${availableActions.join(", ")}.`;
+      }
+      cards.forEach((card) => {
+        const input = card.querySelector("[data-insight-select]");
+        card.toggleAttribute(
+          "data-insight-selected",
+          Boolean(input?.checked),
+        );
+      });
       if (selectAll) {
         selectAll.checked = inputs.length > 0 && count === inputs.length;
         selectAll.indeterminate = count > 0 && count < inputs.length;
@@ -2775,7 +3103,10 @@
       if (selectionBar) selectionBar.hidden = !active;
       cards.forEach((card) => {
         const control = card.querySelector(".insight-select-control");
+        const actions = card.querySelector(".insight-card__actions");
         if (control) control.hidden = !active;
+        actions?.toggleAttribute("inert", active);
+        actions?.toggleAttribute("aria-hidden", active);
         card.querySelectorAll(".insight-card__menu[open]").forEach(
           (menu) => menu.removeAttribute("open"),
         );
@@ -2802,6 +3133,7 @@
     });
 
     cancel?.addEventListener("click", () => {
+      if (selectionBusy) return;
       setSelectionMode(false, { restoreFocus: true });
     });
 
@@ -2815,8 +3147,39 @@
     inputs.forEach((input) => {
       input.addEventListener("change", updateSelection);
     });
+    cards.forEach((card) => {
+      card.addEventListener(
+        "click",
+        (event) => {
+          if (
+            !selectionMode ||
+            event.target.closest(".insight-select-control")
+          ) {
+            return;
+          }
+          event.preventDefault();
+          event.stopPropagation();
+          const input = card.querySelector("[data-insight-select]");
+          if (!input || input.disabled) return;
+          input.checked = !input.checked;
+          input.dispatchEvent(new Event("change", { bubbles: true }));
+        },
+        true,
+      );
+    });
     action?.addEventListener("change", updateSelection);
     reason?.addEventListener("change", updateSelection);
+    document.addEventListener("keydown", (event) => {
+      if (
+        event.key !== "Escape" ||
+        !selectionMode ||
+        selectionBusy
+      ) {
+        return;
+      }
+      event.preventDefault();
+      setSelectionMode(false, { restoreFocus: true });
+    });
 
     apply?.addEventListener("click", async () => {
       const findingIds = selectedInputs().map((input) => input.value);
@@ -2827,7 +3190,9 @@
       ) {
         return;
       }
+      selectionBusy = true;
       apply.disabled = true;
+      if (cancel) cancel.disabled = true;
       if (status) {
         status.textContent = `Saving ${findingIds.length} insight${findingIds.length === 1 ? "" : "s"}…`;
       }
@@ -2866,6 +3231,8 @@
           );
         }, 250);
       } catch (error) {
+        selectionBusy = false;
+        if (cancel) cancel.disabled = false;
         if (status) {
           status.textContent =
             error.message || "Couldn’t update the selected insights";
@@ -4679,6 +5046,7 @@
             scrollStorageKey,
             JSON.stringify({
               pathname: destination.pathname,
+              search: destination.search,
               scrollY: window.scrollY,
               savedAt: Date.now(),
             }),
@@ -4691,6 +5059,7 @@
 
     if (!dialogs.length) return;
 
+    let openedFromInPageLink = false;
     try {
       const saved = JSON.parse(
         window.sessionStorage.getItem(scrollStorageKey) || "null",
@@ -4698,9 +5067,11 @@
       window.sessionStorage.removeItem(scrollStorageKey);
       if (
         saved?.pathname === window.location.pathname &&
+        saved?.search === window.location.search &&
         Number.isFinite(saved.scrollY) &&
         Date.now() - Number(saved.savedAt) < 30_000
       ) {
+        openedFromInPageLink = true;
         window.scrollTo({ top: saved.scrollY, behavior: "auto" });
       }
     } catch {
@@ -4722,12 +5093,16 @@
       dialog.addEventListener("close", () => {
         const queryKey = dialog.dataset.detailQueryKey;
         if (queryKey) {
-          const url = new URL(window.location.href);
-          url.searchParams.delete(queryKey);
+          if (openedFromInPageLink) {
+            window.history.back();
+            return;
+          }
+          const directUrl = new URL(window.location.href);
+          directUrl.searchParams.delete(queryKey);
           window.history.replaceState(
             null,
             "",
-            `${url.pathname}${url.search}${url.hash}`,
+            `${directUrl.pathname}${directUrl.search}${directUrl.hash}`,
           );
         }
         selectedLink?.focus();

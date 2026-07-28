@@ -17,8 +17,12 @@ export function createRuntime(config) {
   if (config.demoMode) {
     return {
       pool: null,
-      financeService: createDemoFinanceService(),
-      planningService: createDemoPlanningService(),
+      financeService: createDemoFinanceService({
+        scenario: config.demoScenario,
+      }),
+      planningService: createDemoPlanningService({
+        scenario: config.demoScenario,
+      }),
       plaidSyncService: null,
       appleCardImportService: null,
       jobQueue: null,

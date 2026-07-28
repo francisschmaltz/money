@@ -100,13 +100,12 @@ function transactionCursorKey(row, sort) {
     ).toLowerCase();
   }
   if (sort === "cost") {
-    const raw = String(
+    return String(
       row.transaction_sort_cost ??
         row.split_category_amount_minor ??
         row.amount_minor ??
         0,
     );
-    return raw.startsWith("-") ? raw.slice(1) : raw;
   }
   return String(row.posted_on);
 }
@@ -3251,9 +3250,19 @@ export class PgFinanceRepository {
               ''
             )
           ) AS transaction_sort_category,
-          abs(
-            COALESCE(category_split.amount_minor, t.amount_minor)
-          ) AS transaction_sort_cost,
+          CASE
+            WHEN COALESCE(
+              category_split.amount_minor,
+              t.amount_minor
+            ) < 0
+              THEN abs(
+                COALESCE(
+                  category_split.amount_minor,
+                  t.amount_minor
+                )
+              )
+            ELSE -1
+          END AS transaction_sort_cost,
           category_split.category AS split_category,
           category_split.category_id AS split_category_id,
           category_split.amount_minor AS split_category_amount_minor,

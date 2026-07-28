@@ -2675,6 +2675,7 @@ export class FinanceService {
               accountId: query.account,
               category: splitAware ? null : requestedCategory,
               search: query.q,
+              includePending: true,
             },
           ),
           optionalRepositoryCall(
@@ -2706,27 +2707,35 @@ export class FinanceService {
         categoryDefinitions.find(
           (category) => category.id === requestedCategory,
         )?.path ?? requestedCategory;
-      const cashFlow = buildCashFlow({
-        transactions: expandAndFilterTransactions(
+      const expandedAnalysisTransactions =
+        expandAndFilterTransactions(
           analysisTransactions,
           analysisSplits,
           splitAware ? analysisCategory : null,
-        ),
+        );
+      const cashFlow = buildCashFlow({
+        transactions: expandedAnalysisTransactions,
         period: periods,
         interval: query.period === "90" ? "week" : "day",
         currency: this.#currency,
       });
-      const spending = buildSpendingSummary({
-        transactions: expandAndFilterTransactions(
-          analysisTransactions,
-          analysisSplits,
-          splitAware ? analysisCategory : null,
-        ),
-        currentPeriod: periods,
-        previousPeriod,
-        groupBy: "category",
-        currency: this.#currency,
-      });
+      const spendingByGroup = Object.fromEntries(
+        ["category", "merchant"].map((groupBy) => [
+          groupBy,
+          buildSpendingSummary({
+            transactions: expandedAnalysisTransactions,
+            currentPeriod: periods,
+            previousPeriod,
+            groupBy,
+            segmentLimit: 8,
+            includeSegmentDetails: true,
+            currency: this.#currency,
+          }),
+        ]),
+      );
+      const analyticsGroup = normalizeAnalyticsGroup(
+        query.analytics_group,
+      );
       const selectedLedgerTransaction = query.transaction
         ? page.data.transactions.find(
             (transaction) => transaction.id === query.transaction,
@@ -2738,8 +2747,12 @@ export class FinanceService {
         transactionPageInfo: page.data.page_info,
         overview: webOverviewFromCashFlow(cashFlow),
         spendingDetails: webSpendingDetails(
-          spending,
+          spendingByGroup,
           categoryDefinitions,
+          {
+            activeGrouping: analyticsGroup,
+            activeSegmentKey: query.analytics_segment,
+          },
         ),
         accounts: flattenAccountGroups(accounts.data.groups).map(webAccount),
         categories: categoryDefinitions.length
@@ -3508,6 +3521,10 @@ export function normalizeTransactionSort(value) {
   return TRANSACTION_SORTS.has(normalized) ? normalized : "date";
 }
 
+function normalizeAnalyticsGroup(value) {
+  return value === "merchant" ? "merchant" : "category";
+}
+
 export function resolveTransactionPeriod(query, now) {
   if (query.start && query.end) {
     return {
@@ -4178,32 +4195,158 @@ function webOverviewFromCashFlow(data) {
   };
 }
 
-function webSpendingDetails(data, categoryDefinitions = []) {
-  const series = sampleSeries(data.series, 90);
-  const transactionCount = data.transaction_count;
+export function webSpendingDetails(
+  spendingByGroup,
+  categoryDefinitions = [],
+  {
+    activeGrouping = "category",
+    activeSegmentKey = null,
+  } = {},
+) {
+  const categoryData = spendingByGroup.category;
+  const groupings = Object.fromEntries(
+    Object.entries(spendingByGroup).map(([grouping, data]) => [
+      grouping,
+      {
+        key: grouping,
+        label: grouping === "merchant" ? "Merchant" : "Category",
+        seriesInterval: data.series_interval,
+        seriesLabels: data.series.map((point) =>
+          formatShortDate(point.timestamp),
+        ),
+        seriesValues: data.series.map(
+          (point) => point.value.amount_minor,
+        ),
+        segments: data.segments.map((segment, index) =>
+          webSpendingSegment(
+            segment,
+            index,
+            grouping,
+            categoryDefinitions,
+          ),
+        ),
+      },
+    ]),
+  );
+  const activeData =
+    spendingByGroup[activeGrouping] ?? categoryData;
+  const activeSegments =
+    groupings[activeGrouping]?.segments ??
+    groupings.category.segments;
+  const selectedSegment =
+    activeSegments.find(
+      (segment) => segment.key === activeSegmentKey,
+    ) ?? null;
+  const series = selectedSegment
+    ? selectedSegment.series
+    : activeData.series;
+  const transactionCount = categoryData.transaction_count;
+  const intervalLabel = {
+    day: "Daily",
+    week: "Weekly",
+    month: "Monthly",
+  }[activeData.series_interval];
+  const emptyReason =
+    categoryData.eligibility.matched_transaction_count === 0
+      ? "no_matches"
+      : !categoryData.has_eligible_spending
+        ? "no_eligible_spending"
+        : categoryData.total.amount_minor === 0
+          ? "zero_net_spending"
+          : null;
   return {
-    total: data.total,
-    previousTotal: data.previous_total,
-    change: data.trend.amount,
-    trendDirection: data.trend.direction,
-    trendLabel: spendingTrendLabel(data.trend),
+    total: categoryData.total,
+    previousTotal: categoryData.previous_total,
+    change: categoryData.trend.amount,
+    trendDirection: categoryData.trend.direction,
+    trendLabel: spendingTrendLabel(categoryData.trend),
     transactionCount,
     averageTransaction: money(
       transactionCount
-        ? Math.round(data.total.amount_minor / transactionCount)
+        ? Math.round(
+            categoryData.total.amount_minor / transactionCount,
+          )
         : 0,
-      data.currency,
+      categoryData.currency,
     ),
-    periodLabel: formatPeriodRange(data.period),
-    previousPeriodLabel: formatPeriodRange(data.previous_period),
-    categories: data.segments.map((segment, index) => ({
-      ...webCategory(segment, index, categoryDefinitions),
-      count: segment.count,
-    })),
+    periodLabel: formatPeriodRange(categoryData.period),
+    previousPeriodLabel: formatPeriodRange(
+      categoryData.previous_period,
+    ),
+    categories: groupings.category.segments,
+    groupings,
+    activeGrouping,
+    activeSegmentKey: selectedSegment?.key ?? null,
+    selectedSegment,
+    seriesInterval: activeData.series_interval,
+    seriesLabel: `${intervalLabel} spending`,
+    seriesTitle: selectedSegment
+      ? `${intervalLabel} ${selectedSegment.label} spending`
+      : `${intervalLabel} spending`,
+    hasEligibleSpending: categoryData.has_eligible_spending,
+    hasMatchingTransactions:
+      categoryData.eligibility.matched_transaction_count > 0,
+    emptyReason,
+    eligibility: {
+      matchedTransactionCount:
+        categoryData.eligibility.matched_transaction_count,
+      eligibleTransactionCount:
+        categoryData.eligibility.eligible_transaction_count,
+      excludedTransactionCount:
+        categoryData.eligibility.excluded_transaction_count,
+      reasons: {
+        pending: categoryData.eligibility.reasons.pending,
+        income: categoryData.eligibility.reasons.income,
+        excludedFromSpending:
+          categoryData.eligibility.reasons.excluded_from_spending,
+        otherCurrency:
+          categoryData.eligibility.reasons.other_currency,
+        zeroAmount:
+          categoryData.eligibility.reasons.zero_amount,
+      },
+    },
     seriesLabels: series.map((point) =>
       formatShortDate(point.timestamp),
     ),
     seriesValues: series.map(
+      (point) => point.value.amount_minor,
+    ),
+  };
+}
+
+function webSpendingSegment(
+  segment,
+  index,
+  grouping,
+  categoryDefinitions = [],
+) {
+  const category =
+    grouping === "category"
+      ? webCategory(segment, index, categoryDefinitions)
+      : {
+          value: segment.label,
+          label: segment.label,
+          amount: segment.amount,
+          previousAmount: segment.previous_amount,
+          momAmount: segment.trend?.amount ?? null,
+          momBasisPoints:
+            segment.trend?.percent_basis_points ?? null,
+          momDirection: segment.trend?.direction ?? null,
+          momLabel: spendingMonthOverMonthLabel(segment.trend),
+          percent: segment.share_basis_points / 100,
+          color: CATEGORY_COLORS[index % CATEGORY_COLORS.length],
+          icon: "ph-receipt",
+        };
+  return {
+    ...category,
+    key: segment.key,
+    grouping,
+    count: segment.count,
+    series: segment.series,
+    seriesLabels: segment.series.map((point) =>
+      formatShortDate(point.timestamp),
+    ),
+    seriesValues: segment.series.map(
       (point) => point.value.amount_minor,
     ),
   };

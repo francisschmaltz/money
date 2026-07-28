@@ -165,7 +165,7 @@ test("the Plan page renders the daily number, goals, schedules, and budgets", as
   assert.ok(utilitiesIndex >= 0 && utilitiesIndex < otherIndex);
   assert.match(
     response.text,
-    /href="\/transactions\?category=category_dining">Dining<\/a>[\s\S]*?<span role="cell">\$450\.00<\/span>\s*<span role="cell">\$521\.46<\/span>[\s\S]*?<span role="cell">\$460\.00<\/span>/,
+    /href="\/transactions\?category=category_dining">Dining<\/a>[\s\S]*?budget-cell-label">Planned<\/span><span class="budget-cell-value">\$450\.00<\/span>[\s\S]*?budget-cell-label">Actual<\/span><span class="budget-cell-value">\$521\.46<\/span>[\s\S]*?budget-cell-label">Previous month<\/span><span class="budget-cell-value">\$460\.00<\/span>/,
   );
 });
 

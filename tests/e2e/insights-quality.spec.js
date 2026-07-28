@@ -175,6 +175,11 @@ test("bulk insight selection applies one action to the exact checked findings", 
   await dining.check();
   await subscription.check();
   await expect(page.getByText("2 selected", { exact: true })).toBeVisible();
+  await expect(
+    page.locator("[data-insight-selection-announcement]"),
+  ).toHaveText(
+    "2 insights selected. Available actions: Archive, Ignore similar, Incorrect.",
+  );
   await expect(page.locator("[data-insight-select-all]")).toHaveJSProperty(
     "indeterminate",
     true,
@@ -211,12 +216,14 @@ test("bulk selection keeps checkboxes in the card corner and resets cleanly", as
   await page.setViewportSize({ width: 480, height: 860 });
   await page.goto("/insights");
   const start = page.getByRole("button", { name: "Select multiple" });
-  await start.click();
+  await start.focus();
+  await page.keyboard.press("Enter");
 
   const card = insightCard(page, "Spend less on Dining");
   const checkbox = card.getByRole("checkbox", {
     name: "Select Spend less on Dining",
   });
+  const firstCheckbox = page.locator("[data-insight-select]").first();
   const [cardBox, checkboxBox] = await Promise.all([
     card.boundingBox(),
     checkbox.boundingBox(),
@@ -228,7 +235,30 @@ test("bulk selection keeps checkboxes in the card corner and resets cleanly", as
     cardBox.x + cardBox.width - (checkboxBox.x + checkboxBox.width),
   ).toBeLessThanOrEqual(24);
 
-  await checkbox.check();
+  await expect(firstCheckbox).toBeFocused();
+  await page.keyboard.press("Space");
+  await expect(firstCheckbox).toBeChecked();
+  await expect(page.getByText("1 selected", { exact: true })).toBeVisible();
+  await expect(card.locator(".insight-card__actions")).toHaveAttribute(
+    "inert",
+    "",
+  );
+  await expect(card.locator(".insight-card__actions")).toHaveAttribute(
+    "aria-hidden",
+    "",
+  );
+  await page.keyboard.press("Escape");
+  await expect(checkbox).toBeHidden();
+  await expect(start).toBeFocused();
+  await expect(card.locator(".insight-card__actions")).not.toHaveAttribute(
+    "inert",
+    "",
+  );
+
+  await start.click();
+  await card.getByRole("heading", { name: "Spend less on Dining" }).click();
+  await expect(checkbox).toBeChecked();
+  await expect(page.getByText("1 selected", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Cancel" }).click();
   await expect(checkbox).toBeHidden();
   await expect(start).toBeFocused();

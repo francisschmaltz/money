@@ -203,7 +203,7 @@
         </div>
       </article>
 
-      <div class="summary-stack">
+      <div class="summary-stack dashboard-summary-stack">
         <article class="card metric-card">
           <span class="metric-icon metric-icon--blue"><i class="ph ph-receipt"></i></span>
           <div>
@@ -232,6 +232,52 @@
       </div>
     </section>
 
+    <% if (
+      typeof planning !== "undefined" &&
+      planning?.safeToSpend?.goals?.length
+    ) { %>
+      <section class="section-block" aria-labelledby="dashboard-goals-heading">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Shared household</p>
+            <h2 id="dashboard-goals-heading">Goals</h2>
+          </div>
+          <a class="button button--secondary" href="/plan#goals">View all goals</a>
+        </div>
+        <div class="dashboard-goal-grid dashboard-preview dashboard-preview--goals">
+          <% planning.safeToSpend.goals.forEach((goal) => { %>
+            <article class="card dashboard-goal-preview">
+              <div class="dashboard-goal-preview__heading">
+                <h3><%= goal.name %></h3>
+                <strong><%= Math.round((goal.progress_basis_points ?? 0) / 100) %>%</strong>
+              </div>
+              <div
+                class="plan-progress"
+                role="progressbar"
+                aria-label="<%= goal.name %> funding progress"
+                aria-valuemin="0"
+                aria-valuemax="100"
+                aria-valuenow="<%= Math.min(100, Math.max(0, Math.round((goal.progress_basis_points ?? 0) / 100))) %>"
+              >
+                <span style="width: <%= Math.min(100, Math.max(0, (goal.progress_basis_points ?? 0) / 100)) %>%"></span>
+              </div>
+              <p>
+                <strong><%= formatMoney(goal.funded) %></strong>
+                of <%= formatMoney({ amount_minor: goal.target_amount_minor, currency: goal.currency_code }) %>
+              </p>
+              <small>
+                <% if (goal.target_on) { %>
+                  Target <time class="goal-target-date" datetime="<%= goal.target_on %>"><%= goal.target_on %></time>
+                <% } else { %>
+                  No target date
+                <% } %>
+              </small>
+            </article>
+          <% }) %>
+        </div>
+      </section>
+    <% } %>
+
     <section class="section-block" aria-labelledby="insight-heading">
       <div class="section-heading">
         <div>
@@ -240,7 +286,7 @@
         </div>
         <a class="button button--secondary" href="/insights">View all insights</a>
       </div>
-      <div class="insight-grid">
+      <div class="insight-grid dashboard-preview dashboard-preview--insights">
         <% for (const family of ["weekly", "investments", "subscriptions"]) { %>
           <%
             const dashboardInsight = insights[family]?.find(
@@ -283,7 +329,7 @@
           role="img"
         ></canvas>
       </div>
-      <div class="category-grid">
+      <div class="category-grid dashboard-preview dashboard-preview--categories">
         <% categories.forEach((category, index) => { %>
           <a href="/transactions?category=<%= encodeURIComponent(category.value ?? category.label) %>" class="category-row">
             <span class="category-dot category-dot--<%= (index % 8) + 1 %>"></span>
@@ -301,6 +347,12 @@
           <p class="card-note"><i class="ph ph-chart-bar"></i> Spending categories appear after posted transactions sync.</p>
         <% } %>
       </div>
+      <a
+        class="quiet-link dashboard-preview__more"
+        href="/transactions?period=month"
+      >
+        View all categories <i class="ph ph-arrow-right" aria-hidden="true"></i>
+      </a>
     </section>
 
     <section class="card list-card" aria-labelledby="recent-heading">
@@ -311,7 +363,7 @@
         </div>
         <a class="quiet-link" href="/transactions">View all <i class="ph ph-arrow-right"></i></a>
       </div>
-      <div class="transaction-list">
+      <div class="transaction-list dashboard-preview dashboard-preview--transactions">
         <% transactions.slice(0, 6).forEach((transaction) => { %>
           <%- include("partials/transaction-row", { transaction }) %>
         <% }) %>

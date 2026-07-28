@@ -12,6 +12,11 @@
     <div class="category-manager__actions">
       <span class="save-status" role="status" data-category-global-status></span>
       <button
+        class="button button--secondary"
+        type="button"
+        data-category-merge-start
+      >Merge categories</button>
+      <button
         class="button button--dark"
         type="button"
         data-category-edit-toggle
@@ -56,9 +61,10 @@
         data-category-version="<%= category.version %>"
         data-category-transaction-count="<%= category.transaction_count %>"
         data-category-budget-count="<%= category.budget_line_count %>"
+        data-category-path="<%= category.path %>"
       >
         <% if (!category.is_system) { %>
-          <label class="category-manager-row__select">
+          <label class="category-manager-row__select" data-category-merge-control hidden>
             <input type="checkbox" data-category-select>
             <span class="sr-only">Select <%= category.path %> for merging</span>
           </label>
@@ -164,15 +170,22 @@
     </section>
   <% } %>
 
-  <form class="category-merge-form" data-category-merge-form>
+  <form
+    class="category-merge-form"
+    data-category-merge-form
+    aria-labelledby="category-merge-heading"
+    hidden
+  >
     <div class="category-merge-form__heading">
-      <h3>Merge selected categories</h3>
+      <h3 id="category-merge-heading">Merge categories</h3>
       <p>The originals remain in the audit trail; old and future transactions resolve to the destination.</p>
+      <p data-category-merge-summary aria-live="polite">Select the categories to merge.</p>
     </div>
     <div class="category-merge-form__fields">
       <label>
         <span>Destination</span>
         <select name="destination_category_id" data-category-merge-destination>
+          <option value="">Choose a destination</option>
           <option value="__new__">Create a new destination</option>
           <% activeSettingsCategories.filter((category) => !category.is_system).forEach((category) => { %>
             <option value="<%= category.id %>"><%= category.path %></option>
@@ -182,7 +195,7 @@
       <div class="category-merge-form__new" data-category-merge-new>
         <label>
           <span>New name</span>
-          <input name="name" maxlength="100" placeholder="e.g. Gas" required>
+          <input name="name" maxlength="100" placeholder="e.g. Gas">
         </label>
         <label>
           <span>Parent</span>
@@ -204,7 +217,8 @@
     </div>
     <div class="form-actions">
       <span class="save-status" role="status" data-save-status></span>
-      <button class="button button--dark" type="submit">Merge selected</button>
+      <button class="button button--ghost" type="button" data-category-merge-cancel>Cancel</button>
+      <button class="button button--dark" type="submit" disabled>Merge selected</button>
     </div>
   </form>
 </section>

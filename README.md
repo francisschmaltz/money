@@ -80,6 +80,11 @@ The example file defaults to `DEMO_MODE=true` and `AUTH_MODE=mock`. Open
 `http://127.0.0.1:3000`. Demo mode uses deterministic fixtures and does not
 contact PostgreSQL, Plaid, Duo, or LM Studio.
 
+Set `DEMO_SCENARIO=ux-stress` to audit hostile responsive states with
+hundreds of transactions, long labels, large values, pending activity,
+income, transfers, and empty-spending searches. The default scenario
+remains the smaller everyday demo.
+
 Mock authentication is rejected when `NODE_ENV=production`.
 
 Run the test suite:

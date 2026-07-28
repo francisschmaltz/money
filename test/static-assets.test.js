@@ -21,9 +21,10 @@ test("first-party asset revisions change with the current deployment", async () 
     path.resolve("app/views/partials/head.ejs"),
     "utf8",
   );
-  assert.match(head, /\/css\/money\.css\?v=29/);
-  assert.match(head, /\/js\/charts\.js\?v=5/);
-  assert.match(head, /\/js\/money\.js\?v=25/);
+  assert.match(head, /\/css\/money\.css\?v=30/);
+  assert.match(head, /\/js\/charts\.js\?v=6/);
+  assert.match(head, /\/js\/money\.js\?v=26/);
+  assert.match(head, /\/js\/transactions\.js\?v=1/);
 });
 
 test("dismissible notifications persist for the browser session", async () => {
@@ -137,7 +138,9 @@ test("entity detail dialogs open natively and clear their selection URL on close
 
   assert.match(money, /function detailDialogs\(\)/);
   assert.match(money, /dialog\.showModal\(\)/);
-  assert.match(money, /url\.searchParams\.delete\(queryKey\)/);
+  assert.match(money, /directUrl\.searchParams\.delete\(queryKey\)/);
+  assert.match(money, /openedFromInPageLink/);
+  assert.match(money, /window\.history\.back\(\)/);
   assert.match(money, /selectedLink\?\.focus\(\)/);
 });
 

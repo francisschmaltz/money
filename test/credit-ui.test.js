@@ -24,6 +24,20 @@ async function renderCredit(overrides = {}) {
   });
 }
 
+test("formatMoney supports scoped whole-dollar output without changing defaults", () => {
+  const value = { amount_minor: 3_475_099, currency: "USD" };
+
+  assert.equal(formatMoney(value), "$34,750.99");
+  assert.equal(
+    formatMoney(value, { fractionDigits: 0 }),
+    "$34,751",
+  );
+  assert.throws(
+    () => formatMoney(value, { fractionDigits: -1 }),
+    /fractionDigits/,
+  );
+});
+
 test("credit page defaults to one month and shows weighted totals", async () => {
   const demo = buildDemoModel();
   const html = await renderCredit();
@@ -45,7 +59,10 @@ test("credit page defaults to one month and shows weighted totals", async () => 
   assert.match(html, /Blue Cash Preferred/);
   assert.match(html, />27\.6%<\/strong>/);
   assert.match(html, />17\.6%<\/strong>/);
-  assert.match(html, /\$9,185\.37/);
+  assert.match(
+    html,
+    /class="split-metrics split-metrics--three credit-totals"[\s\S]*?>\$12,000<[\s\S]*?>\$2,815<[\s\S]*?>\$9,185</,
+  );
   assert.doesNotMatch(html, /\bAPR\b|Payment due|Rewards/);
   assert.ok(
     html.indexOf("Tracked household average") <

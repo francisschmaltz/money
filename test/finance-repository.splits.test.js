@@ -68,7 +68,7 @@ test("transaction category and text filters include split categories", async () 
         /abs\( COALESCE\(category_split\.amount_minor, t\.amount_minor\) \)/g,
       ) ?? []
     ).length,
-    3,
+    2,
   );
   assert.deepEqual(db.calls[0].params.slice(12, 14), [1_000, 5_000]);
 });
@@ -213,6 +213,8 @@ test("transaction sorting uses stable keys and sort-aware cursors", async () => 
       order:
         /ORDER BY transaction_sort_cost DESC, posted_on DESC, id DESC/,
       key: "5000",
+      expression:
+        /CASE\s+WHEN COALESCE\(\s*category_split\.amount_minor,\s*t\.amount_minor\s*\) < 0[\s\S]*?ELSE -1\s+END AS transaction_sort_cost/,
     },
   ];
 
@@ -251,6 +253,9 @@ test("transaction sorting uses stable keys and sort-aware cursors", async () => 
     );
 
     assert.match(db.calls[0].sql, expected.order);
+    if (expected.expression) {
+      assert.match(db.calls[0].sql, expected.expression);
+    }
     assert.equal(cursor.sort, expected.sort);
     assert.equal(cursor.key, expected.key);
     assert.equal(cursor.posted_on, "2026-07-26");
@@ -297,5 +302,46 @@ test("transaction cursors cannot be reused with another sort", async () => {
       cursor: first.pageInfo.next_cursor,
     }),
     /Invalid transaction cursor/,
+  );
+});
+
+test("cost cursors keep the signed income sentinel and advance within income rows", async () => {
+  const db = fakePool([
+    {
+      id: "income-2",
+      posted_on: "2026-07-26",
+      amount_minor: "900000",
+      currency_code: "USD",
+      transaction_sort_cost: "-1",
+    },
+    {
+      id: "income-1",
+      posted_on: "2026-07-25",
+      amount_minor: "500000",
+      currency_code: "USD",
+      transaction_sort_cost: "-1",
+    },
+  ]);
+  const repository = new PgFinanceRepository(db.pool);
+  const first = await repository.listTransactions("shared", {
+    sort: "cost",
+    limit: 1,
+  });
+  const cursor = JSON.parse(
+    Buffer.from(
+      first.pageInfo.next_cursor,
+      "base64url",
+    ).toString("utf8"),
+  );
+
+  assert.equal(cursor.key, "-1");
+  await repository.listTransactions("shared", {
+    sort: "cost",
+    cursor: first.pageInfo.next_cursor,
+    limit: 1,
+  });
+  assert.deepEqual(
+    db.calls[1].params.slice(7, 10),
+    ["-1", "2026-07-26", "income-2"],
   );
 });

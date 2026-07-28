@@ -154,7 +154,7 @@ test("Plan keeps one Safe to Spend card and a fixed, editable budget", async ({
   expect(dashboardSafeToSpendText).toBe(safeToSpendText);
 });
 
-test("Plan contains wide budget data without widening the mobile page", async ({
+test("Plan reflows budget data without widening the mobile page", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 390, height: 844 });
@@ -168,9 +168,42 @@ test("Plan contains wide budget data without widening the mobile page", async ({
       document.querySelector(".budget-table")?.clientWidth ?? 0,
   }));
   expect(widths.page).toBeLessThanOrEqual(widths.viewport);
-  expect(widths.table).toBeGreaterThan(widths.tableViewport);
+  expect(widths.table).toBeLessThanOrEqual(widths.tableViewport);
+
+  const firstBudgetRow = page
+    .locator(".budget-row--view[data-budget-category-id]")
+    .first();
+  await expect(firstBudgetRow.locator(".budget-cell-label")).toHaveText([
+    "Planned",
+    "Actual",
+    "Remaining",
+    "Previous month",
+  ]);
+  const firstToggle = page.locator(".budget-tree-toggle").first();
+  if (await firstToggle.count()) {
+    const toggleBox = await firstToggle.boundingBox();
+    expect(toggleBox?.width).toBeGreaterThanOrEqual(44);
+    expect(toggleBox?.height).toBeGreaterThanOrEqual(44);
+  }
 
   await page.goto("/plan?edit_budget=1");
+  const firstEditRow = page
+    .locator(".budget-row--edit[data-budget-category-id]")
+    .first();
+  const editRowMetrics = await firstEditRow.evaluate((row) => {
+    const table = row.closest(".budget-table");
+    const actionCell = row.querySelector(".budget-row__actions");
+    return {
+      rowWidth: row.getBoundingClientRect().width,
+      tableWidth: table?.getBoundingClientRect().width ?? 0,
+      actionWidth: actionCell?.getBoundingClientRect().width ?? 0,
+    };
+  });
+  expect(editRowMetrics.rowWidth).toBeLessThanOrEqual(
+    editRowMetrics.tableWidth,
+  );
+  expect(editRowMetrics.actionWidth).toBeGreaterThan(0);
+
   const incomeDisclosure = page.locator(
     '[data-plan-disclosure="income-categories"]',
   );
@@ -394,6 +427,33 @@ test("finished goals keep over-plan history and learned patterns", async ({
 test("goal dialogs do not widen the mobile page", async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 700 });
   await page.goto("/plan");
+  const firstGoal = page.locator(".goal-card").first();
+  const compactGoalMetrics = await firstGoal.evaluate((card) => {
+    const summaryItems = [
+      ...card.querySelectorAll(".goal-plan-summary > div"),
+    ];
+    const compositionItems = [
+      ...card.querySelectorAll(".goal-composition > div"),
+    ];
+    const targetDate = card.querySelector(".goal-target-date");
+    return {
+      summaryFirstRow:
+        summaryItems.length >= 2 &&
+        summaryItems[0].getBoundingClientRect().top ===
+          summaryItems[1].getBoundingClientRect().top,
+      compositionFirstRow:
+        compositionItems.length >= 2 &&
+        compositionItems[0].getBoundingClientRect().top ===
+          compositionItems[1].getBoundingClientRect().top,
+      targetDateWhiteSpace: targetDate
+        ? getComputedStyle(targetDate).whiteSpace
+        : null,
+    };
+  });
+  expect(compactGoalMetrics.summaryFirstRow).toBe(true);
+  expect(compactGoalMetrics.compositionFirstRow).toBe(true);
+  expect(compactGoalMetrics.targetDateWhiteSpace).toBe("nowrap");
+
   await page
     .locator('.goal-card [data-goal-dialog-open="edit"]')
     .first()

@@ -1,6 +1,10 @@
 import { defineConfig } from "@playwright/test";
 
-const port = 4173;
+const demoScenario =
+  process.env.DEMO_SCENARIO === "ux-stress"
+    ? "ux-stress"
+    : "default";
+const port = demoScenario === "ux-stress" ? 4174 : 4173;
 const baseURL = `http://127.0.0.1:${port}`;
 
 export default defineConfig({
@@ -17,9 +21,9 @@ export default defineConfig({
     trace: "retain-on-failure",
   },
   webServer: {
-    command: `NODE_ENV=test DEMO_MODE=true AUTH_MODE=mock DATABASE_URL= HOST=127.0.0.1 PORT=${port} PUBLIC_BASE_URL=${baseURL} node app/index.js`,
+    command: `NODE_ENV=test DEMO_MODE=true DEMO_SCENARIO=${demoScenario} AUTH_MODE=mock DATABASE_URL= HOST=127.0.0.1 PORT=${port} PUBLIC_BASE_URL=${baseURL} node app/index.js`,
     url: `${baseURL}/health/ready`,
-    reuseExistingServer: !process.env.CI,
+    reuseExistingServer: false,
     timeout: 120_000,
   },
 });

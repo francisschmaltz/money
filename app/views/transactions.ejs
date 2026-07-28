@@ -14,6 +14,34 @@
       : ["date", "merchant", "category", "cost"].includes(query.sort)
         ? query.sort
         : "date";
+  const transactionQuery = (overrides = {}, removals = []) => {
+    const parameters = new URLSearchParams();
+    for (const key of [
+      "q",
+      "period",
+      "start",
+      "end",
+      "category",
+      "account",
+      "sort",
+      "analytics_group",
+      "analytics_segment",
+    ]) {
+      const value = query[key];
+      if (value != null && String(value).trim()) {
+        parameters.set(key, String(value).trim());
+      }
+    }
+    for (const key of removals) parameters.delete(key);
+    for (const [key, value] of Object.entries(overrides)) {
+      if (value == null || String(value).trim() === "") {
+        parameters.delete(key);
+      } else {
+        parameters.set(key, String(value));
+      }
+    }
+    return `/transactions${parameters.size ? `?${parameters.toString()}` : ""}`;
+  };
 %>
 <body data-page="transactions">
   <%- include("partials/site-header", { activePath, viewer }) %>
@@ -26,43 +54,72 @@
       actionIcon: "ph-magnifying-glass"
     }) %>
 
-    <form class="filter-bar" action="/transactions" method="get">
-      <label>
-        <span class="sr-only">Search transactions</span>
-        <i class="ph ph-magnifying-glass"></i>
-        <input type="search" name="q" value="<%= query.q || '' %>" placeholder="Merchant, category, or note">
+    <form
+      class="filter-bar transaction-filter"
+      action="/transactions"
+      method="get"
+      data-transaction-filter
+    >
+      <label class="transaction-filter__search">
+        <span class="filter-field-label">Search</span>
+        <span class="transaction-filter__search-control">
+          <i class="ph ph-magnifying-glass" aria-hidden="true"></i>
+          <input type="search" name="q" value="<%= query.q || '' %>" placeholder="Merchant, category, or note">
+        </span>
       </label>
-      <select name="period" aria-label="Timeline">
-        <option value="month" <%= selectedTransactionPeriod === "month" ? "selected" : "" %>>This Month</option>
-        <option value="30" <%= selectedTransactionPeriod === "30" ? "selected" : "" %>>Past 30 Days</option>
-        <option value="90" <%= selectedTransactionPeriod === "90" ? "selected" : "" %>>Past 90 Days</option>
-        <option value="365" <%= selectedTransactionPeriod === "365" ? "selected" : "" %>>Past 365 Days</option>
-        <option value="this-year" <%= selectedTransactionPeriod === "this-year" ? "selected" : "" %>>This Year</option>
-        <option value="last-year" <%= selectedTransactionPeriod === "last-year" ? "selected" : "" %>>Last Year</option>
-        <% if (selectedTransactionPeriod === "custom") { %>
-          <option value="custom" selected>Custom dates</option>
-        <% } %>
-      </select>
+      <div class="transaction-filter__fields">
+        <label class="filter-field">
+          <span class="filter-field-label">Timeline</span>
+          <select name="period">
+            <option value="month" <%= selectedTransactionPeriod === "month" ? "selected" : "" %>>This Month</option>
+            <option value="30" <%= selectedTransactionPeriod === "30" ? "selected" : "" %>>Past 30 Days</option>
+            <option value="90" <%= selectedTransactionPeriod === "90" ? "selected" : "" %>>Past 90 Days</option>
+            <option value="365" <%= selectedTransactionPeriod === "365" ? "selected" : "" %>>Past 365 Days</option>
+            <option value="this-year" <%= selectedTransactionPeriod === "this-year" ? "selected" : "" %>>This Year</option>
+            <option value="last-year" <%= selectedTransactionPeriod === "last-year" ? "selected" : "" %>>Last Year</option>
+            <% if (selectedTransactionPeriod === "custom") { %>
+              <option value="custom" selected>Custom dates</option>
+            <% } %>
+          </select>
+        </label>
       <% if (query.start && query.end) { %>
         <input type="hidden" name="start" value="<%= query.start %>">
         <input type="hidden" name="end" value="<%= query.end %>">
       <% } %>
-      <select name="category" aria-label="Category">
-        <option value="">All categories</option>
-        <% categories.forEach((category) => { %><option value="<%= category.value ?? category.label %>" <%= (query.category_id || query.category) === (category.value ?? category.label) ? "selected" : "" %>><%= category.label %></option><% }) %>
-      </select>
-      <select name="account" aria-label="Account">
-        <option value="">All accounts</option>
-        <% accounts.forEach((account) => { %><option value="<%= account.id %>" data-account-display-name="<%= account.id %>" data-account-provider-name="<%= account.name %>" <%= query.account === account.id ? "selected" : "" %>><%= account.name %></option><% }) %>
-      </select>
-      <select name="sort" aria-label="Sort">
-        <option value="date" <%= selectedTransactionSort === "date" ? "selected" : "" %>>Date (newest first)</option>
-        <option value="merchant" <%= selectedTransactionSort === "merchant" ? "selected" : "" %>>Merchant (A–Z)</option>
-        <option value="category" <%= selectedTransactionSort === "category" ? "selected" : "" %>>Category (A–Z)</option>
-        <option value="cost" <%= selectedTransactionSort === "cost" ? "selected" : "" %>>Cost (highest first)</option>
-      </select>
-      <button class="button button--dark" type="submit">Apply</button>
-      <a class="button button--ghost" href="/transactions">Clear</a>
+        <% if (query.analytics_group) { %>
+          <input type="hidden" name="analytics_group" value="<%= query.analytics_group %>">
+        <% } %>
+        <% if (query.analytics_segment) { %>
+          <input type="hidden" name="analytics_segment" value="<%= query.analytics_segment %>">
+        <% } %>
+        <label class="filter-field">
+          <span class="filter-field-label">Category</span>
+          <select name="category">
+            <option value="">All categories</option>
+            <% categories.forEach((category) => { %><option value="<%= category.value ?? category.label %>" <%= (query.category_id || query.category) === (category.value ?? category.label) ? "selected" : "" %>><%= category.label %></option><% }) %>
+          </select>
+        </label>
+        <label class="filter-field">
+          <span class="filter-field-label">Account</span>
+          <select name="account">
+            <option value="">All accounts</option>
+            <% accounts.forEach((account) => { %><option value="<%= account.id %>" data-account-display-name="<%= account.id %>" data-account-provider-name="<%= account.name %>" <%= query.account === account.id ? "selected" : "" %>><%= account.name %></option><% }) %>
+          </select>
+        </label>
+        <label class="filter-field">
+          <span class="filter-field-label">Sort</span>
+          <select name="sort">
+            <option value="date" <%= selectedTransactionSort === "date" ? "selected" : "" %>>Date (newest first)</option>
+            <option value="merchant" <%= selectedTransactionSort === "merchant" ? "selected" : "" %>>Merchant (A–Z)</option>
+            <option value="category" <%= selectedTransactionSort === "category" ? "selected" : "" %>>Category (A–Z)</option>
+            <option value="cost" <%= selectedTransactionSort === "cost" ? "selected" : "" %>>Spending amount (high to low)</option>
+          </select>
+        </label>
+      </div>
+      <div class="transaction-filter__actions">
+        <button class="button button--dark" type="submit" data-transaction-filter-submit>Apply</button>
+        <a class="button button--ghost" href="/transactions">Clear</a>
+      </div>
     </form>
 
     <% if (typeof selectedTransaction !== "undefined" && selectedTransaction) { %>
@@ -395,106 +452,227 @@
       </dialog>
     <% } %>
 
-    <section class="card spending-detail-card" aria-labelledby="transaction-spending-heading">
-      <div class="card-heading">
-        <div>
-          <p class="card-kicker"><%= spendingDetails.periodLabel %></p>
-          <h2 id="transaction-spending-heading">Spending detail</h2>
-        </div>
-        <div class="card-total">
-          <strong><%= formatMoney(spendingDetails.total) %></strong>
-          <span class="trend <%= spendingDetails.trendDirection === 'up' ? 'trend--negative' : spendingDetails.trendDirection === 'down' ? 'trend--positive' : '' %>">
-            <%= spendingDetails.trendLabel %>
-          </span>
-        </div>
-      </div>
+    <%
+      const rawSpendingGroupings = spendingDetails.groupings ?? {
+        category: {
+          key: "category",
+          label: "Category",
+          seriesInterval: spendingDetails.seriesInterval ?? "day",
+          seriesLabels: spendingDetails.seriesLabels,
+          seriesValues: spendingDetails.seriesValues,
+          segments: spendingDetails.categories,
+        },
+      };
+      const spendingGroupings = Object.fromEntries(
+        Object.entries(rawSpendingGroupings).map(([groupKey, grouping]) => [
+          groupKey,
+          {
+            ...grouping,
+            key: grouping.key ?? groupKey,
+            label: grouping.label ?? (groupKey === "merchant" ? "Merchant" : "Category"),
+            seriesInterval: grouping.seriesInterval ?? spendingDetails.seriesInterval ?? "day",
+            seriesLabels: grouping.seriesLabels ?? spendingDetails.seriesLabels ?? [],
+            seriesValues: grouping.seriesValues ?? spendingDetails.seriesValues ?? [],
+            segments: (grouping.segments ?? []).map((segment, index) => ({
+              ...segment,
+              key: segment.key ?? `${groupKey}-legacy-${index}`,
+              grouping: segment.grouping ?? groupKey,
+              seriesLabels: segment.seriesLabels ?? grouping.seriesLabels ?? spendingDetails.seriesLabels ?? [],
+              seriesValues: segment.seriesValues ?? grouping.seriesValues ?? spendingDetails.seriesValues ?? [],
+            })),
+          },
+        ]),
+      );
+      const activeSpendingGroup =
+        spendingGroupings[spendingDetails.activeGrouping] ??
+        spendingGroupings.category ??
+        Object.values(spendingGroupings)[0];
+      const activeSpendingSegments = activeSpendingGroup?.segments ?? [];
+      const activeSpendingGroupPlural =
+        activeSpendingGroup?.key === "category"
+          ? "categories"
+          : `${activeSpendingGroup?.label?.toLowerCase() ?? "group"}s`;
+      const selectedSpendingSegment = spendingDetails.selectedSegment ?? null;
+      const spendingSeriesInterval =
+        spendingDetails.seriesInterval ??
+        activeSpendingGroup?.seriesInterval ??
+        "day";
+      const spendingSeriesIntervalTitle =
+        { day: "Daily", week: "Weekly", month: "Monthly" }[spendingSeriesInterval] ??
+        "Spending";
+      const spendingSeriesTitle =
+        spendingDetails.seriesTitle ??
+        `${spendingSeriesIntervalTitle}${selectedSpendingSegment ? ` ${selectedSpendingSegment.label}` : ""} spending`;
+      const hasEligibleSpending =
+        spendingDetails.hasEligibleSpending ??
+        spendingDetails.transactionCount > 0;
+      const showSpendingCharts =
+        hasEligibleSpending &&
+        spendingDetails.emptyReason !== "zero_net_spending";
+      const spendingExplorerJson = JSON.stringify(spendingGroupings).replaceAll("<", "\\u003c");
+    %>
+    <section
+      class="card spending-detail-card"
+      aria-labelledby="transaction-spending-heading"
+      data-spending-explorer
+      data-active-group="<%= activeSpendingGroup?.key ?? 'category' %>"
+      data-active-segment="<%= selectedSpendingSegment?.key ?? '' %>"
+      data-period-label="<%= spendingDetails.periodLabel %>"
+    >
+      <script type="application/json" data-spending-explorer-data><%- spendingExplorerJson %></script>
 
-      <dl class="spending-detail-metrics" aria-label="Spending totals">
-        <div>
-          <dt>Prior period</dt>
-          <dd><%= formatMoney(spendingDetails.previousTotal) %><small><%= spendingDetails.previousPeriodLabel %></small></dd>
+      <% if (showSpendingCharts) { %>
+        <div class="card-heading spending-detail-heading">
+          <div>
+            <p class="card-kicker"><%= spendingDetails.periodLabel %></p>
+            <h2 id="transaction-spending-heading">Spending detail</h2>
+          </div>
+          <div class="card-total">
+            <strong><%= formatMoney(spendingDetails.total) %></strong>
+            <span class="trend <%= spendingDetails.trendDirection === 'up' ? 'trend--negative' : spendingDetails.trendDirection === 'down' ? 'trend--positive' : '' %>">
+              <%= spendingDetails.trendLabel %>
+            </span>
+          </div>
         </div>
-        <div>
-          <dt>Posted purchases</dt>
-          <dd><%= spendingDetails.transactionCount %><small>Pending activity is excluded</small></dd>
-        </div>
-        <div>
-          <dt>Average purchase</dt>
-          <dd><%= formatMoney(spendingDetails.averageTransaction) %><small>Across included transactions</small></dd>
-        </div>
-      </dl>
 
-      <% if (spendingDetails.categories.length) { %>
+        <dl class="spending-detail-metrics" aria-label="Spending totals">
+          <div>
+            <dt>Prior period</dt>
+            <dd><%= formatMoney(spendingDetails.previousTotal) %><small><%= spendingDetails.previousPeriodLabel %></small></dd>
+          </div>
+          <div>
+            <dt>Included activity</dt>
+            <dd><%= spendingDetails.transactionCount %><small>Posted spending and refunds; pending and excluded activity is omitted</small></dd>
+          </div>
+          <div>
+            <dt>Average included transaction</dt>
+            <dd><%= formatMoney(spendingDetails.averageTransaction) %><small>Across included spending and refunds</small></dd>
+          </div>
+        </dl>
+
+        <div class="spending-explorer-toolbar">
+          <div>
+            <span class="filter-field-label">Group spending by</span>
+            <div class="segmented-control spending-group-control" aria-label="Group spending by">
+              <% Object.values(spendingGroupings).forEach((grouping) => { %>
+                <a
+                  class="segmented-control__option"
+                  href="<%= transactionQuery({ analytics_group: grouping.key, analytics_segment: null }, ['cursor']) %>"
+                  data-spending-group
+                  data-group="<%= grouping.key %>"
+                  aria-current="<%= grouping.key === activeSpendingGroup.key ? 'true' : 'false' %>"
+                ><%= grouping.label %></a>
+              <% }) %>
+            </div>
+          </div>
+          <p class="card-note" data-spending-selection-status aria-live="polite">
+            <%= selectedSpendingSegment ? `${selectedSpendingSegment.label} selected. The ledger is unchanged.` : `Showing all ${activeSpendingGroup.label.toLowerCase()} spending.` %>
+          </p>
+        </div>
+
         <div class="spending-chart-wrap spending-chart-wrap--detail">
           <canvas
             data-chart="spending"
-            data-labels="<%= JSON.stringify(spendingDetails.categories.map((category) => category.label)) %>"
-            data-values="<%= JSON.stringify(spendingDetails.categories.map((category) => category.amount.amount_minor)) %>"
-            data-colors="<%= JSON.stringify(spendingDetails.categories.map((category) => category.color)) %>"
-            aria-label="<%= spendingDetails.periodLabel %> spending segmented by category"
+            data-spending-breakdown-chart
+            data-labels="<%= JSON.stringify(activeSpendingSegments.map((segment) => segment.label)) %>"
+            data-values="<%= JSON.stringify(activeSpendingSegments.map((segment) => segment.amount.amount_minor)) %>"
+            data-colors="<%= JSON.stringify(activeSpendingSegments.map((segment) => segment.color)) %>"
+            aria-label="<%= spendingDetails.periodLabel %> spending grouped by <%= activeSpendingGroup.label.toLowerCase() %>. <%= activeSpendingSegments.map((segment) => `${segment.label} ${formatMoney(segment.amount)}`).join(', ') %>"
             role="img"
           ></canvas>
         </div>
-      <% } %>
 
-      <div class="spending-detail-layout">
-        <div class="spending-detail-trend">
-          <div class="subsection-heading">
-            <div>
-              <h3>Daily spending</h3>
-              <p>Posted activity, including zero-spend days and refunds.</p>
+        <div class="spending-detail-layout">
+          <div class="spending-detail-trend">
+            <div class="subsection-heading">
+              <div>
+                <h3 data-spending-series-title><%= spendingSeriesTitle %></h3>
+                <p>Summed <span data-spending-series-interval><%= spendingSeriesInterval %></span> buckets. Refunds reduce spending; no activity is sampled away.</p>
+              </div>
+            </div>
+            <div class="chart-frame chart-frame--spending-detail">
+              <canvas
+                data-chart="line"
+                data-spending-line-chart
+                data-labels="<%= JSON.stringify(spendingDetails.seriesLabels) %>"
+                data-values="<%= JSON.stringify(spendingDetails.seriesValues) %>"
+                data-color="#2f8f4e"
+                aria-label="<%= spendingSeriesTitle %> for <%= spendingDetails.periodLabel %>"
+                role="img"
+              ></canvas>
             </div>
           </div>
-          <div class="chart-frame chart-frame--spending-detail">
-            <canvas
-              data-chart="line"
-              data-labels="<%= JSON.stringify(spendingDetails.seriesLabels) %>"
-              data-values="<%= JSON.stringify(spendingDetails.seriesValues) %>"
-              data-color="#2f8f4e"
-              aria-label="Daily spending for <%= spendingDetails.periodLabel %>"
-              role="img"
-            ></canvas>
+
+          <div class="spending-detail-categories">
+            <div class="subsection-heading spending-segment-heading">
+              <div>
+                <h3 data-spending-segment-heading><%= selectedSpendingSegment ? selectedSpendingSegment.label : `All ${activeSpendingGroupPlural}` %></h3>
+                <p>Choose a group to explore the chart. This does not filter transactions.</p>
+              </div>
+              <a
+                class="button button--ghost button--compact"
+                href="<%= transactionQuery({ analytics_segment: null }, ['cursor']) %>"
+                data-spending-segment-reset
+                <%= selectedSpendingSegment ? "" : "hidden" %>
+              >Show all</a>
+            </div>
+            <div class="spending-detail-category-list" data-spending-segment-list>
+              <% activeSpendingSegments.forEach((segment, index) => { %>
+                <%
+                  const isSelected = selectedSpendingSegment?.key === segment.key;
+                  const canFilterLedger = !segment.key.endsWith("-other");
+                  const ledgerHref =
+                    activeSpendingGroup.key === "merchant"
+                      ? transactionQuery({ q: segment.value ?? segment.label }, ["cursor"])
+                      : transactionQuery({ category: segment.value ?? segment.label }, ["cursor"]);
+                %>
+                <article class="spending-detail-category <%= isSelected ? 'is-selected' : '' %>" data-spending-segment-item>
+                  <a
+                    class="spending-detail-category__select"
+                    href="<%= transactionQuery({ analytics_group: activeSpendingGroup.key, analytics_segment: segment.key }, ['cursor']) %>"
+                    data-spending-segment
+                    data-segment-key="<%= segment.key %>"
+                    aria-current="<%= isSelected ? 'true' : 'false' %>"
+                  >
+                    <span class="category-dot" style="--category-color: <%= segment.color %>" aria-hidden="true"></span>
+                    <span class="list-icon list-icon--compact" aria-hidden="true"><i class="ph <%= segment.icon %>"></i></span>
+                    <span>
+                      <strong><%= segment.label %></strong>
+                      <small><%= segment.percent %>% · <%= segment.count %> transaction<%= segment.count === 1 ? "" : "s" %></small>
+                    </span>
+                    <strong><%= formatMoney(segment.amount) %></strong>
+                  </a>
+                  <% if (canFilterLedger) { %>
+                    <a class="spending-detail-category__filter" href="<%= ledgerHref %>">Show matching transactions</a>
+                  <% } else { %>
+                    <span class="spending-detail-category__filter spending-detail-category__filter--note">Remaining groups combined</span>
+                  <% } %>
+                </article>
+              <% }) %>
+            </div>
           </div>
         </div>
-
-        <div class="spending-detail-categories">
-          <div class="subsection-heading">
-            <div>
-              <h3>All categories</h3>
-              <p>Every category in the selected period, with share and purchase count.</p>
-            </div>
-          </div>
-          <div class="spending-detail-category-list">
-            <% spendingDetails.categories.forEach((category, index) => { %>
-              <%
-                const categoryQuery = new URLSearchParams({
-                  ...(query.period ? { period: query.period } : {}),
-                  ...(query.start ? { start: query.start } : {}),
-                  ...(query.end ? { end: query.end } : {}),
-                  ...(query.q ? { q: query.q } : {}),
-                  ...(query.account ? { account: query.account } : {}),
-                  ...(selectedTransactionSort !== "date"
-                    ? { sort: selectedTransactionSort }
-                    : {}),
-                  category: category.value ?? category.label,
-                });
-              %>
-              <a class="spending-detail-category" href="/transactions?<%= categoryQuery.toString() %>">
-                <span class="category-dot category-dot--<%= (index % 8) + 1 %>" aria-hidden="true"></span>
-                <span class="list-icon list-icon--compact" aria-hidden="true"><i class="ph <%= category.icon %>"></i></span>
-                <span>
-                  <strong><%= category.label %></strong>
-                  <small><%= category.percent %>% · <%= category.count %> purchase<%= category.count === 1 ? "" : "s" %></small>
-                </span>
-                <strong><%= formatMoney(category.amount) %></strong>
-              </a>
-            <% }) %>
-            <% if (!spendingDetails.categories.length) { %>
-              <p class="card-note"><i class="ph ph-chart-bar" aria-hidden="true"></i> No posted spending matches these filters.</p>
+      <% } else { %>
+        <div class="spending-empty" data-spending-empty role="status">
+          <span class="spending-empty__icon" aria-hidden="true"><i class="ph ph-chart-line-down"></i></span>
+          <div>
+            <p class="card-kicker"><%= spendingDetails.periodLabel %></p>
+            <h2 id="transaction-spending-heading">
+              <%= spendingDetails.emptyReason === "no_matches" ? "No matching transactions" : spendingDetails.emptyReason === "zero_net_spending" ? "Spending nets to zero" : "No spending to chart" %>
+            </h2>
+            <% if (spendingDetails.emptyReason === "no_matches") { %>
+              <p>No transactions match the current filters. Clear or adjust them to restore the spending view.</p>
+            <% } else if (spendingDetails.emptyReason === "zero_net_spending") { %>
+              <p>Included purchases and refunds cancel out for this period, so a flat $0 chart would be misleading.</p>
+            <% } else { %>
+              <p><%= spendingDetails.eligibility?.matchedTransactionCount ?? transactions.length %> matching transaction<%= (spendingDetails.eligibility?.matchedTransactionCount ?? transactions.length) === 1 ? "" : "s" %> remain visible below, but they are income, transfers, pending, excluded from spending, or otherwise ineligible.</p>
+            <% } %>
+            <% if (spendingDetails.eligibility?.excludedTransactionCount) { %>
+              <p class="card-note"><%= spendingDetails.eligibility.excludedTransactionCount %> matched row<%= spendingDetails.eligibility.excludedTransactionCount === 1 ? " is" : "s are" %> excluded from spending totals.</p>
             <% } %>
           </div>
         </div>
-      </div>
+      <% } %>
     </section>
 
     <section class="ledger-summary" aria-label="Transaction summary">
@@ -526,7 +704,7 @@
             <input type="checkbox" data-bulk-select-all>
             Select all posted on this page
           </label>
-          <strong data-bulk-selected-count>0 selected</strong>
+          <strong data-bulk-selected-count role="status" aria-live="polite">0 selected</strong>
           <span class="transaction-selection-bar__limit">Up to 100 · one-time edits only</span>
           <button class="button button--dark" type="button" data-bulk-edit-open disabled>Edit selected</button>
           <button class="button button--ghost" type="button" data-bulk-select-cancel>Cancel</button>

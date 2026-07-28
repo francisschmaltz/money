@@ -1,6 +1,12 @@
 import express from "express";
 import { formatMinorMoney } from "../currency.js";
-import { buildDemoModel } from "../demo/webFixtures.js";
+import {
+  buildDemoModel,
+  demoAccountForWeb,
+  demoHoldingForWeb,
+  demoInsightSectionsForWeb,
+  demoRecurringSections,
+} from "../demo/webFixtures.js";
 import {
   buildCreditScoreSummary,
   CREDIT_SCORE_PRESETS,
@@ -12,6 +18,7 @@ import {
 import {
   normalizeTransactionSort,
   resolveTransactionPeriod,
+  webSpendingDetails,
 } from "../services/financeService.js";
 
 const usd = (amountMinor) => ({ amount_minor: amountMinor, currency: "USD" });
@@ -34,10 +41,14 @@ const SEARCH_ENTITY_OPTIONS = Object.freeze([
 ]);
 const DEMO_TRANSACTION_TODAY = "2026-07-26";
 
-export function formatMoney(value, { sign = false } = {}) {
+export function formatMoney(
+  value,
+  { sign = false, fractionDigits = null } = {},
+) {
   return (
     formatMinorMoney(value, {
       signDisplay: sign ? "exceptZero" : "auto",
+      fractionDigits,
     }) ?? "—"
   );
 }
@@ -87,9 +98,10 @@ export function createWebRouter({
   financeService = null,
   planningService = null,
   demoMode = false,
+  demoScenario = "default",
 } = {}) {
   const router = express.Router();
-  const demo = buildDemoModel();
+  const demo = buildDemoModel({ scenario: demoScenario });
 
   async function executeSearch(
     query,
@@ -663,11 +675,17 @@ async function demoTransactionsFromService(demo, financeService) {
   if (typeof financeService?.listTransactions !== "function") {
     return demo.transactions;
   }
-  const result = await financeService.listTransactions({
-    status: "all",
-    limit: 100,
-  });
-  const serviceRows = result?.data?.transactions ?? [];
+  const serviceRows = [];
+  let cursor = null;
+  do {
+    const result = await financeService.listTransactions({
+      status: "all",
+      limit: 100,
+      ...(cursor ? { cursor } : {}),
+    });
+    serviceRows.push(...(result?.data?.transactions ?? []));
+    cursor = result?.data?.page_info?.next_cursor ?? null;
+  } while (cursor);
   const currentById = new Map(
     serviceRows.map((transaction) => [
       transaction.id,
@@ -689,6 +707,49 @@ async function demoTransactionsFromService(demo, financeService) {
         demoServiceTransactionForWeb(transaction, demo),
       ),
   ];
+}
+
+async function demoAccountsFromService(demo, financeService) {
+  if (typeof financeService?.listAccounts !== "function") {
+    return null;
+  }
+  const listed = await financeService.listAccounts({ limit: 100 });
+  const serviceAccounts =
+    listed?.data?.groups?.flatMap((group) => group.accounts ?? []) ??
+    [];
+  const accounts = serviceAccounts.map(demoAccountForWeb);
+  const manualAssets = (listed?.data?.manual_assets ?? []).map(
+    (asset) => ({
+      id: asset.id,
+      name: asset.name,
+      assetType: asset.asset_type,
+      description: asset.description ?? null,
+      value: asset.current_value,
+      currencyCode:
+        asset.current_value?.currency ?? asset.currency_code ?? "USD",
+      valuedOn: asset.valued_on ?? null,
+      active: asset.active !== false,
+    }),
+  );
+  const summary = listed?.data?.balance_summary;
+  const overview = summary
+    ? {
+        ...demo.overview,
+        cash: summary.cash,
+        cashBalance: summary.cash_balance,
+        shortTermWorth: summary.short_term_worth,
+        taxableInvestments: summary.taxable_investments,
+        retirementInvestments: summary.retirement_assets,
+        manualAssetValue: summary.manual_asset_value,
+        creditCardLiabilities:
+          summary.credit_card_liabilities,
+        loanLiabilities: summary.loan_liabilities,
+        assets: summary.total_assets,
+        liabilities: summary.total_liabilities,
+        netWorth: summary.net_worth,
+      }
+    : demo.overview;
+  return { accounts, manualAssets, overview };
 }
 
 async function demoCategorySplitProjection(
@@ -778,6 +839,16 @@ async function demoPageModel(
   planningService = null,
 ) {
   if (view === "settings") {
+    const accountModel = await demoAccountsFromService(
+      demo,
+      financeService,
+    );
+    const spendingCategoryResult =
+      typeof financeService?.listSpendingCategories === "function"
+        ? await financeService.listSpendingCategories({
+            include_merged: true,
+          })
+        : null;
     const listedRules =
       typeof financeService?.listTransactionCleanupRules === "function"
         ? await financeService.listTransactionCleanupRules()
@@ -819,6 +890,13 @@ async function demoPageModel(
         ? listedRules
         : listedRules?.rules ?? demo.transactionRules,
       insightStatus,
+      ...(accountModel ?? {}),
+      ...(spendingCategoryResult?.categories
+        ? {
+            spendingCategories:
+              spendingCategoryResult.categories,
+          }
+        : {}),
     };
   }
   if (view === "dashboard") {
@@ -826,12 +904,27 @@ async function demoPageModel(
       ? query.period
       : "1m";
     const history = demo.dashboardHistories[periodName];
+    const insightResult =
+      typeof financeService?.getFinanceInsights === "function"
+        ? await financeService.getFinanceInsights({
+            section: "all",
+            view: "active",
+          })
+        : null;
     return {
       dashboardPeriod: history.period,
       wealthSeries: history.series,
       wealthLabels: history.labels,
       netWorthSeries: history.series.net_worth,
       netWorthLabels: history.labels,
+      ...(insightResult?.data
+        ? {
+            insights: demoInsightSectionsForWeb(
+              insightResult.data,
+              [demo.insights, demo.archivedInsights],
+            ),
+          }
+        : {}),
     };
   }
   if (view === "transactions") {
@@ -882,18 +975,52 @@ async function demoPageModel(
       .sort((left, right) =>
         compareDemoTransactions(left, right, sort),
       );
+    const pageOffset = decodeDemoPageCursor(query.cursor);
+    const pageSize = 100;
+    const pageTransactions = filtered.slice(
+      pageOffset,
+      pageOffset + pageSize,
+    );
+    const nextOffset = pageOffset + pageTransactions.length;
+    const transactionCategories = [
+      ...new Set(
+        currentTransactions
+          .map((transaction) => transaction.category)
+          .filter(Boolean),
+      ),
+    ]
+      .sort((left, right) =>
+        left.localeCompare(right, undefined, {
+          sensitivity: "base",
+        }),
+      )
+      .map((label) => ({ value: label, label }));
     return {
-      transactions: filtered,
-      transactionPageInfo: { has_more: false, next_cursor: null },
+      transactions: pageTransactions,
+      transactionPageInfo: {
+        has_more: nextOffset < filtered.length,
+        next_cursor:
+          nextOffset < filtered.length
+            ? encodeDemoPageCursor(nextOffset)
+            : null,
+      },
       transactionPeriod: periodSelection.name,
       transactionSort: sort,
+      categories: transactionCategories,
       ...demoTimelineSpendingModel(
         matchingTransactions,
         periodSelection.period,
         demo,
+        {
+          activeGrouping:
+            query.analytics_group === "merchant"
+              ? "merchant"
+              : "category",
+          activeSegmentKey: query.analytics_segment,
+        },
       ),
       selectedTransaction:
-        filtered.find(
+        pageTransactions.find(
           (transaction) => transaction.id === query.transaction,
         ) ??
         (!query.category
@@ -905,12 +1032,30 @@ async function demoPageModel(
     };
   }
   if (view === "recurring") {
+    const recurringResult =
+      typeof financeService?.listRecurringPayments === "function"
+        ? await financeService.listRecurringPayments({
+            kind: "all",
+            limit: 100,
+          })
+        : null;
+    const recurringSections = recurringResult?.data
+      ?.recurring_payments
+      ? demoRecurringSections(
+          recurringResult.data.recurring_payments,
+        )
+      : {
+          subscriptions: demo.subscriptions,
+          bills: demo.bills,
+          frequentSpending: demo.frequentSpending ?? [],
+        };
     return {
+      ...recurringSections,
       selectedRecurring:
         [
-          ...demo.subscriptions,
-          ...demo.bills,
-          ...(demo.frequentSpending ?? []),
+          ...recurringSections.subscriptions,
+          ...recurringSections.bills,
+          ...recurringSections.frequentSpending,
         ].find(
           (item) => item.id === (query.item ?? query.stream),
         ) ?? null,
@@ -923,12 +1068,28 @@ async function demoPageModel(
         : ["all", "trading", "retirement"].includes(query.scope)
           ? query.scope
           : "all";
+    const portfolioResult =
+      typeof financeService?.getPortfolioSummary === "function"
+        ? await financeService.getPortfolioSummary({
+            retirement_scope: {
+              all: "include",
+              trading: "exclude",
+              retirement: "only",
+            }[requestedScope],
+            period: query.period ?? "1m",
+            holdings_limit: 100,
+          })
+        : null;
+    const serviceHoldings = portfolioResult?.data?.holdings?.map(
+      demoHoldingForWeb,
+    );
     const scopedHoldings =
-      requestedScope === "all"
+      serviceHoldings ??
+      (requestedScope === "all"
         ? demo.holdings
         : demo.holdings.filter(
             (holding) => holding.scope === requestedScope,
-          );
+          ));
     const portfolioMinor = scopedHoldings.reduce(
       (total, holding) => total + holding.value.amount_minor,
       0,
@@ -1010,16 +1171,31 @@ async function demoPageModel(
     };
   }
   if (view === "accounts") {
-    return {};
+    return (
+      (await demoAccountsFromService(demo, financeService)) ?? {}
+    );
   }
   if (view === "insights") {
     const insightView = query.view === "archive" ? "archive" : "active";
-    const displayedInsights =
-      insightView === "archive" ? demo.archivedInsights : demo.insights;
+    const insightResult =
+      typeof financeService?.getFinanceInsights === "function"
+        ? await financeService.getFinanceInsights({
+            section: "all",
+            view: insightView,
+          })
+        : null;
+    const displayedInsights = insightResult?.data
+      ? demoInsightSectionsForWeb(insightResult.data, [
+          demo.insights,
+          demo.archivedInsights,
+        ])
+      : insightView === "archive"
+        ? demo.archivedInsights
+        : demo.insights;
     return {
       insights: displayedInsights,
       insightView,
-      insightData: { view: insightView },
+      insightData: insightResult?.data ?? { view: insightView },
       selectedInsight:
         Object.values(displayedInsights)
           .flat()
@@ -1056,7 +1232,12 @@ function compareDemoTransactions(left, right, sort) {
     );
   }
   if (sort === "cost") {
+    const leftIsSpending =
+      Number(left.amount?.amount_minor ?? 0) < 0;
+    const rightIsSpending =
+      Number(right.amount?.amount_minor ?? 0) < 0;
     return (
+      Number(rightIsSpending) - Number(leftIsSpending) ||
       Math.abs(Number(right.amount?.amount_minor ?? 0)) -
         Math.abs(Number(left.amount?.amount_minor ?? 0)) ||
       newestFirst
@@ -1065,7 +1246,15 @@ function compareDemoTransactions(left, right, sort) {
   return newestFirst;
 }
 
-function demoTimelineSpendingModel(transactions, period, demo) {
+function demoTimelineSpendingModel(
+  transactions,
+  period,
+  demo,
+  {
+    activeGrouping = "category",
+    activeSegmentKey = null,
+  } = {},
+) {
   const duration = Math.max(
     1,
     Math.round(
@@ -1097,15 +1286,21 @@ function demoTimelineSpendingModel(transactions, period, demo) {
     interval: duration > 120 ? "month" : duration > 31 ? "week" : "day",
     currency: "USD",
   });
-  const spending = buildSpendingSummary({
-    transactions: analyticsTransactions,
-    currentPeriod: period,
-    previousPeriod,
-    groupBy: "category",
-    currency: "USD",
-  });
-  const series = sampleDemoSeries(spending.series, 90);
-  const transactionCount = spending.transaction_count;
+  const spendingByGroup = Object.fromEntries(
+    ["category", "merchant"].map((groupBy) => [
+      groupBy,
+      buildSpendingSummary({
+        transactions: analyticsTransactions,
+        currentPeriod: period,
+        previousPeriod,
+        groupBy,
+        segmentLimit: 8,
+        includeSegmentDetails: true,
+        currency: "USD",
+      }),
+    ]),
+  );
+  const spending = spendingByGroup.category;
   return {
     overview: {
       ...demo.overview,
@@ -1113,89 +1308,42 @@ function demoTimelineSpendingModel(transactions, period, demo) {
       spending: cashFlow.spending,
       cashFlow: cashFlow.net,
     },
-    spendingDetails: {
-      total: spending.total,
-      previousTotal: spending.previous_total,
-      change: spending.trend.amount,
-      trendDirection: spending.trend.direction,
-      trendLabel: demoSpendingTrendLabel(spending.trend),
-      transactionCount,
-      averageTransaction: usd(
-        transactionCount
-          ? Math.round(
-              spending.total.amount_minor / transactionCount,
-            )
-          : 0,
-      ),
-      periodLabel: demoPeriodLabel(period),
-      previousPeriodLabel: demoPeriodLabel(previousPeriod),
-      categories: spending.segments.map((segment) => {
-        const fixture = demo.categories.find(
-          (category) => category.label === segment.label,
-        );
-        return {
-          value: segment.label,
-          label: segment.label,
-          amount: segment.amount,
-          previousAmount: segment.previous_amount,
-          percent: segment.share_basis_points / 100,
-          count: segment.count,
-          color: fixture?.color ?? "#666666",
-          icon: fixture?.icon ?? "ph-receipt",
-        };
-      }),
-      seriesLabels: series.map((point) =>
-        demoShortDate(point.timestamp),
-      ),
-      seriesValues: series.map(
-        (point) => point.value.amount_minor,
-      ),
-    },
+    spendingDetails: webSpendingDetails(
+      spendingByGroup,
+      demo.categories.map((category) => ({
+        id: category.value ?? category.label,
+        path: category.label,
+      })),
+      { activeGrouping, activeSegmentKey },
+    ),
   };
 }
 
-function demoSpendingTrendLabel(trend) {
-  if (trend.percent_basis_points == null) {
-    return trend.amount.amount_minor === 0
-      ? "No change from the prior period"
-      : "New spending versus the prior period";
-  }
-  if (trend.percent_basis_points === 0) {
-    return "No change from the prior period";
-  }
-  return `${(Math.abs(trend.percent_basis_points) / 100).toFixed(1)}% ${
-    trend.percent_basis_points > 0 ? "more" : "less"
-  } than the prior period`;
+function encodeDemoPageCursor(offset) {
+  return Buffer.from(
+    JSON.stringify({ kind: "demo-page", offset }),
+  ).toString("base64url");
 }
 
-function demoShortDate(value, { year = false } = {}) {
-  return new Intl.DateTimeFormat("en-US", {
-    month: "short",
-    day: "numeric",
-    ...(year ? { year: "numeric" } : {}),
-    timeZone: "UTC",
-  }).format(new Date(`${value}T00:00:00.000Z`));
-}
-
-function demoPeriodLabel(period) {
-  return `${demoShortDate(period.start_on, { year: true })}–${demoShortDate(
-    shiftDemoDate(period.end_on, -1),
-    { year: true },
-  )}`;
-}
-
-function sampleDemoSeries(series, maximum) {
-  if (series.length <= maximum) return series;
-  const lastIndex = series.length - 1;
-  const indexes = new Set([0, lastIndex]);
-  for (let index = 1; index < maximum - 1; index += 1) {
-    indexes.add(
-      Math.round((index * lastIndex) / (maximum - 1)),
+function decodeDemoPageCursor(cursor) {
+  if (!cursor) return 0;
+  try {
+    const parsed = JSON.parse(
+      Buffer.from(String(cursor), "base64url").toString("utf8"),
     );
+    if (
+      parsed.kind !== "demo-page" ||
+      !Number.isSafeInteger(parsed.offset) ||
+      parsed.offset < 0
+    ) {
+      throw new TypeError();
+    }
+    return parsed.offset;
+  } catch {
+    const error = new TypeError("Invalid transaction cursor");
+    error.statusCode = 400;
+    throw error;
   }
-  return [...indexes]
-    .sort((left, right) => left - right)
-    .map((index) => series[index]);
 }
 
 function firstQueryValue(value) {

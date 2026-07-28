@@ -37,6 +37,7 @@ function optionalUrl(value, name, { stripTrailingSlash = false } = {}) {
 const nodeEnvironmentSchema = z.enum(["development", "test", "production"]);
 const authModeSchema = z.enum(["mock", "oidc"]);
 const plaidEnvironmentSchema = z.enum(["sandbox", "development", "production"]);
+const demoScenarioSchema = z.enum(["default", "ux-stress"]);
 
 export function loadConfig(environment = process.env, argv = process.argv.slice(2)) {
   const argument = (name) => {
@@ -63,6 +64,9 @@ export function loadConfig(environment = process.env, argv = process.argv.slice(
   const demoMode = boolean(
     environment.DEMO_MODE,
     production ? false : !databaseUrl,
+  );
+  const demoScenario = demoScenarioSchema.parse(
+    environment.DEMO_SCENARIO || "default",
   );
 
   if (production && authMode === "mock") {
@@ -119,6 +123,7 @@ export function loadConfig(environment = process.env, argv = process.argv.slice(
     publicBaseUrl: publicOrigin,
     trustProxy: boolean(environment.TRUST_PROXY),
     demoMode,
+    demoScenario,
     database: {
       url: databaseUrl,
       ssl: boolean(environment.DATABASE_SSL),

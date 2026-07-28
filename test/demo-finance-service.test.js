@@ -2,11 +2,97 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { DEMO_IDS } from "../app/demo/fixtureIds.js";
+import {
+  UX_STRESS_SPLIT_TRANSACTION_ID,
+} from "../app/demo/uxStressScenario.js";
 import { createDemoFinanceService } from "../app/services/demoFinanceService.js";
+import { createDemoPlanningService } from "../app/services/demoPlanningService.js";
 
 const amount = (value) => value.amount_minor;
 const flattenAccounts = (result) =>
   result.data.groups.flatMap((group) => group.accounts);
+
+test("UX stress demo paginates hostile transactions and keeps long account data", async () => {
+  const service = createDemoFinanceService({
+    scenario: "ux-stress",
+  });
+  const first = await service.listTransactions({ limit: 100 });
+  const second = await service.listTransactions({
+    limit: 100,
+    cursor: first.data.page_info.next_cursor,
+  });
+  const third = await service.listTransactions({
+    limit: 100,
+    cursor: second.data.page_info.next_cursor,
+  });
+  const accountResult = await service.listAccounts({ limit: 100 });
+  const rows = [
+    ...first.data.transactions,
+    ...second.data.transactions,
+    ...third.data.transactions,
+  ];
+
+  assert.equal(first.data.transactions.length, 100);
+  assert.equal(second.data.transactions.length, 100);
+  assert.ok(third.data.transactions.length > 80);
+  assert.equal(third.data.page_info.has_more, false);
+  assert.equal(new Set(rows.map((row) => row.id)).size, rows.length);
+  const dates = rows
+    .map((row) => row.posted_on ?? row.date)
+    .sort();
+  assert.ok(
+    (Date.parse(`${dates.at(-1)}T00:00:00.000Z`) -
+      Date.parse(`${dates[0]}T00:00:00.000Z`)) /
+      86_400_000 >=
+      389,
+  );
+  assert.ok(
+    rows.some(
+      (row) => row.display_name.length > 60,
+    ),
+  );
+  assert.ok(
+    rows.some(
+      (row) =>
+        Math.abs(row.amount.amount_minor) >= 100_000_000,
+    ),
+  );
+  assert.ok(
+    flattenAccounts(accountResult).some(
+      (account) => account.name.length > 45,
+    ),
+  );
+});
+
+test("UX stress demo preloads a valid split transaction", async () => {
+  const financeService = createDemoFinanceService({
+    scenario: "ux-stress",
+  });
+  const planningService = createDemoPlanningService({
+    scenario: "ux-stress",
+  });
+  const ledger = await financeService.listTransactions({
+    search: "Metropolitan Transportation Authority",
+    limit: 100,
+  });
+  const transaction = ledger.data.transactions.find(
+    (row) => row.id === UX_STRESS_SPLIT_TRANSACTION_ID,
+  );
+  const split = await planningService.getTransactionSplit({
+    transaction_id: UX_STRESS_SPLIT_TRANSACTION_ID,
+  });
+
+  assert.ok(transaction);
+  assert.equal(split.split_version, 1);
+  assert.equal(split.lines.length, 2);
+  assert.equal(
+    split.lines.reduce(
+      (sum, line) => sum + line.amount_minor,
+      0,
+    ),
+    transaction.amount.amount_minor,
+  );
+});
 
 test("demo overview exposes the complete wealth model", async () => {
   const service = createDemoFinanceService();
@@ -23,7 +109,7 @@ test("demo overview exposes the complete wealth model", async () => {
   assert.equal(amount(overview.data.assets), 20_326_790);
   assert.equal(amount(overview.data.liabilities), 1_899_790);
   assert.equal(amount(overview.data.net_worth), 18_427_000);
-  assert.equal(overview.data.account_count, 7);
+  assert.equal(overview.data.account_count, 8);
   assert.equal(overview.data.manual_asset_count, 1);
   assert.equal(overview.data.manual_assets[0].name, "2024 vehicle");
   assert.equal(
@@ -39,8 +125,8 @@ test("demo accounts include manual assets, totals, and balance-group filters", a
     balance_group: "retirement",
   });
 
-  assert.equal(all.data.account_count, 7);
-  assert.equal(flattenAccounts(all).length, 7);
+  assert.equal(all.data.account_count, 8);
+  assert.equal(flattenAccounts(all).length, 8);
   assert.equal(all.data.manual_asset_count, 1);
   assert.equal(all.data.manual_assets[0].asset_type, "vehicle");
   assert.equal(
@@ -93,6 +179,129 @@ test("demo account overrides update totals and portfolio scopes", async () => {
     retirement_scope: "exclude",
   });
   assert.equal(amount(restored.data.total_value), 6_342_941);
+});
+
+test("rejected demo category edits leave the prior state untouched", async () => {
+  const service = createDemoFinanceService();
+  const before = await service.listSpendingCategories({
+    include_merged: true,
+  });
+  const dining = before.categories.find(
+    (category) => category.path === "Dining",
+  );
+
+  await assert.rejects(
+    service.updateSpendingCategory({
+      category_id: dining.id,
+      name: "Travel",
+      classification: "fixed",
+      expected_version: dining.version,
+    }),
+    (error) => error.statusCode === 409,
+  );
+
+  const after = await service.listSpendingCategories({
+    include_merged: true,
+  });
+  const unchanged = after.categories.find(
+    (category) => category.id === dining.id,
+  );
+  assert.equal(unchanged.name, "Dining");
+  assert.equal(unchanged.path, "Dining");
+  assert.equal(unchanged.classification, "flexible");
+  assert.equal(unchanged.parent_category_id, null);
+  assert.equal(unchanged.version, dining.version);
+});
+
+test("merging or deleting a demo parent reparents children and their transactions", async () => {
+  const service = createDemoFinanceService();
+  const parent = (
+    await service.createSpendingCategory({
+      name: "Vehicle",
+      classification: "fixed",
+    })
+  ).category;
+  const child = (
+    await service.createSpendingCategory({
+      name: "Fuel",
+      classification: "flexible",
+      parent_category_id: parent.id,
+    })
+  ).category;
+  const destination = (
+    await service.createSpendingCategory({
+      name: "Transport",
+      classification: "flexible",
+    })
+  ).category;
+  await service.batchEditTransactions({
+    transaction_ids: ["txn_004"],
+    changes: { category_primary: child.path },
+  });
+
+  await service.mergeSpendingCategories({
+    source_category_ids: [parent.id],
+    destination: { category_id: destination.id },
+    expected_versions: {
+      [parent.id]: parent.version,
+      [destination.id]: destination.version,
+    },
+  });
+  let categories = (
+    await service.listSpendingCategories({ include_merged: true })
+  ).categories;
+  let reparented = categories.find(
+    (category) => category.id === child.id,
+  );
+  assert.equal(reparented.parent_category_id, null);
+  assert.equal(reparented.path, "Fuel");
+  let transactions = (
+    await service.listTransactions({ status: "posted", limit: 100 })
+  ).data.transactions;
+  assert.equal(
+    transactions.find((transaction) => transaction.id === "txn_004")
+      .category_primary,
+    "Fuel",
+  );
+
+  const secondParent = (
+    await service.createSpendingCategory({
+      name: "Home",
+      classification: "fixed",
+    })
+  ).category;
+  const secondChild = (
+    await service.createSpendingCategory({
+      name: "Repairs",
+      classification: "flexible",
+      parent_category_id: secondParent.id,
+    })
+  ).category;
+  await service.batchEditTransactions({
+    transaction_ids: ["txn_006"],
+    changes: { category_primary: secondChild.path },
+  });
+  await service.deleteSpendingCategory({
+    category_id: secondParent.id,
+    expected_version: secondParent.version,
+  });
+
+  categories = (
+    await service.listSpendingCategories({ include_merged: true })
+  ).categories;
+  reparented = categories.find(
+    (category) => category.id === secondChild.id,
+  );
+  assert.equal(reparented.parent_category_id, null);
+  assert.equal(reparented.path, "Repairs");
+  transactions = (
+    await service.listTransactions({ status: "posted", limit: 100 })
+  ).data.transactions;
+  assert.equal(
+    transactions.find((transaction) => transaction.id === "txn_006")
+      .category_primary,
+    "Repairs",
+  );
 });
 
 test("demo transactions expose the optimistic split version", async () => {
@@ -565,8 +774,8 @@ test("demo bulk insight actions enforce subscription-only corrections", async ()
   const service = createDemoFinanceService();
   const archived = await service.batchActOnFindings({
     finding_ids: [
-      "finding_weekly_dining",
-      "finding_weekly_coffee",
+      DEMO_IDS.insights.weeklyDining,
+      DEMO_IDS.insights.weeklyCoffee,
     ],
     action: "archive",
   });
@@ -596,7 +805,7 @@ test("demo bulk insight actions enforce subscription-only corrections", async ()
 
   await assert.rejects(
     service.batchActOnFindings({
-      finding_ids: ["finding_weekly_dining"],
+      finding_ids: [DEMO_IDS.insights.weeklyDining],
       action: "report_incorrect",
       reason_code: "not_subscription",
     }),

@@ -1212,7 +1212,7 @@ test("demo transaction category filters keep the detail card and ledger aligned"
     .expect(200);
 
   assert.match(result.text, /<strong>\$116\.00<\/strong>/);
-  assert.match(result.text, /100% · 2 purchases/);
+  assert.match(result.text, /100% · 2 transactions/);
   assert.match(result.text, /Seacomm Overdraft Fee/);
   assert.match(result.text, /Personal Loan Interest/);
   assert.doesNotMatch(result.text, /Whole Foods Market/);

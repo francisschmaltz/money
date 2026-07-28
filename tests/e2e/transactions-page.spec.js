@@ -44,7 +44,11 @@ test("bulk selection checkboxes share one centerline", async ({ page }) => {
   ]) {
     await page.setViewportSize(viewport);
     await page.goto("/transactions");
-    await page.getByRole("button", { name: "Select & edit" }).click();
+    const startSelection = page.getByRole("button", {
+      name: "Select & edit",
+    });
+    await startSelection.focus();
+    await page.keyboard.press("Enter");
 
     const alignment = await page.evaluate(() => {
       const center = (element) => {
@@ -76,7 +80,119 @@ test("bulk selection checkboxes share one centerline", async ({ page }) => {
       expect(horizontalDelta).toBeLessThanOrEqual(0.5);
       expect(verticalDelta).toBeLessThanOrEqual(0.5);
     }
+
+    await expect(page.locator("[data-transaction-filter]")).toHaveJSProperty(
+      "inert",
+      true,
+    );
+    await expect(page.locator("[data-transaction-filter]")).toHaveAttribute(
+      "data-selection-frozen",
+      "",
+    );
+    await expect(page.locator(".pagination")).toHaveJSProperty(
+      "inert",
+      true,
+    );
+
+    const firstSelectable = page
+      .locator("[data-bulk-transaction-select]:not(:disabled)")
+      .first();
+    await expect(firstSelectable).toBeFocused();
+    await expect(
+      page.locator("[data-bulk-transaction-row] .transaction-row").first(),
+    ).toHaveJSProperty("inert", true);
+    const selectionUrl = page.url();
+    await page.keyboard.press("Space");
+    await expect(firstSelectable).toBeChecked();
+    expect(page.url()).toBe(selectionUrl);
+
+    await page.keyboard.press("Escape");
+    await expect(
+      page.getByRole("button", { name: "Select & edit" }),
+    ).toBeFocused();
+    await expect(firstSelectable).not.toBeChecked();
+    await expect(page.locator("[data-transaction-filter]")).toHaveJSProperty(
+      "inert",
+      false,
+    );
+    await expect(
+      page.locator("[data-bulk-transaction-row] .transaction-row").first(),
+    ).toHaveJSProperty("inert", false);
+
+    if (viewport.width === 1024) {
+      await startSelection.click();
+      const selectableRow = firstSelectable.locator(
+        "xpath=ancestor::*[@data-bulk-transaction-row]",
+      );
+      const pointerUrl = page.url();
+      await selectableRow.click({ position: { x: 100, y: 32 } });
+      await expect(firstSelectable).toBeChecked();
+      expect(page.url()).toBe(pointerUrl);
+      await page
+        .locator("[data-bulk-selection-bar]")
+        .getByRole("button", { name: "Cancel" })
+        .click();
+      await expect(startSelection).toBeFocused();
+      await expect(firstSelectable).not.toBeChecked();
+    }
   }
+});
+
+test("transaction controls submit compact URL state and restore it through history", async ({
+  page,
+}) => {
+  await page.goto("/transactions");
+  const filters = page.locator("[data-transaction-filter]");
+
+  await filters.getByLabel("Search").fill("Whole Foods");
+  await filters.getByLabel("Timeline").selectOption("90");
+  await filters.getByLabel("Sort").selectOption("merchant");
+  const applyFilters = filters.getByRole("button", { name: "Apply" });
+  await applyFilters.focus();
+  await page.keyboard.press("Enter");
+
+  await expect(page).toHaveURL(/q=Whole(\+|%20)Foods/);
+  await expect(page).toHaveURL(/period=90/);
+  await expect(page).toHaveURL(/sort=merchant/);
+  expect(page.url()).not.toMatch(/category=&|account=&/);
+  await expect(page.locator(".transaction-row")).not.toHaveCount(0);
+
+  await filters.getByLabel("Sort").selectOption("category");
+  await filters.getByRole("button", { name: "Apply" }).click();
+  await expect(page).toHaveURL(/sort=category/);
+  await expect(filters.getByLabel("Search")).toHaveValue("Whole Foods");
+  await expect(filters.getByLabel("Timeline")).toHaveValue("90");
+
+  await page.goBack();
+  await expect(page).toHaveURL(/sort=merchant/);
+  await expect(filters.getByLabel("Search")).toHaveValue("Whole Foods");
+});
+
+test("transaction filters expose one submitting state and block a second click", async ({
+  page,
+}) => {
+  await page.goto("/transactions");
+  await page.evaluate(() => {
+    window.__transactionFilterSubmits = 0;
+    document
+      .querySelector("[data-transaction-filter]")
+      .addEventListener("submit", (event) => {
+        window.__transactionFilterSubmits += 1;
+        event.preventDefault();
+      });
+  });
+
+  const form = page.locator("[data-transaction-filter]");
+  const apply = form.getByRole("button", { name: "Apply" });
+  await apply.click();
+
+  await expect(form).toHaveAttribute("aria-busy", "true");
+  await expect(apply).toBeDisabled();
+  await expect(apply).toHaveText("Applying…");
+  await apply.evaluate((button) => button.click());
+  expect(
+    await page.evaluate(() => window.__transactionFilterSubmits),
+  ).toBe(1);
 });
 
 test("transaction timelines and sort choices change the ledger", async ({
@@ -111,7 +227,10 @@ test("transaction timelines and sort choices change the ledger", async ({
   await page.goto("/transactions?period=90&sort=cost");
   await expect(
     page.locator(".transaction-row__main strong").first(),
-  ).toHaveText("Acme Payroll");
+  ).toHaveText("Delta Air Lines");
+  await expect(
+    page.locator(".transaction-row__main strong").last(),
+  ).toHaveText(/Acme Payroll|Seacomm Transfer/);
 
   await page.goto("/transactions?period=last-year&sort=date");
   await expect(page.getByLabel("Timeline")).toHaveValue("last-year");

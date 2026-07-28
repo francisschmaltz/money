@@ -11,6 +11,17 @@ import {
   workspaceDate,
 } from "./planningAnalytics.js";
 import { shiftDateOnly } from "./analytics.js";
+import {
+  buildUxStressTransactions,
+  UX_STRESS_SPLIT_TRANSACTION_ID,
+} from "../demo/uxStressScenario.js";
+import {
+  buildDefaultBudgetActuals,
+  buildDefaultBudgetDefaults,
+  buildDefaultGoals,
+  buildDefaultPlanningAccounts,
+  buildDefaultTransactions,
+} from "../demo/defaultScenario.js";
 
 const GOAL_PURPOSES = new Set([
   "vacation",
@@ -27,177 +38,21 @@ const GOAL_LIST_STATUSES = new Set(["active", "archived", "all"]);
 
 export function createDemoPlanningService({
   now = () => new Date("2026-07-27T19:00:00.000Z"),
+  scenario = "default",
 } = {}) {
-  const accounts = [
-    {
-      id: "demo-checking",
-      type: "depository",
-      subtype: "checking",
-      balance_group: "cash",
-      current_balance_minor: 2_887_780,
-      currency_code: "USD",
-      active: true,
-    },
-    {
-      id: "demo-savings",
-      type: "depository",
-      subtype: "savings",
-      balance_group: "cash",
-      current_balance_minor: 1_600_000,
-      currency_code: "USD",
-      active: true,
-    },
-    {
-      id: "demo-card",
-      type: "credit",
-      subtype: "credit_card",
-      balance_group: "credit_card",
-      current_balance_minor: 281_463,
-      currency_code: "USD",
-      active: true,
-    },
-    {
-      id: "demo-brokerage",
-      type: "investment",
-      subtype: "brokerage",
-      balance_group: "taxable_investment",
-      current_balance_minor: 6_342_941,
-      currency_code: "USD",
-      active: true,
-    },
-  ];
-  const goals = [
-    {
-      id: "goal_down_payment",
-      name: "House down payment",
-      target_amount_minor: 10_000_000,
-      currency_code: "USD",
-      target_on: "2029-06-01",
-      purpose: "home",
-      status: "active",
-      archived_at: null,
-      archive_outcome: null,
-      version: 1,
-      allocations: [
-        { source: "cash", amount_minor: 500_000 },
-        { source: "brokerage", amount_minor: 1_500_000 },
-      ],
-      recorded_allocations: [
-        { source: "cash", amount_minor: 500_000 },
-        { source: "brokerage", amount_minor: 1_500_000 },
-      ],
-      spending: [],
-      schedules: [
-        {
-          id: "schedule_down_payment",
-          goal_id: "goal_down_payment",
-          source: "brokerage",
-          cadence: "monthly",
-          amount_minor: 100_000,
-          monthly_day: 15,
-          anchor_on: null,
-          next_run_on: "2026-08-15",
-          status: "active",
-          version: 1,
-        },
-      ],
-    },
-    {
-      id: "goal_car_mods",
-      name: "Car modifications",
-      target_amount_minor: 1_200_000,
-      currency_code: "USD",
-      target_on: "2027-08-01",
-      purpose: "vehicle",
-      status: "active",
-      archived_at: null,
-      archive_outcome: null,
-      version: 1,
-      allocations: [{ source: "cash", amount_minor: 250_000 }],
-      recorded_allocations: [
-        { source: "cash", amount_minor: 250_000 },
-      ],
-      spending: [],
-      schedules: [
-        {
-          id: "schedule_car_mods",
-          goal_id: "goal_car_mods",
-          source: "cash",
-          cadence: "biweekly_friday",
-          amount_minor: 20_000,
-          monthly_day: null,
-          anchor_on: "2026-07-31",
-          next_run_on: "2026-07-31",
-          status: "active",
-          version: 1,
-        },
-      ],
-    },
-    {
-      id: "goal_summer_vacation",
-      name: "Summer vacation",
-      purpose: "vacation",
-      target_amount_minor: 300_000,
-      currency_code: "USD",
-      target_on: "2026-07-15",
-      status: "archived",
-      archived_at: "2026-07-24T18:00:00.000Z",
-      archive_outcome: "completed",
-      version: 2,
-      allocations: [],
-      recorded_allocations: [
-        { source: "cash", amount_minor: 300_000 },
-      ],
-      spending: [{ source: "cash", amount_minor: 330_000 }],
-      schedules: [],
-    },
-    {
-      id: "goal_beach_getaway",
-      name: "Beach getaway",
-      purpose: "vacation",
-      target_amount_minor: 200_000,
-      currency_code: "USD",
-      target_on: "2025-08-10",
-      status: "archived",
-      archived_at: "2025-08-18T18:00:00.000Z",
-      archive_outcome: "completed",
-      version: 2,
-      allocations: [],
-      recorded_allocations: [
-        { source: "cash", amount_minor: 200_000 },
-      ],
-      spending: [{ source: "cash", amount_minor: 216_000 }],
-      schedules: [],
-    },
-    {
-      id: "goal_family_road_trip",
-      name: "Family road trip",
-      purpose: "vacation",
-      target_amount_minor: 150_000,
-      currency_code: "USD",
-      target_on: "2024-07-20",
-      status: "archived",
-      archived_at: "2024-07-28T18:00:00.000Z",
-      archive_outcome: "completed",
-      version: 2,
-      allocations: [],
-      recorded_allocations: [
-        { source: "cash", amount_minor: 150_000 },
-      ],
-      spending: [{ source: "cash", amount_minor: 168_000 }],
-      schedules: [],
-    },
-  ];
-  const budgetDefaults = new Map([
-    ["Housing", 145_000],
-    ["Groceries", 75_000],
-    ["Dining", 45_000],
-    ["Shopping", 40_000],
-    ["Travel", 50_000],
-    ["Utilities", 40_000],
-    ["Fees & Interest", 5_000],
-    ["Other", 20_000],
-  ]);
+  const stressTransactions =
+    scenario === "ux-stress"
+      ? buildUxStressTransactions()
+      : [];
+  const accounts = buildDefaultPlanningAccounts();
+  const goals = buildDefaultGoals();
+  if (scenario === "ux-stress") {
+    goals[0].name =
+      "House down payment for the long-term multigenerational family home";
+    goals[0].target_amount_minor = 123_456_789;
+    goals[0].target_on = "2034-12-31";
+  }
+  const budgetDefaults = buildDefaultBudgetDefaults();
   const budgetMonths = new Map();
   const budgetVersions = new Map(
     [...budgetDefaults.keys()].map((category) => [category, 1]),
@@ -215,43 +70,50 @@ export function createDemoPlanningService({
   const transactionGoalSpends = new Map();
   const transactionGoalSpendVersions = new Map();
   const demoTransactions = new Map([
-    [
-      "txn_whole_foods",
+    ...buildDefaultTransactions().map((transaction) => [
+      transaction.id,
       {
-        amount_minor: -13_842,
-        currency_code: "USD",
-        pending: false,
-        excluded_from_spending: false,
+        amount_minor: transaction.amount.amount_minor,
+        currency_code: transaction.amount.currency,
+        pending: transaction.pending,
+        excluded_from_spending:
+          transaction.excluded_from_spending,
       },
-    ],
-    [
-      "txn_con_edison",
+    ]),
+    ...stressTransactions.map((transaction) => [
+      transaction.id,
       {
-        amount_minor: -18_419,
-        currency_code: "USD",
-        pending: true,
-        excluded_from_spending: false,
+        amount_minor: transaction.amount.amount_minor,
+        currency_code: transaction.amount.currency,
+        pending: transaction.pending,
+        excluded_from_spending:
+          transaction.excluded_from_spending,
       },
-    ],
-    [
-      "txn_apple_services",
-      {
-        amount_minor: -2_803,
-        currency_code: "USD",
-        pending: false,
-        excluded_from_spending: false,
-      },
-    ],
-    [
-      "txn_payroll",
-      {
-        amount_minor: 465_000,
-        currency_code: "USD",
-        pending: false,
-        excluded_from_spending: false,
-      },
-    ],
+    ]),
   ]);
+  if (scenario === "ux-stress") {
+    const splitTransaction = stressTransactions.find(
+      (transaction) =>
+        transaction.id === UX_STRESS_SPLIT_TRANSACTION_ID,
+    );
+    if (splitTransaction) {
+      const amountMinor = splitTransaction.amount.amount_minor;
+      const firstAmount = Math.trunc(amountMinor / 2);
+      transactionSplits.set(splitTransaction.id, [
+        {
+          category: "Groceries",
+          amount_minor: firstAmount,
+          split_version: 1,
+        },
+        {
+          category: "Home / Repairs",
+          amount_minor: amountMinor - firstAmount,
+          split_version: 1,
+        },
+      ]);
+      transactionSplitVersions.set(splitTransaction.id, 1);
+    }
+  }
 
   const freshness = {
     data_as_of: "2026-07-27T18:48:00.000Z",
@@ -299,16 +161,9 @@ export function createDemoPlanningService({
         ? budgetMonths.get(month)
         : budgetDefaults;
     const isPreviousMonth = month === previousMonth(currentMonth);
-    const actuals = new Map([
-      ["Housing", 145_000],
-      ["Groceries", 68_430],
-      ["Dining", isPreviousMonth ? 46_000 : 52_146],
-      ["Shopping", 47_890],
-      ["Travel", 41_205],
-      ["Utilities", 33_913],
-      ["Fees & Interest", 11_600],
-      ["Other", 12_500],
-    ]);
+    const actuals = buildDefaultBudgetActuals({
+      previousMonth: isPreviousMonth,
+    });
     const transactions = [...actuals.entries()].map(
       ([category, amount], index) => ({
         id: `demo-budget-${index}`,
@@ -317,8 +172,8 @@ export function createDemoPlanningService({
         excluded_from_spending: false,
         currency_code: "USD",
         amount_minor: -amount,
-      category_primary: category,
-      category_id: demoBudgetCategoryId(category),
+        category_primary: category,
+        category_id: demoBudgetCategoryId(category),
       }),
     );
     return buildBudgetStatus({

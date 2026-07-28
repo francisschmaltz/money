@@ -1,6 +1,6 @@
 <%
   const transactionDetailQuery = new URLSearchParams();
-  for (const key of ["period", "start", "end", "q", "account", "category", "sort", "cursor"]) {
+  for (const key of ["period", "start", "end", "q", "account", "category", "sort", "cursor", "analytics_group", "analytics_segment"]) {
     if (query?.[key]) transactionDetailQuery.set(key, String(query[key]));
   }
   transactionDetailQuery.set("transaction", transaction.id);

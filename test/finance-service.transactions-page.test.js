@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { PgFinanceRepository } from "../app/db/financeRepository.js";
 import { createFinanceService } from "../app/services/financeService.js";
 
 const FRESHNESS = {
@@ -47,6 +48,180 @@ function daysBetween(start, end) {
     86_400_000
   );
 }
+
+test("the production repository path paginates a split-aware 90-day analysis past a non-spending first page", async () => {
+  const rows = Array.from({ length: 205 }, (_, index) => {
+    const postedOn = new Date("2026-07-28T00:00:00.000Z");
+    postedOn.setUTCDate(postedOn.getUTCDate() - (index % 90));
+    const firstPage = index < 100;
+    const pending = firstPage && index % 3 === 1;
+    const excludedFromSpending =
+      firstPage && index % 3 === 2;
+    const income = firstPage && index % 3 === 0;
+    return {
+      id: `repository-90-${String(index).padStart(3, "0")}`,
+      provider_transaction_id: `provider-${index}`,
+      account_id: "account-checking",
+      account_name: "Checking",
+      account_mask: "1234",
+      institution_name: "Test Bank",
+      merchant_name: income
+        ? "Payroll"
+        : `Merchant ${index}`,
+      name: income ? "Payroll" : `Merchant ${index}`,
+      display_name: income ? "Payroll" : `Merchant ${index}`,
+      category_primary: income ? "Income" : "Shopping",
+      effective_category_primary: income ? "Income" : "Shopping",
+      category_detailed: null,
+      effective_category_detailed: null,
+      amount_minor: String(income ? 100_000 : -1_000),
+      currency_code: "USD",
+      posted_on: postedOn.toISOString().slice(0, 10),
+      pending,
+      excluded_from_spending: excludedFromSpending,
+      effective_excluded_from_spending: excludedFromSpending,
+      is_fixed: false,
+      split_version: index === 150 ? "1" : "0",
+      transaction_sort_merchant: `merchant ${index}`,
+      transaction_sort_category: income ? "income" : "shopping",
+      transaction_sort_cost: income ? "-1" : "1000",
+    };
+  });
+  const transactionQueries = [];
+  const pool = {
+    async query(sql, params) {
+      transactionQueries.push({
+        sql: String(sql),
+        params,
+      });
+      const cursorId = params[9];
+      const offset = cursorId
+        ? rows.findIndex((row) => row.id === cursorId) + 1
+        : 0;
+      return {
+        rows: rows.slice(offset, offset + Number(params[10])),
+      };
+    },
+  };
+  class PaginatedRepository extends PgFinanceRepository {
+    async getDataFreshness() {
+      return FRESHNESS;
+    }
+
+    async listAccounts() {
+      return [];
+    }
+
+    async listManualAssets() {
+      return [];
+    }
+
+    async getManualAssetValuations() {
+      return [];
+    }
+
+    async listTransactionCategories() {
+      return ["Dining", "Groceries", "Income", "Shopping"];
+    }
+
+    async listSpendingCategories() {
+      return [
+        {
+          id: "category_dining",
+          name: "Dining",
+          path: "Dining",
+          classification: "flexible",
+        },
+        {
+          id: "category_groceries",
+          name: "Groceries",
+          path: "Groceries",
+          classification: "flexible",
+        },
+        {
+          id: "category_income",
+          name: "Income",
+          path: "Income",
+          classification: "flexible",
+        },
+        {
+          id: "category_shopping",
+          name: "Shopping",
+          path: "Shopping",
+          classification: "flexible",
+        },
+      ];
+    }
+
+    async listTransactionSplits(_workspaceId, options) {
+      assert.deepEqual(options, {
+        startOn: "2026-01-30",
+        endOn: "2026-07-29",
+      });
+      return [
+        {
+          id: "split-150-1",
+          transaction_id: "repository-90-150",
+          split_version: 1,
+          line_index: 0,
+          category_id: "category_dining",
+          category: "Dining",
+          amount_minor: -600,
+          is_fixed: false,
+        },
+        {
+          id: "split-150-2",
+          transaction_id: "repository-90-150",
+          split_version: 1,
+          line_index: 1,
+          category_id: "category_groceries",
+          category: "Groceries",
+          amount_minor: -400,
+          is_fixed: false,
+        },
+      ];
+    }
+  }
+  const service = createFinanceService({
+    repository: new PaginatedRepository(pool),
+    now: () => new Date("2026-07-28T19:00:00.000Z"),
+  });
+
+  const page = await service.getPageData("transactions", {
+    query: { period: "90" },
+  });
+
+  assert.equal(page.transactions.length, 100);
+  assert.equal(page.transactionPageInfo.has_more, true);
+  assert.equal(page.spendingDetails.hasEligibleSpending, true);
+  assert.equal(page.spendingDetails.emptyReason, null);
+  assert.equal(page.spendingDetails.total.amount_minor, 105_000);
+  assert.equal(page.spendingDetails.transactionCount, 105);
+  assert.equal(
+    page.spendingDetails.seriesValues.reduce(
+      (sum, value) => sum + value,
+      0,
+    ),
+    105_000,
+  );
+  assert.ok(
+    page.spendingDetails.groupings.category.segments.some(
+      (segment) => segment.label === "Dining",
+    ),
+  );
+  assert.ok(
+    transactionQueries.filter(
+      (call) =>
+        call.params[1] === "2026-01-30" &&
+        call.params[2] === "2026-07-29",
+    ).length >= 3,
+  );
+  assert.ok(
+    transactionQueries
+      .filter((call) => call.params[1] === "2026-01-30")
+      .every((call) => call.params[5] === true),
+  );
+});
 
 test("transactions page builds detailed spending from one complete filtered analysis fetch", async () => {
   const ledgerCalls = [];
@@ -155,6 +330,7 @@ test("transactions page builds detailed spending from one complete filtered anal
     accountId: "account-checking",
     category: "Dining",
     search: "coffee",
+    includePending: true,
   });
   assert.equal(ledgerCalls.length, 1);
   assert.deepEqual(ledgerCalls[0], {
