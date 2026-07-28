@@ -2,6 +2,37 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { loadConfig, readiness } from "../app/config.js";
+import { databaseSslOptions } from "../app/db/pool.js";
+
+test("database TLS verification defaults on and can be explicitly disabled", () => {
+  assert.equal(databaseSslOptions(), undefined);
+  assert.deepEqual(
+    databaseSslOptions({ enabled: true }),
+    { rejectUnauthorized: true },
+  );
+  assert.deepEqual(
+    databaseSslOptions({
+      enabled: "true",
+      rejectUnauthorized: "false",
+    }),
+    { rejectUnauthorized: false },
+  );
+  assert.equal(
+    databaseSslOptions({
+      enabled: false,
+      rejectUnauthorized: false,
+    }),
+    false,
+  );
+
+  const config = loadConfig({
+    NODE_ENV: "test",
+    DATABASE_SSL: "true",
+    DATABASE_SSL_REJECT_UNAUTHORIZED: "false",
+  });
+  assert.equal(config.database.ssl, true);
+  assert.equal(config.database.sslRejectUnauthorized, false);
+});
 
 test("production rejects mock authentication", () => {
   assert.throws(

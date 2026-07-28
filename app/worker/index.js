@@ -1,19 +1,7 @@
-import { fileURLToPath } from "node:url";
-import { loadConfig } from "../config.js";
-import {
-  createPgPool,
-  PgFinanceRepository,
-  PgJobQueue,
-  PgPlanningRepository,
-  PgPlaidSecretRepository,
-} from "../db/index.js";
-import { createPlaidProvider } from "../providers/index.js";
 import {
   createInsightService,
   LmStudioNarrativeService,
   RecurringService,
-  createPlaidSyncService,
-  createPlanningService,
 } from "../services/index.js";
 import {
   FinanceWorker,
@@ -28,33 +16,32 @@ export {
 } from "./financeWorker.js";
 
 export async function startFinanceWorker(
-  config = loadConfig(),
-  { onReady = null } = {},
+  config,
+  { onReady = null, applicationRuntime = null } = {},
 ) {
-  if (config.demoMode) {
+  if (!config || config.demoMode) {
     throw new Error("The finance worker requires DATABASE_URL");
   }
-  const pool = createPgPool({
-    connectionString: config.database.url,
-    ssl: config.database.ssl,
-    applicationName: "money-worker",
-  });
-  const repository = new PgFinanceRepository(pool);
-  const planningRepository = new PgPlanningRepository(pool);
-  const secretRepository = new PgPlaidSecretRepository(pool);
-  const queue = new PgJobQueue(pool);
-  const provider = createPlaidProvider({
-    clientId: config.plaid.clientId,
-    secret: config.plaid.secret,
-    environment: config.plaid.environment,
-    webhookUrl: config.plaid.webhookUrl,
-  });
-  const plaidSyncService = createPlaidSyncService({
-    provider,
+  const {
     repository,
-    secretRepository,
     jobQueue: queue,
-  });
+    plaidSyncService,
+    planningService,
+  } = applicationRuntime ?? {};
+  const missing = [
+    ["repository", repository],
+    ["jobQueue", queue],
+    ["plaidSyncService", plaidSyncService],
+    ["planningService", planningService],
+  ]
+    .filter(([, value]) => !value)
+    .map(([name]) => name);
+  if (missing.length) {
+    throw new Error(
+      `Application runtime is missing worker dependencies: ${missing.join(", ")}`,
+    );
+  }
+
   const recurringService = new RecurringService({ repository });
   const narrativeService = new LmStudioNarrativeService({
     endpoint: config.lmStudio.baseUrl,
@@ -66,11 +53,6 @@ export async function startFinanceWorker(
     narrativeService,
     baseUrl: config.mcp.cardBaseUrl,
   });
-  const planningService = createPlanningService({
-    repository: planningRepository,
-    financeRepository: repository,
-    baseUrl: config.mcp.cardBaseUrl,
-  });
   const worker = createFinanceWorker({
     queue,
     repository,
@@ -80,7 +62,6 @@ export async function startFinanceWorker(
     planningService,
     pollIntervalMs: config.worker.pollIntervalMs,
   });
-  await worker.start();
 
   let nightlyTimer = null;
   const scheduleNightly = async () => {
@@ -97,16 +78,21 @@ export async function startFinanceWorker(
     );
     nightlyTimer.unref?.();
   };
-  await scheduleNightly();
-  onReady?.();
+  try {
+    await worker.start();
+    await scheduleNightly();
+    onReady?.();
+  } catch (error) {
+    if (nightlyTimer) clearTimeout(nightlyTimer);
+    await worker.stop().catch(() => {});
+    throw error;
+  }
 
   return {
     worker,
-    pool,
     async close() {
       if (nightlyTimer) clearTimeout(nightlyTimer);
       await worker.stop();
-      await pool.end();
     },
   };
 }
@@ -117,27 +103,4 @@ function nextUtcHour(hour) {
   target.setUTCHours(hour, 0, 0, 0);
   if (target <= now) target.setUTCDate(target.getUTCDate() + 1);
   return target;
-}
-
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  let runtime;
-  const shutdown = async () => {
-    process.off("SIGTERM", shutdown);
-    process.off("SIGINT", shutdown);
-    await runtime?.close();
-  };
-  process.on("SIGTERM", shutdown);
-  process.on("SIGINT", shutdown);
-  startFinanceWorker(undefined, {
-    onReady: () => process.stdout.write("Finance worker ready.\n"),
-  })
-    .then((started) => {
-      runtime = started;
-    })
-    .catch((error) => {
-      process.stderr.write(
-        `Finance worker failed: ${error.name}${error.code ? `:${error.code}` : ""}\n`,
-      );
-      process.exitCode = 1;
-    });
 }

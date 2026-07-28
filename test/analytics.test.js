@@ -16,6 +16,7 @@ import {
   enqueueNightlyFinanceJobs,
   FinanceWorker,
 } from "../app/worker/financeWorker.js";
+import { startFinanceWorker } from "../app/worker/index.js";
 
 const currency = "USD";
 
@@ -611,6 +612,7 @@ test("worker shutdown waits for the active job before returning", async () => {
 
   const startPromise = worker.start();
   await jobStarted;
+  await startPromise;
   let stopped = false;
   const stopPromise = worker.stop().then(() => {
     stopped = true;
@@ -622,6 +624,57 @@ test("worker shutdown waits for the active job before returning", async () => {
   await Promise.all([startPromise, stopPromise]);
   assert.equal(completed, true);
   assert.equal(stopped, true);
+});
+
+test("in-process worker reuses the application runtime and leaves its pool open", async () => {
+  const enqueued = [];
+  let poolClosed = false;
+  let ready = false;
+  const pool = {
+    async end() {
+      poolClosed = true;
+    },
+  };
+  const applicationRuntime = {
+    pool,
+    repository: {},
+    secretRepository: {},
+    jobQueue: {
+      async recoverStale() {},
+      async claim() {
+        return null;
+      },
+      async enqueue(...args) {
+        enqueued.push(args);
+        return { id: "nightly-job" };
+      },
+    },
+    plaidSyncService: {},
+    planningService: {},
+  };
+
+  const workerRuntime = await startFinanceWorker(
+    {
+      demoMode: false,
+      lmStudio: { baseUrl: "", model: "", apiKey: "" },
+      mcp: { cardBaseUrl: "https://money.example" },
+      worker: {
+        pollIntervalMs: 60_000,
+        nightlyInsightsHourUtc: 9,
+      },
+    },
+    {
+      applicationRuntime,
+      onReady: () => {
+        ready = true;
+      },
+    },
+  );
+
+  assert.equal(ready, true);
+  assert.equal(enqueued.length, 1);
+  await workerRuntime.close();
+  assert.equal(poolClosed, false);
 });
 
 test("nightly refresh syncs active Items before recurring detection and insights", async () => {

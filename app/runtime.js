@@ -29,7 +29,8 @@ export function createRuntime(config) {
   const pool = createPgPool({
     connectionString: config.database.url,
     ssl: config.database.ssl,
-    applicationName: "money-web",
+    sslRejectUnauthorized: config.database.sslRejectUnauthorized,
+    applicationName: "money",
   });
   const repository = new PgFinanceRepository(pool);
   const planningRepository = new PgPlanningRepository(pool);

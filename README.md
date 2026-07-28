@@ -58,9 +58,8 @@ flowchart LR
     Insights -. aggregate findings only .-> LM["Optional LM Studio"]
 ```
 
-The web server and worker use the same image but run as separate Nomad tasks.
-The prestart migration task updates the schema before either application task
-becomes healthy.
+One Money process applies pending migrations, starts the PostgreSQL-backed
+worker, and then starts the web/API server. The Nomad job runs only that process.
 
 ## Local demo
 
@@ -90,20 +89,16 @@ than declaring victory over a test that never opened a socket.
 
 ## PostgreSQL and Plaid Sandbox
 
-1. Start PostgreSQL 17 and create a dedicated database/user.
+1. Start PostgreSQL 17 and create the `money` database and `money` login role.
 2. Copy `.env.example` to `.env`.
 3. Set `DEMO_MODE=false`, `DATABASE_URL`, `PLAID_CLIENT_ID`,
    `PLAID_SECRET`, and `PLAID_ENV=sandbox`.
 4. Keep `AUTH_MODE=mock` for local-only development.
-5. Apply the schema, then start the web process and worker:
+5. Start Money. It applies pending migrations before starting the worker and
+   web server:
 
 ```bash
-npm run migrate
 npm run dev
-```
-
-```bash
-npm run start:worker
 ```
 
 Sign in as the local mock admin, open Settings, and connect a Plaid Sandbox
@@ -240,18 +235,19 @@ Health endpoints:
 
 Production runs:
 
-- `npm run migrate` as a one-shot Nomad prestart task.
-- `npm run start:web` as the HTTP service.
-- `npm run start:worker` as the PostgreSQL queue consumer.
+- `npm start` applies pending migrations, starts the PostgreSQL queue consumer,
+  and then listens for HTTP traffic.
+- `npm run migrate` remains available as a manual maintenance command.
 
-The worker processes Plaid sync, recurring detection, and insight generation.
+The in-process worker handles Plaid sync, recurring detection, and insight
+generation.
 LM Studio is optional: leave its model blank to keep deterministic findings
 without generated narrative.
 
-Deployment uses the SHA-tagged multi-architecture image published by GitHub
-Actions. Never deploy `latest`; use
-`ghcr.io/francisschmaltz/money:sha-FULL_COMMIT_SHA`. Full setup, variable
-placeholders, rollout, and rollback checks live in
+Deployment uses the multi-architecture
+`ghcr.io/francisschmaltz/money:latest` image published from `main`. GitHub
+Actions also publishes SHA tags for rollback. Full setup, variable placeholders,
+rollout, and rollback checks live in
 [Nomad deployment](docs/nomad/README.md).
 
 ## Privacy rules

@@ -1,11 +1,8 @@
 # Nomad deployment
 
-The checked-in [job specification](money.nomad.hcl) runs one
-allocation containing:
-
-- A one-shot prestart migration task.
-- The Express web/MCP server.
-- The PostgreSQL-backed finance worker.
+The checked-in [job specification](money.nomad.hcl) runs one allocation with
+one Money task. That process applies pending migrations, starts the
+PostgreSQL-backed finance worker, and then starts the Express web/MCP server.
 
 Static secrets come only from the Nomad Variable path `nomad/jobs/money`.
 There is no Vault integration and no application-layer encryption key.
@@ -17,7 +14,8 @@ the job.
 
 ## Prerequisites
 
-- Nomad clients can pull the GHCR image.
+- `nomad/jobs/money` contains a GitHub username and package-read token so Nomad
+  can pull the private GHCR image.
 - The target namespace has an ingress/controller honoring
   `service.meta.public_hostname`.
 - DNS and TLS route `money.example.com` to that ingress.
@@ -29,8 +27,8 @@ the job.
 - Duo is configured as described in the root README.
 - The deploying identity can write `nomad/jobs/money` and submit the job.
 
-Do not put a GHCR token in the job file. Configure registry authentication on
-Nomad clients or use a narrowly scoped scheduler-supported credential.
+Do not put a GHCR token directly in the job file. The Docker tasks read it from
+the encrypted Nomad Variable through Nomad's secret provider.
 
 ## Populate Nomad Variables
 
@@ -56,8 +54,10 @@ Required static values:
 
 | Variable item | Purpose |
 | --- | --- |
-| `database_url` | Application PostgreSQL role |
+| `database_url` | The `money` PostgreSQL role connecting to the `money` database |
 | `database_ssl` | Set to `true` in production so every database connection requires TLS |
+| `database_ssl_reject_unauthorized` | Keep `true` for trusted certificates; use `false` only for a self-signed database certificate |
+| `ghcr_token` | GitHub personal access token (classic) scoped to `read:packages` |
 | `plaid_client_id`, `plaid_secret` | Plaid environment credentials |
 | `plaid_webhook_url` | Public signed-webhook endpoint |
 | `duo_oidc_issuer` | Duo Generic OIDC issuer and discovery base |
@@ -74,11 +74,39 @@ Leave the optional Duo endpoint checks and LM Studio values as empty strings if
 unused. Do not remove their keys from the variable document: the job template
 references them.
 
+For GHCR, create a **personal access token (classic)** with only
+`read:packages`, then put it in `ghcr_token`. The job uses the fixed GitHub
+username `francisschmaltz`; the token's user must have read access to the private
+`ghcr.io/francisschmaltz/money` package. Do not use a GitHub account password or
+paste the token into this repository.
+
 The Duo issuer must come from the Generic OIDC Relying Party Metadata tab.
 `api-*.duosecurity.com/oauth/v1/*` is the MFA-only Auth API, not this
 application's SSO issuer. Money discovers authorization, token, and JWKS
 endpoints from
 `${DUO_OIDC_ISSUER}/.well-known/openid-configuration`.
+
+`database_ssl_reject_unauthorized=false` keeps the database connection
+encrypted but disables certificate identity verification. It is the explicit
+escape hatch for a private PostgreSQL server using a self-signed certificate;
+do not replace it with the process-wide `NODE_TLS_REJECT_UNAUTHORIZED=0`.
+
+### Rename the existing PostgreSQL role
+
+The application role and database are both named `money`. For an existing
+deployment that still uses `money_app`, stop the Money job and connect as a
+PostgreSQL administrator:
+
+```sql
+ALTER ROLE money_app RENAME TO money;
+\password money
+ALTER DATABASE money OWNER TO money;
+```
+
+The rename preserves the role's grants and object ownership because PostgreSQL
+tracks the role internally by ID. `\password` resets it without putting the new
+password in shell or SQL history. Then change the Nomad `database_url` username
+to `money`, URL-encode the new password, write the variable, and redeploy.
 
 Plaid Item access tokens do **not** belong in Nomad Variables. The application
 receives them dynamically and stores them in PostgreSQL's service-only
@@ -102,34 +130,39 @@ testing Production Link. It is an authenticated browser page, not a webhook;
 keep `https://money.example.com/webhooks/plaid` as the separate server-to-server
 webhook URL.
 
-## Deploy an immutable image
+## Deploy
 
-GitHub Actions publishes:
+Each successful build from `main` publishes both:
 
 ```text
+ghcr.io/francisschmaltz/money:latest
 ghcr.io/francisschmaltz/money:sha-FULL_COMMIT_SHA
 ```
 
-Use the full SHA tag. `latest` is a moving target wearing a fake mustache.
+The Nomad job uses `latest`. Validate and submit the job once:
 
 ```bash
-export MONEY_IMAGE='ghcr.io/francisschmaltz/money:sha-FULL_COMMIT_SHA'
-
-nomad job validate \
-  -var="image=${MONEY_IMAGE}" \
-  docs/nomad/money.nomad.hcl
-
-nomad job plan \
-  -var="image=${MONEY_IMAGE}" \
-  docs/nomad/money.nomad.hcl
-
-nomad job run \
-  -var="image=${MONEY_IMAGE}" \
-  docs/nomad/money.nomad.hcl
+nomad job validate docs/nomad/money.nomad.hcl
+nomad job plan docs/nomad/money.nomad.hcl
+nomad job run docs/nomad/money.nomad.hcl
 ```
 
-The migration task runs `npm run migrate` before the server and worker. Applied
-files are recorded in `schema_migrations`, so restarts do not replay them.
+After a later `main` build finishes, use
+[`nomad job restart`](https://developer.hashicorp.com/nomad/commands/job/restart)
+to launch a new container:
+
+```bash
+nomad job restart -yes money
+```
+
+Nomad's
+[Docker driver](https://developer.hashicorp.com/nomad/docs/job-declare/task-driver/docker)
+always pulls an image tagged `latest` when the task starts. Merely publishing a
+new image does not restart an unchanged job.
+
+The Money process applies pending migrations before it starts the worker or
+listens for HTTP traffic. Applied files are recorded in `schema_migrations`, so
+restarts skip them.
 Migrations are forward-only; a prior image is a safe rollback only when its
 code remains compatible with the migrated schema.
 
@@ -150,7 +183,7 @@ Then perform the authenticated checks:
 1. Duo login with one non-admin and one admin.
 2. Plaid Link or update mode from Settings.
 3. A manual sync followed by recent transactions.
-4. Worker remains running and consumes queued sync/insight jobs.
+4. The Money task remains running and consumes queued sync/insight jobs.
 5. The read bearer discovers 15 tools and the planning bearer discovers 24
    under connection `money`.
 6. A fresh chat receives each of the 15 finance card kinds.
@@ -172,12 +205,16 @@ Update the secure variable document, then run `nomad var put` again. The job's
 
 ## Rollback
 
-Plan and run the last known-good SHA:
+GitHub still publishes immutable SHA tags. To roll back, change the job's
+`image` line from `latest` to the last known-good SHA, then plan and run it:
+
+```hcl
+image = "ghcr.io/francisschmaltz/money:sha-PREVIOUS_FULL_COMMIT_SHA"
+```
 
 ```bash
-export MONEY_IMAGE='ghcr.io/francisschmaltz/money:sha-PREVIOUS_FULL_COMMIT_SHA'
-nomad job plan -var="image=${MONEY_IMAGE}" docs/nomad/money.nomad.hcl
-nomad job run -var="image=${MONEY_IMAGE}" docs/nomad/money.nomad.hcl
+nomad job plan docs/nomad/money.nomad.hcl
+nomad job run docs/nomad/money.nomad.hcl
 ```
 
 If the new release applied a non-backward-compatible migration, stop. Rolling

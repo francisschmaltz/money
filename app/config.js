@@ -122,6 +122,10 @@ export function loadConfig(environment = process.env, argv = process.argv.slice(
     database: {
       url: databaseUrl,
       ssl: boolean(environment.DATABASE_SSL),
+      sslRejectUnauthorized: boolean(
+        environment.DATABASE_SSL_REJECT_UNAUTHORIZED,
+        true,
+      ),
     },
     auth: {
       mode: authMode,

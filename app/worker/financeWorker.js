@@ -116,7 +116,7 @@ export class FinanceWorker {
       }
       this.#timer?.unref?.();
     };
-    await tick();
+    void tick();
   }
 
   async stop() {

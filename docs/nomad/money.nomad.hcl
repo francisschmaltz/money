@@ -1,8 +1,3 @@
-variable "image" {
-  type        = string
-  description = "Immutable GHCR image, for example ghcr.io/francisschmaltz/money:sha-FULL_COMMIT_SHA"
-}
-
 job "money" {
   datacenters = ["dc1"]
   type        = "service"
@@ -17,6 +12,11 @@ job "money" {
 
   group "app" {
     count = 1
+
+    secret "registry_auth" {
+      provider = "nomad"
+      path     = "nomad/jobs/money"
+    }
 
     network {
       port "http" {
@@ -48,44 +48,18 @@ job "money" {
       mode     = "delay"
     }
 
-    task "migrate" {
-      driver = "docker"
-
-      lifecycle {
-        hook    = "prestart"
-        sidecar = false
-      }
-
-      config {
-        image   = var.image
-        command = "npm"
-        args    = ["run", "migrate"]
-      }
-
-      template {
-        destination = "secrets/money.env"
-        env         = true
-
-        data = <<-EOT
-          {{ with nomadVar "nomad/jobs/money" }}
-          DATABASE_URL={{ .database_url | toJSON }}
-          DATABASE_SSL={{ .database_ssl | toJSON }}
-          {{ end }}
-        EOT
-      }
-
-      resources {
-        cpu    = 100
-        memory = 128
-      }
-    }
-
-    task "server" {
+    task "money" {
       driver = "docker"
 
       config {
-        image = var.image
+        image = "ghcr.io/francisschmaltz/money:latest"
         ports = ["http"]
+
+        auth {
+          username       = "francisschmaltz"
+          password       = "${secret.registry_auth.ghcr_token}"
+          server_address = "ghcr.io"
+        }
       }
 
       env {
@@ -97,6 +71,7 @@ job "money" {
         AUTH_MODE            = "oidc"
         PLAID_ENV            = "production"
         MCP_ALLOWED_HOSTS    = "money.example.com,money"
+        WORKER_POLL_INTERVAL_MS = "5000"
         NIGHTLY_INSIGHTS_HOUR_UTC = "9"
       }
 
@@ -109,6 +84,7 @@ job "money" {
           {{ with nomadVar "nomad/jobs/money" }}
           DATABASE_URL={{ .database_url | toJSON }}
           DATABASE_SSL={{ .database_ssl | toJSON }}
+          DATABASE_SSL_REJECT_UNAUTHORIZED={{ .database_ssl_reject_unauthorized | toJSON }}
           PLAID_CLIENT_ID={{ .plaid_client_id | toJSON }}
           PLAID_SECRET={{ .plaid_secret | toJSON }}
           PLAID_WEBHOOK_URL={{ .plaid_webhook_url | toJSON }}
@@ -130,52 +106,8 @@ job "money" {
       }
 
       resources {
-        cpu    = 400
-        memory = 768
-      }
-
-      kill_signal  = "SIGTERM"
-      kill_timeout = "30s"
-    }
-
-    task "worker" {
-      driver = "docker"
-
-      config {
-        image   = var.image
-        command = "node"
-        args    = ["app/worker/index.js"]
-      }
-
-      env {
-        NODE_ENV             = "production"
-        PUBLIC_BASE_URL      = "https://money.example.com"
-        PLAID_ENV            = "production"
-        WORKER_POLL_INTERVAL_MS = "5000"
-        NIGHTLY_INSIGHTS_HOUR_UTC = "9"
-      }
-
-      template {
-        destination = "secrets/money.env"
-        env         = true
-        change_mode = "restart"
-
-        data = <<-EOT
-          {{ with nomadVar "nomad/jobs/money" }}
-          DATABASE_URL={{ .database_url | toJSON }}
-          DATABASE_SSL={{ .database_ssl | toJSON }}
-          PLAID_CLIENT_ID={{ .plaid_client_id | toJSON }}
-          PLAID_SECRET={{ .plaid_secret | toJSON }}
-          LM_STUDIO_BASE_URL={{ .lm_studio_base_url | toJSON }}
-          LM_STUDIO_MODEL={{ .lm_studio_model | toJSON }}
-          LM_STUDIO_API_KEY={{ .lm_studio_api_key | toJSON }}
-          {{ end }}
-        EOT
-      }
-
-      resources {
-        cpu    = 300
-        memory = 512
+        cpu    = 600
+        memory = 1024
       }
 
       kill_signal  = "SIGTERM"

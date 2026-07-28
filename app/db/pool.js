@@ -2,25 +2,49 @@ import pg from "pg";
 
 const { Pool } = pg;
 
+function boolean(value, fallback) {
+  if (value === undefined || value === "") return fallback;
+  if (typeof value === "boolean") return value;
+  return ["1", "true", "yes", "on"].includes(String(value).toLowerCase());
+}
+
+export function databaseSslOptions({
+  enabled,
+  rejectUnauthorized = true,
+} = {}) {
+  if (enabled === undefined || enabled === "") return undefined;
+  if (enabled && typeof enabled === "object") return enabled;
+  if (!boolean(enabled, false)) return false;
+  return {
+    rejectUnauthorized: boolean(rejectUnauthorized, true),
+  };
+}
+
 export function createPgPool({
   connectionString = process.env.DATABASE_URL,
   max = 10,
   idleTimeoutMillis = 30_000,
   connectionTimeoutMillis = 5_000,
   applicationName = "money",
-  ssl,
+  ssl = process.env.DATABASE_SSL,
+  sslRejectUnauthorized =
+    process.env.DATABASE_SSL_REJECT_UNAUTHORIZED,
 } = {}) {
   if (!connectionString) {
     throw new Error("DATABASE_URL is required");
   }
 
+  const resolvedSsl = databaseSslOptions({
+    enabled: ssl,
+    rejectUnauthorized: sslRejectUnauthorized,
+  });
   return new Pool({
     connectionString,
     max,
     idleTimeoutMillis,
     connectionTimeoutMillis,
     application_name: applicationName,
-    ...(ssl === undefined ? {} : { ssl }),
+    ...(resolvedSsl === undefined ? {} : { ssl: resolvedSsl }),
   });
 }
 
