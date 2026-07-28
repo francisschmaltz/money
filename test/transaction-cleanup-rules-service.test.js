@@ -128,7 +128,7 @@ test("cleanup rule service normalizes exact matchers and returns snake-case rule
   ]);
 });
 
-test("settings page data includes the persistent cleanup-rule list", async () => {
+test("settings page data preserves manual asset values and cleanup rules", async () => {
   const repository = {
     async getDataFreshness() {
       return {
@@ -147,7 +147,17 @@ test("settings page data includes the persistent cleanup-rule list", async () =>
       return [];
     },
     async listManualAssets() {
-      return [];
+      return [
+        {
+          id: "asset-car",
+          name: "Car",
+          asset_type: "vehicle",
+          currency_code: "USD",
+          current_value_minor: 3_471_461,
+          valued_on: "2026-07-26",
+          active: true,
+        },
+      ];
     },
     async getManualAssetValuations() {
       return [];
@@ -166,6 +176,10 @@ test("settings page data includes the persistent cleanup-rule list", async () =>
 
   const page = await service.getPageData("settings");
 
+  assert.deepEqual(page.manualAssets[0].value, {
+    amount_minor: 3_471_461,
+    currency: "USD",
+  });
   assert.equal(page.transactionRules.length, 1);
   assert.equal(page.transactionRules[0].id, "cleanup_rule_1");
   assert.equal(

@@ -68,6 +68,16 @@
       actionIcon: "ph-sliders-horizontal"
     }) %>
 
+    <% if (typeof insightData !== "undefined" && insightData.partial) { %>
+      <%- include("partials/notification", {
+        id: "insights-paused",
+        tone: "warning",
+        icon: "ph-pause-circle",
+        title: "Insights are paused",
+        message: "The last successful findings are shown below, but they are not promoted on the dashboard until every finance connection is fresh again."
+      }) %>
+    <% } %>
+
     <nav class="insight-view-nav" aria-label="Insight status">
       <a href="/insights" <% if (currentInsightView === "active") { %>aria-current="page"<% } %>>
         Active
@@ -76,13 +86,6 @@
         Archive
       </a>
     </nav>
-
-    <% if (typeof insightData !== "undefined" && insightData.partial) { %>
-      <aside class="card insight-empty-state" role="status">
-        <h2>Insights are paused</h2>
-        <p>The last successful findings are shown below, but they are not promoted on the dashboard until every finance connection is fresh again.</p>
-      </aside>
-    <% } %>
 
     <% if (typeof selectedInsight !== "undefined" && selectedInsight) { %>
       <section class="card selected-detail selected-detail--insight" aria-labelledby="selected-insight-heading" data-insight-card>

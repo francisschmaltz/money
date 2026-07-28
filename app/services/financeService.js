@@ -3605,12 +3605,17 @@ function webAccount(account) {
 }
 
 function webManualAsset(asset) {
+  const value =
+    asset.current_value ??
+    (asset.value_minor == null
+      ? null
+      : money(asset.value_minor, asset.currency_code));
   return {
     id: asset.id,
     name: asset.name,
     type: asset.asset_type,
     description: asset.description,
-    value: asset.current_value,
+    value,
     valuedOn: asset.valued_on,
     active: asset.active,
     icon:

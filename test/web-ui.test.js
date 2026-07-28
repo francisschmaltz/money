@@ -75,7 +75,7 @@ test("Plaid OAuth callback renders a resumable authenticated return page", async
   assert.match(response.text, /data-page="plaid-oauth"/);
   assert.match(response.text, /data-plaid-oauth-return/);
   assert.match(response.text, /Returning to Plaid/);
-  assert.match(response.text, /\/js\/money\.js\?v=20/);
+  assert.match(response.text, /\/js\/money\.js\?v=21/);
   assert.doesNotMatch(response.text, /data-search-dialog/);
 });
 
@@ -221,7 +221,7 @@ test("dashboard places insights before spending", async () => {
   );
 });
 
-test("dashboard replaces stale insight promotion with a freshness banner", async () => {
+test("dashboard replaces stale insight promotion with a dismissible notification", async () => {
   const html = await render("dashboard", {
     pageTitle: "Overview",
     activePath: "/",
@@ -231,6 +231,16 @@ test("dashboard replaces stale insight promotion with a freshness banner", async
 
   assert.match(html, /Insights are paused/);
   assert.match(html, /none are promoted here/);
+  assert.match(html, /class="notification notification--warning"/);
+  assert.match(
+    html,
+    /data-dismissible-notification="insights-paused"/,
+  );
+  assert.match(html, /data-notification-dismiss/);
+  assert.doesNotMatch(
+    html,
+    /class="card insight-empty-state" role="status"/,
+  );
 });
 
 test("transactions puts detailed spending analysis before the ledger", async () => {
@@ -999,6 +1009,19 @@ test("active insights lead with actions and keep lifecycle controls compact", as
     html,
     /class="insight-card__topline"|class="tag">Spend less/,
   );
+});
+
+test("stale insights use the shared dismissible notification", async () => {
+  const html = await render("insights", {
+    pageTitle: "Insights",
+    activePath: "/insights",
+    insightData: { partial: true },
+  });
+
+  assert.match(html, /class="notification notification--warning"/);
+  assert.match(html, /data-dismissible-notification="insights-paused"/);
+  assert.match(html, /data-notification-dismiss/);
+  assert.match(html, /The last successful findings are shown below/);
 });
 
 test("insight archive exposes restore, incorrect, and confirmed delete actions", async () => {

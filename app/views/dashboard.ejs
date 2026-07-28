@@ -124,10 +124,13 @@
     }) %>
 
     <% if (typeof insightsStale !== "undefined" && insightsStale) { %>
-      <aside class="card insight-empty-state" role="status">
-        <h2>Insights are paused</h2>
-        <p>Your last successful insights remain available on the Insights page, but none are promoted here until every finance connection is fresh.</p>
-      </aside>
+      <%- include("partials/notification", {
+        id: "insights-paused",
+        tone: "warning",
+        icon: "ph-pause-circle",
+        title: "Insights are paused",
+        message: "Your last successful insights remain available on the Insights page, but none are promoted here until every finance connection is fresh."
+      }) %>
     <% } %>
 
     <% if (typeof planning !== "undefined" && planning?.safeToSpend) { %>

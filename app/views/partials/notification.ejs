@@ -1,0 +1,19 @@
+<aside
+  class="notification notification--<%= tone || 'neutral' %>"
+  role="status"
+  data-dismissible-notification="<%= id %>"
+>
+  <i class="ph <%= icon || 'ph-info' %> notification__icon" aria-hidden="true"></i>
+  <div class="notification__content">
+    <strong><%= title %></strong>
+    <p><%= message %></p>
+  </div>
+  <button
+    class="icon-button notification__dismiss"
+    type="button"
+    data-notification-dismiss
+    aria-label="Dismiss <%= title %> notification"
+  >
+    <i class="ph ph-x" aria-hidden="true"></i>
+  </button>
+</aside>

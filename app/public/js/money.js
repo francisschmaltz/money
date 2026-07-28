@@ -3714,8 +3714,56 @@
     });
   }
 
+  function dismissibleNotifications() {
+    const notifications = [
+      ...document.querySelectorAll("[data-dismissible-notification]"),
+    ];
+    if (!notifications.length) return;
+
+    const storageKey = "money.dismissed-notifications.v1";
+    let dismissed = new Set();
+    try {
+      const stored = JSON.parse(
+        window.sessionStorage.getItem(storageKey) || "[]",
+      );
+      if (Array.isArray(stored)) {
+        dismissed = new Set(
+          stored.filter((value) => typeof value === "string"),
+        );
+      }
+    } catch {
+      // Dismissal remains useful even when session storage is unavailable.
+    }
+
+    notifications.forEach((notification) => {
+      const notificationId =
+        notification.dataset.dismissibleNotification;
+      if (!notificationId) return;
+      if (dismissed.has(notificationId)) {
+        notification.hidden = true;
+        return;
+      }
+
+      notification
+        .querySelector("[data-notification-dismiss]")
+        ?.addEventListener("click", () => {
+          dismissed.add(notificationId);
+          try {
+            window.sessionStorage.setItem(
+              storageKey,
+              JSON.stringify([...dismissed].slice(-50)),
+            );
+          } catch {
+            // Hiding the notification does not depend on persistence.
+          }
+          notification.hidden = true;
+        });
+    });
+  }
+
   function initialize() {
     localDateTimes();
+    dismissibleNotifications();
     accountAliases();
     mobileNavigation();
     globalSearch();

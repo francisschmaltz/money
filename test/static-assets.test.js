@@ -21,9 +21,26 @@ test("first-party asset revisions change with the current deployment", async () 
     path.resolve("app/views/partials/head.ejs"),
     "utf8",
   );
-  assert.match(head, /\/css\/money\.css\?v=24/);
+  assert.match(head, /\/css\/money\.css\?v=25/);
   assert.match(head, /\/js\/charts\.js\?v=5/);
-  assert.match(head, /\/js\/money\.js\?v=20/);
+  assert.match(head, /\/js\/money\.js\?v=21/);
+});
+
+test("dismissible notifications persist for the browser session", async () => {
+  const [money, notification] = await Promise.all([
+    readFile(path.resolve("app/public/js/money.js"), "utf8"),
+    readFile(
+      path.resolve("app/views/partials/notification.ejs"),
+      "utf8",
+    ),
+  ]);
+
+  assert.match(notification, /data-dismissible-notification/);
+  assert.match(notification, /data-notification-dismiss/);
+  assert.match(money, /function dismissibleNotifications\(\)/);
+  assert.match(money, /money\.dismissed-notifications\.v1/);
+  assert.match(money, /window\.sessionStorage\.setItem/);
+  assert.match(money, /notification\.hidden = true/);
 });
 
 test("manual asset entry accepts formatted money and refreshes saved production data", async () => {

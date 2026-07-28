@@ -36,3 +36,45 @@ test("transaction times use the browser timezone without fake precision", async 
       .first(),
   ).toHaveText("Jul 25, 2026, 1:34 PM");
 });
+
+test("bulk selection checkboxes share one centerline", async ({ page }) => {
+  for (const viewport of [
+    { width: 1024, height: 900 },
+    { width: 480, height: 900 },
+  ]) {
+    await page.setViewportSize(viewport);
+    await page.goto("/transactions");
+    await page.getByRole("button", { name: "Select & edit" }).click();
+
+    const alignment = await page.evaluate(() => {
+      const center = (element) => {
+        const bounds = element.getBoundingClientRect();
+        return {
+          x: bounds.x + bounds.width / 2,
+          y: bounds.y + bounds.height / 2,
+        };
+      };
+      const selectAll = document.querySelector("[data-bulk-select-all]");
+      const selectAllCenter = center(selectAll);
+
+      return [
+        ...document.querySelectorAll("[data-bulk-transaction-select]"),
+      ].map((input) => {
+        const inputCenter = center(input);
+        const controlCenter = center(
+          input.closest(".transaction-select-control"),
+        );
+        return {
+          horizontalDelta: Math.abs(inputCenter.x - selectAllCenter.x),
+          verticalDelta: Math.abs(inputCenter.y - controlCenter.y),
+        };
+      });
+    });
+
+    expect(alignment.length).toBeGreaterThan(0);
+    for (const { horizontalDelta, verticalDelta } of alignment) {
+      expect(horizontalDelta).toBeLessThanOrEqual(0.5);
+      expect(verticalDelta).toBeLessThanOrEqual(0.5);
+    }
+  }
+});
