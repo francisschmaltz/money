@@ -324,6 +324,7 @@ export function createApiRouter({
   financeService,
   planningService = null,
   plaidSyncService,
+  plaidRedirectUri = null,
   appleCardImportService,
 } = {}) {
   const router = Router();
@@ -740,8 +741,8 @@ export function createApiRouter({
       }
       try {
         const result = await plaidSyncService.createLinkToken({
-          userId: request.user?.email || request.user?.id,
-          redirectUri: stringValue(request.body?.redirect_uri, 2_048),
+          userId: request.user?.id || request.user?.email,
+          redirectUri: plaidRedirectUri,
         });
         response.json({
           link_token: result.linkToken,
@@ -799,8 +800,8 @@ export function createApiRouter({
       try {
         const result = await plaidSyncService.createUpdateLinkToken({
           itemId: request.params.itemId,
-          userId: request.user?.email || request.user?.id,
-          redirectUri: stringValue(request.body?.redirect_uri, 2_048),
+          userId: request.user?.id || request.user?.email,
+          redirectUri: plaidRedirectUri,
         });
         response.json({
           link_token: result.linkToken,

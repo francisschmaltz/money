@@ -23,5 +23,5 @@ test("first-party asset revisions change with the current deployment", async () 
   );
   assert.match(head, /\/css\/money\.css\?v=18/);
   assert.match(head, /\/js\/charts\.js\?v=5/);
-  assert.match(head, /\/js\/money\.js\?v=12/);
+  assert.match(head, /\/js\/money\.js\?v=13/);
 });

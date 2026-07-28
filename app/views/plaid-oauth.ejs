@@ -1,0 +1,15 @@
+<%- include("partials/head", { pageTitle }) %>
+<body data-page="plaid-oauth">
+  <%- include("partials/site-header", { activePath, viewer }) %>
+  <main class="empty-page">
+    <section class="empty-state" data-plaid-oauth-return>
+      <span class="empty-hero-icon"><i class="ph ph-bank"></i></span>
+      <p class="eyebrow">Secure bank connection</p>
+      <h1>Finishing your connection</h1>
+      <p data-connection-status role="status">Returning to Plaid…</p>
+      <a class="button button--secondary" href="/settings#connections">
+        Back to connections
+      </a>
+    </section>
+  </main>
+  <%- include("partials/footer", { includeSearchDialog }) %>

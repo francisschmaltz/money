@@ -44,16 +44,14 @@ test("production requires DATABASE_URL instead of falling back to demo mode", ()
   }
 });
 
-test("admin identities must be allowlisted", () => {
-  assert.throws(
-    () =>
-      loadConfig({
-        NODE_ENV: "test",
-        DUO_ALLOWED_EMAILS: "reader@example.com",
-        DUO_ADMIN_EMAILS: "admin@example.com",
-      }),
-    /must also be allowlisted/,
-  );
+test("admin identities do not require an application allowlist", () => {
+  const config = loadConfig({
+    NODE_ENV: "test",
+    DUO_ADMIN_EMAILS: "ADMIN@example.com",
+  });
+
+  assert.deepEqual([...config.auth.adminEmails], ["admin@example.com"]);
+  assert.equal("allowedEmails" in config.auth, false);
 });
 
 test("development config supports explicit demo mode", () => {
@@ -66,6 +64,10 @@ test("development config supports explicit demo mode", () => {
 
   assert.equal(config.demoMode, true);
   assert.equal(config.publicBaseUrl, "http://127.0.0.1:4173");
+  assert.equal(
+    config.plaid.redirectUri,
+    "http://127.0.0.1:4173/plaid/oauth",
+  );
   assert.deepEqual(readiness(config), { ready: true, failures: [] });
 });
 
@@ -74,7 +76,6 @@ test("production readiness reports every missing auth and service secret", () =>
     NODE_ENV: "production",
     AUTH_MODE: "oidc",
     PUBLIC_BASE_URL: "https://money.example.com",
-    DUO_ALLOWED_EMAILS: "reader@example.com",
     DEMO_MODE: "false",
     DATABASE_URL: "postgres://money:secret@db/money",
     SESSION_SECRET: "0123456789abcdef0123456789abcdef",
@@ -122,7 +123,6 @@ test("production readiness cannot bypass service secrets with a demo flag", () =
     "DUO_OIDC_ISSUER",
     "DUO_CLIENT_ID",
     "DUO_CLIENT_SECRET",
-    "DUO_ALLOWED_EMAILS",
     "PLAID_CLIENT_ID",
     "PLAID_SECRET",
     "MCP_BEARER_TOKEN",

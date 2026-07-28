@@ -27,6 +27,70 @@ function planningApiApp(planningService) {
   return app;
 }
 
+test("Plaid Link uses an opaque member ID and server-owned OAuth redirect", async () => {
+  const calls = [];
+  const app = express();
+  app.use(express.json());
+  app.use((request, _response, next) => {
+    request.user = {
+      id: "member-opaque-1",
+      email: "member@example.com",
+    };
+    next();
+  });
+  app.use(
+    createApiRouter({
+      requireAdmin: (_request, _response, next) => next(),
+      requireCsrf: (_request, _response, next) => next(),
+      financeService: {},
+      plaidRedirectUri: "https://money.example.com/plaid/oauth",
+      plaidSyncService: {
+        createLinkToken(input) {
+          calls.push(input);
+          return {
+            linkToken: "link-production",
+            expiration: "2026-08-01T00:00:00Z",
+          };
+        },
+        createUpdateLinkToken(input) {
+          calls.push(input);
+          return {
+            linkToken: "link-update-production",
+            expiration: "2026-08-01T00:00:00Z",
+          };
+        },
+      },
+    }),
+  );
+
+  await request(app)
+    .post("/api/v1/plaid/link-token")
+    .send({ redirect_uri: "https://evil.example/plaid/oauth" })
+    .expect(200, {
+      link_token: "link-production",
+      expiration: "2026-08-01T00:00:00Z",
+    });
+  await request(app)
+    .post("/api/v1/plaid/items/item-1/link-token")
+    .send({ redirect_uri: "https://evil.example/plaid/oauth" })
+    .expect(200, {
+      link_token: "link-update-production",
+      expiration: "2026-08-01T00:00:00Z",
+    });
+
+  assert.deepEqual(calls, [
+    {
+      userId: "member-opaque-1",
+      redirectUri: "https://money.example.com/plaid/oauth",
+    },
+    {
+      itemId: "item-1",
+      userId: "member-opaque-1",
+      redirectUri: "https://money.example.com/plaid/oauth",
+    },
+  ]);
+});
+
 test("a fresh budget can create its first current standing category from the browser route", async () => {
   const calls = [];
   const app = planningApiApp({

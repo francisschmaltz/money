@@ -36,20 +36,46 @@ test("Plaid Link initial mode requests consent and update mode omits products", 
       });
     },
   });
-  await provider.createLinkToken({ userId: "user" });
+  await provider.createLinkToken({
+    userId: "user",
+    redirectUri: "https://money.example.com/plaid/oauth",
+  });
   await provider.createLinkToken({
     userId: "user",
     accessToken: "access-update-token",
+    redirectUri: "https://money.example.com/plaid/oauth",
   });
   assert.deepEqual(requests[0].products, ["transactions"]);
   assert.deepEqual(requests[0].additional_consented_products, [
     "investments",
     "liabilities",
   ]);
+  assert.deepEqual(requests[0].transactions, { days_requested: 365 });
+  assert.equal(
+    requests[0].redirect_uri,
+    "https://money.example.com/plaid/oauth",
+  );
   assert.equal(requests[0].access_token, undefined);
   assert.equal(requests[1].access_token, "access-update-token");
   assert.equal(requests[1].products, undefined);
   assert.equal(requests[1].additional_consented_products, undefined);
+  assert.equal(requests[1].transactions, undefined);
+  assert.equal(
+    requests[1].redirect_uri,
+    "https://money.example.com/plaid/oauth",
+  );
+});
+
+test("Plaid OAuth return resumes the original Link token", async () => {
+  const script = await readFile(
+    fileURLToPath(new URL("../app/public/js/money.js", import.meta.url)),
+    "utf8",
+  );
+
+  assert.match(script, /money\.plaid\.oauth/);
+  assert.match(script, /receivedRedirectUri: receivedUrl\.href/);
+  assert.match(script, /session\.item_id/);
+  assert.match(script, /claimOauthSession\(token\)/);
 });
 
 test("transaction sync restarts from the original cursor after pagination mutation", async () => {

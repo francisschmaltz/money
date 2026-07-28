@@ -605,6 +605,7 @@ function pageMeta(pathname) {
     "/accounts": "Accounts",
     "/search": "Search",
     "/settings": "Settings",
+    "/plaid/oauth": "Finish connecting",
   };
   return pages[pathname] || "Money";
 }
@@ -862,6 +863,19 @@ export function createWebRouter({
       next(error);
     }
   });
+  router.get(
+    "/plaid/oauth",
+    requireAuth,
+    requireAdmin,
+    (req, res) =>
+      res.render("plaid-oauth", {
+        pageTitle: pageMeta("/plaid/oauth"),
+        currentPath: "/plaid/oauth",
+        activePath: "/settings",
+        viewer: viewerFromRequest(req, demoMode ? demo.viewer : emptyViewer()),
+        includeSearchDialog: false,
+      }),
+  );
   router.get("/settings", requireAuth, requireAdmin, (req, res, next) => renderPage(req, res, "settings").catch(next));
 
   router.get("/api/search", requireAuth, async (req, res, next) => {

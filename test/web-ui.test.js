@@ -62,6 +62,23 @@ test("all primary finance views render with shared navigation and local assets",
   }
 });
 
+test("Plaid OAuth callback renders a resumable authenticated return page", async () => {
+  const app = express();
+  app.set("views", viewsRoot);
+  app.set("view engine", "ejs");
+  app.use(createWebRouter({ demoMode: true }));
+
+  const response = await request(app)
+    .get("/plaid/oauth?oauth_state_id=plaid-state")
+    .expect(200);
+
+  assert.match(response.text, /data-page="plaid-oauth"/);
+  assert.match(response.text, /data-plaid-oauth-return/);
+  assert.match(response.text, /Returning to Plaid/);
+  assert.match(response.text, /\/js\/money\.js\?v=13/);
+  assert.doesNotMatch(response.text, /data-search-dialog/);
+});
+
 test("primary page headings omit redundant subtitles", async () => {
   const sharedHeadingPages = [
     "Dashboard",

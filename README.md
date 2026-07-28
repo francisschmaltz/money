@@ -32,7 +32,7 @@ Redis, GraphQL, or frontend framework hiding under the couch.
 - Admin-only Apple Card USD CSV preview and idempotent import, with manual
   balance, credit-limit, and as-of snapshots. Uploaded files are parsed in
   memory and never persisted.
-- Duo OIDC login. Every allowlisted user sees the same workspace; only admins
+- Duo OIDC login. Every Duo-authorized user sees the same workspace; only admins
   may connect institutions or change shared finance data. Each member may
   manage only their own manually tracked credit-score sources.
 - Fifteen read tools plus nine audited planning-write MCP tools at `POST /mcp`.
@@ -162,12 +162,12 @@ must exactly match the redirect URL registered in Duo.
 
 Money uses Authorization Code with PKCE S256, one-time state and nonce values,
 RS256/JWKS verification, and exact issuer/audience checks. It discards Duo
-tokens after extracting the identity. `DUO_ALLOWED_EMAILS` is the login
-allowlist. `DUO_ADMIN_EMAILS` must be a subset and grants
-connection/classification/settings mutations; it does not create a separate
-finance workspace. Browser sessions have an eight-hour absolute lifetime and
-re-evaluate both lists on every request, so access and admin changes do not
-linger in an old session. Use at least 32 random bytes for `SESSION_SECRET`.
+tokens after extracting the identity. Duo controls who may sign in.
+`DUO_ADMIN_EMAILS` grants connection/classification/settings mutations; it does
+not create a separate finance workspace. Browser sessions have an eight-hour
+absolute lifetime and re-evaluate admin access on every request, so role changes
+do not linger in an old session. Use at least 32 random bytes for
+`SESSION_SECRET`.
 
 Do not use `api-*.duosecurity.com/oauth/v1/*` here. That is Duo's MFA-only Auth
 API, not the full SSO issuer, and it does not perform primary authentication.

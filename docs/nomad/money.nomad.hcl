@@ -69,6 +69,7 @@ job "money" {
         data = <<-EOT
           {{ with nomadVar "nomad/jobs/money" }}
           DATABASE_URL={{ .database_url | toJSON }}
+          DATABASE_SSL={{ .database_ssl | toJSON }}
           {{ end }}
         EOT
       }
@@ -107,6 +108,7 @@ job "money" {
         data = <<-EOT
           {{ with nomadVar "nomad/jobs/money" }}
           DATABASE_URL={{ .database_url | toJSON }}
+          DATABASE_SSL={{ .database_ssl | toJSON }}
           PLAID_CLIENT_ID={{ .plaid_client_id | toJSON }}
           PLAID_SECRET={{ .plaid_secret | toJSON }}
           PLAID_WEBHOOK_URL={{ .plaid_webhook_url | toJSON }}
@@ -116,7 +118,6 @@ job "money" {
           DUO_AUTHORIZATION_URL={{ .duo_authorization_url | toJSON }}
           DUO_TOKEN_URL={{ .duo_token_url | toJSON }}
           DUO_REDIRECT_URI={{ .duo_redirect_uri | toJSON }}
-          DUO_ALLOWED_EMAILS={{ .duo_allowed_emails | toJSON }}
           DUO_ADMIN_EMAILS={{ .duo_admin_emails | toJSON }}
           SESSION_SECRET={{ .session_secret | toJSON }}
           MCP_BEARER_TOKEN={{ .mcp_bearer_token | toJSON }}
@@ -162,6 +163,7 @@ job "money" {
         data = <<-EOT
           {{ with nomadVar "nomad/jobs/money" }}
           DATABASE_URL={{ .database_url | toJSON }}
+          DATABASE_SSL={{ .database_ssl | toJSON }}
           PLAID_CLIENT_ID={{ .plaid_client_id | toJSON }}
           PLAID_SECRET={{ .plaid_secret | toJSON }}
           LM_STUDIO_BASE_URL={{ .lm_studio_base_url | toJSON }}

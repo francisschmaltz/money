@@ -120,6 +120,7 @@ export class PlaidProvider {
         : {
             products: ["transactions"],
             additional_consented_products: ["investments", "liabilities"],
+            transactions: { days_requested: 365 },
           }),
       country_codes: countryCodes,
       language,

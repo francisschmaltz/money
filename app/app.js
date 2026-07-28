@@ -311,6 +311,7 @@ export function createApp({
       financeService,
       planningService,
       plaidSyncService,
+      plaidRedirectUri: config.plaid.redirectUri,
       appleCardImportService,
     }),
   );

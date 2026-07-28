@@ -92,15 +92,10 @@ export function loadConfig(environment = process.env, argv = process.argv.slice(
     throw new Error("PUBLIC_BASE_URL must use HTTPS in production.");
   }
 
-  const allowedEmails = new Set(csv(environment.DUO_ALLOWED_EMAILS));
   const adminEmails = new Set(csv(environment.DUO_ADMIN_EMAILS));
-  for (const email of adminEmails) {
-    if (!allowedEmails.has(email)) {
-      throw new Error(`Admin email ${email} must also be allowlisted.`);
-    }
-  }
   const publicOrigin = publicUrl.origin;
   const expectedDuoRedirectUri = `${publicOrigin}/auth/duo/callback`;
+  const plaidRedirectUri = `${publicOrigin}/plaid/oauth`;
   const duoRedirectUri = optionalUrl(
     environment.DUO_REDIRECT_URI ||
       expectedDuoRedirectUri,
@@ -130,7 +125,6 @@ export function loadConfig(environment = process.env, argv = process.argv.slice(
     },
     auth: {
       mode: authMode,
-      allowedEmails,
       adminEmails,
       sessionSecret,
       duo: {
@@ -162,6 +156,7 @@ export function loadConfig(environment = process.env, argv = process.argv.slice(
       webhookUrl:
         environment.PLAID_WEBHOOK_URL ||
         `${new URL(publicBaseUrl).origin}/webhooks/plaid`,
+      redirectUri: plaidRedirectUri,
     },
     mcp: {
       bearerToken: environment.MCP_BEARER_TOKEN || "",
@@ -205,7 +200,6 @@ export function readiness(config) {
     if (!config.auth.duo.clientId) failures.push("DUO_CLIENT_ID");
     if (!config.auth.duo.clientSecret) failures.push("DUO_CLIENT_SECRET");
     if (!config.auth.duo.redirectUri) failures.push("DUO_REDIRECT_URI");
-    if (config.auth.allowedEmails.size === 0) failures.push("DUO_ALLOWED_EMAILS");
   }
   if (serviceMode) {
     if (!config.plaid.clientId) failures.push("PLAID_CLIENT_ID");

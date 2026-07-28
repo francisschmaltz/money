@@ -21,8 +21,10 @@ the job.
 - The target namespace has an ingress/controller honoring
   `service.meta.public_hostname`.
 - DNS and TLS route `money.example.com` to that ingress.
-- PostgreSQL is reachable from the allocation.
-- Plaid is configured with
+- PostgreSQL is reachable from the allocation and accepts TLS connections.
+- Plaid Dashboard has `https://money.example.com/plaid/oauth` under
+  **Developers → API → Allowed redirect URIs**.
+- Money sends Plaid webhooks to
   `https://money.example.com/webhooks/plaid`.
 - Duo is configured as described in the root README.
 - The deploying identity can write `nomad/jobs/money` and submit the job.
@@ -55,14 +57,14 @@ Required static values:
 | Variable item | Purpose |
 | --- | --- |
 | `database_url` | Application PostgreSQL role |
+| `database_ssl` | Set to `true` in production so every database connection requires TLS |
 | `plaid_client_id`, `plaid_secret` | Plaid environment credentials |
 | `plaid_webhook_url` | Public signed-webhook endpoint |
 | `duo_oidc_issuer` | Duo Generic OIDC issuer and discovery base |
 | `duo_client_id`, `duo_client_secret` | OIDC relying-party credentials |
 | `duo_authorization_url`, `duo_token_url` | Optional exact discovery consistency checks; empty is valid |
 | `duo_redirect_uri` | Exact Money OIDC callback registered in Duo |
-| `duo_allowed_emails` | Shared-workspace login allowlist |
-| `duo_admin_emails` | Admin subset |
+| `duo_admin_emails` | Users allowed to mutate shared finance data |
 | `session_secret` | Express session signing; at least 32 random bytes |
 | `mcp_bearer_token` | Read access to the full shared workspace |
 | `mcp_plan_write_token` | Read plus audited family-plan writes; must differ from the read token |
@@ -81,6 +83,24 @@ endpoints from
 Plaid Item access tokens do **not** belong in Nomad Variables. The application
 receives them dynamically and stores them in PostgreSQL's service-only
 `plaid_item_secrets` table.
+
+## Configure Plaid OAuth
+
+In Plaid Dashboard, open **Developers → API → Allowed redirect URIs** and add:
+
+```text
+https://money.example.com/plaid/oauth
+```
+
+Use the exact URL: HTTPS, no wildcard, query string, fragment, or trailing
+slash. Money derives it from `PUBLIC_BASE_URL`, sends it on both new and update
+Link tokens, and resumes the original Link session there after Schwab,
+Fidelity, or another OAuth institution returns.
+
+The callback must be publicly reachable with a valid TLS certificate before
+testing Production Link. It is an authenticated browser page, not a webhook;
+keep `https://money.example.com/webhooks/plaid` as the separate server-to-server
+webhook URL.
 
 ## Deploy an immutable image
 
@@ -127,7 +147,7 @@ curl --fail-with-body --silent --show-error \
 
 Then perform the authenticated checks:
 
-1. Duo login with one allowlisted non-admin and one admin.
+1. Duo login with one non-admin and one admin.
 2. Plaid Link or update mode from Settings.
 3. A manual sync followed by recent transactions.
 4. Worker remains running and consumes queued sync/insight jobs.

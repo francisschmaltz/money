@@ -52,13 +52,11 @@ function configuration(serverMetadata = metadata()) {
 }
 
 function config(overrides = {}) {
-  const allowedEmails = new Set(["reader@example.com", "admin@example.com"]);
   const adminEmails = new Set(["admin@example.com"]);
   return {
     production: false,
     auth: {
       mode: "oidc",
-      allowedEmails,
       adminEmails,
       sessionSecret: "test-session-secret-with-enough-entropy",
       duo: {
@@ -105,7 +103,7 @@ function loginParameters(location) {
   return new URL(location).searchParams;
 }
 
-test("OIDC claims require an allowlisted, verified email and stable subject", () => {
+test("OIDC claims require a verified email and stable subject", () => {
   const appConfig = config();
 
   assert.deepEqual(
@@ -126,12 +124,24 @@ test("OIDC claims require an allowlisted, verified email and stable subject", ()
     },
   );
 
-  for (const claims of [
+  assert.deepEqual(
+    identityForOidcClaims(
+      {
+        sub: "duo-user-2",
+        email: "outsider@example.com",
+        email_verified: true,
+      },
+      appConfig,
+    ),
     {
-      sub: "duo-user-2",
+      subject: "duo-user-2",
       email: "outsider@example.com",
-      email_verified: true,
+      name: "outsider",
+      isAdmin: false,
     },
+  );
+
+  for (const claims of [
     {
       sub: "duo-user-3",
       email: "reader@example.com",
@@ -172,9 +182,6 @@ test("stored sessions expire absolutely and re-evaluate access roles", () => {
     identityForStoredSession(stored, appConfig, now)?.isAdmin,
     false,
   );
-
-  appConfig.auth.allowedEmails.delete("admin@example.com");
-  assert.equal(identityForStoredSession(stored, appConfig, now), null);
 
   assert.equal(
     identityForStoredSession(
@@ -408,7 +415,7 @@ test("login sends authorization code, state, nonce, and PKCE S256 parameters", a
   }
 });
 
-test("OIDC callback validates state, nonce, and signs in an allowlisted user", async () => {
+test("OIDC callback validates state, nonce, and signs in a verified user", async () => {
   const generateKeyPairAsync = promisify(generateKeyPair);
   const { publicKey, privateKey } = await generateKeyPairAsync("rsa", {
     modulusLength: 2048,

@@ -28,7 +28,7 @@ export function safeLocalReturnTo(value) {
 
 export function identityForEmail(email, config, profile = {}) {
   const normalized = normalizedEmail(email);
-  if (!normalized || !config.auth.allowedEmails.has(normalized)) return null;
+  if (!normalized) return null;
   return {
     email: normalized,
     name:
@@ -304,7 +304,7 @@ export function createAuth({
           const identity = identityForOidcClaims(tokens.claims(), config);
           if (!identity) {
             done(null, false, {
-              message: "This Duo identity is not allowlisted.",
+              message: "This Duo identity is invalid.",
             });
             return;
           }
@@ -332,7 +332,6 @@ export function createAuth({
       if (!request.user) {
         const preferred =
           [...config.auth.adminEmails][0] ||
-          [...config.auth.allowedEmails][0] ||
           "demo@example.com";
         request.user = {
           id: "demo-user",

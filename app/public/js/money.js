@@ -1072,9 +1072,72 @@
   function plaidLink() {
     const button = document.querySelector("[data-plaid-link]");
     const status = document.querySelector("[data-connection-status]");
-    if (!button && !document.querySelector("[data-plaid-update], [data-plaid-remove]")) return;
+    const oauthReturn = document.querySelector("[data-plaid-oauth-return]");
+    if (
+      !button &&
+      !oauthReturn &&
+      !document.querySelector("[data-plaid-update], [data-plaid-remove]")
+    ) {
+      return;
+    }
     const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || "";
+    const oauthStorageKey = "money.plaid.oauth";
     let loadingPromise;
+
+    const clearOauthSession = () => {
+      try {
+        window.localStorage.removeItem(oauthStorageKey);
+      } catch {
+        // A browser that blocks same-origin storage cannot safely resume OAuth.
+      }
+    };
+
+    const storeOauthSession = ({ token, expiration, itemId }) => {
+      const expiresAt = Date.parse(expiration);
+      if (!token || !Number.isFinite(expiresAt)) {
+        throw new Error("Plaid returned an invalid connection session");
+      }
+      window.localStorage.setItem(
+        oauthStorageKey,
+        JSON.stringify({
+          token,
+          expires_at: expiresAt,
+          item_id: itemId,
+        }),
+      );
+    };
+
+    const readOauthSession = () => {
+      try {
+        const session = JSON.parse(
+          window.localStorage.getItem(oauthStorageKey) || "null",
+        );
+        if (
+          typeof session?.token !== "string" ||
+          !session.token ||
+          !Number.isFinite(session.expires_at) ||
+          session.expires_at <= Date.now() ||
+          !(
+            session.item_id === null ||
+            typeof session.item_id === "string"
+          )
+        ) {
+          clearOauthSession();
+          return null;
+        }
+        return session;
+      } catch {
+        clearOauthSession();
+        return null;
+      }
+    };
+
+    const claimOauthSession = (token) => {
+      const session = readOauthSession();
+      if (!session || session.token !== token) return false;
+      clearOauthSession();
+      return true;
+    };
 
     const loadScript = () => {
       if (window.Plaid) return Promise.resolve();
@@ -1105,42 +1168,89 @@
       return payload;
     };
 
+    const createHandler = ({
+      token,
+      itemId,
+      trigger = null,
+      receivedRedirectUri = null,
+    }) =>
+      window.Plaid.create({
+        token,
+        ...(receivedRedirectUri ? { receivedRedirectUri } : {}),
+        onSuccess: async (publicToken, metadata) => {
+          if (!claimOauthSession(token)) {
+            if (status) {
+              status.textContent =
+                "This connection is already finishing in another window.";
+            }
+            return;
+          }
+          try {
+            if (status) {
+              status.textContent = itemId
+                ? "Connection repaired. Starting a sync…"
+                : "Connecting and starting the first sync…";
+            }
+            if (itemId) {
+              await postJson(
+                `/api/v1/plaid/items/${encodeURIComponent(itemId)}/sync`,
+              );
+            } else {
+              await postJson("/api/v1/plaid/exchange", {
+                public_token: publicToken,
+                institution_id: metadata?.institution?.institution_id,
+                institution_name: metadata?.institution?.name,
+              });
+            }
+            if (status) {
+              status.textContent = itemId
+                ? "Reconnected. A fresh sync is running."
+                : "Connected. Your first sync is queued.";
+            }
+            window.setTimeout(() => {
+              if (oauthReturn) {
+                window.location.assign("/settings#connections");
+              } else {
+                window.location.reload();
+              }
+            }, 900);
+          } catch (error) {
+            if (trigger) trigger.disabled = false;
+            if (status) {
+              status.textContent =
+                error.message ||
+                "The connection succeeded, but sync could not start.";
+            }
+          }
+        },
+        onExit: (error) => {
+          clearOauthSession();
+          if (trigger) trigger.disabled = false;
+          if (status) {
+            status.textContent = error
+              ? "Plaid Link closed with an error."
+              : "";
+          }
+        },
+      });
+
     const launch = async ({ trigger, linkTokenUrl, itemId = null }) => {
       trigger.disabled = true;
       if (status) status.textContent = "Opening Plaid Link…";
       try {
-        const [{ link_token: token }] = await Promise.all([
+        const [{ link_token: token, expiration }] = await Promise.all([
           postJson(linkTokenUrl),
           loadScript(),
         ]);
-        const handler = window.Plaid.create({
+        storeOauthSession({
           token,
-          onSuccess: async (publicToken, metadata) => {
-            try {
-              if (status) status.textContent = itemId ? "Connection repaired. Starting a sync…" : "Connecting and starting the first sync…";
-              if (itemId) {
-                await postJson(`/api/v1/plaid/items/${encodeURIComponent(itemId)}/sync`);
-              } else {
-                await postJson("/api/v1/plaid/exchange", {
-                  public_token: publicToken,
-                  institution_id: metadata.institution?.institution_id,
-                  institution_name: metadata.institution?.name,
-                });
-              }
-              if (status) status.textContent = itemId ? "Reconnected. A fresh sync is running." : "Connected. Your first sync is queued.";
-              window.setTimeout(() => window.location.reload(), 900);
-            } catch (error) {
-              trigger.disabled = false;
-              if (status) status.textContent = error.message || "The connection succeeded, but sync could not start.";
-            }
-          },
-          onExit: (error) => {
-            trigger.disabled = false;
-            if (status) status.textContent = error ? "Plaid Link closed with an error." : "";
-          },
+          expiration,
+          itemId,
         });
+        const handler = createHandler({ token, itemId, trigger });
         handler.open();
       } catch (error) {
+        clearOauthSession();
         trigger.disabled = false;
         if (status) status.textContent = error.message || "Plaid Link is unavailable.";
       }
@@ -1203,6 +1313,41 @@
         }
       });
     });
+
+    if (oauthReturn) {
+      const receivedUrl = new URL(window.location.href);
+      const parameters = [...receivedUrl.searchParams.keys()];
+      const oauthStateId = receivedUrl.searchParams.get("oauth_state_id");
+      const session = readOauthSession();
+      if (
+        !oauthStateId ||
+        parameters.length !== 1 ||
+        parameters[0] !== "oauth_state_id" ||
+        receivedUrl.hash ||
+        !session
+      ) {
+        if (status) {
+          status.textContent =
+            "This Plaid connection session expired. Return to Settings and try again.";
+        }
+        return;
+      }
+      loadScript()
+        .then(() => {
+          const handler = createHandler({
+            token: session.token,
+            itemId: session.item_id,
+            receivedRedirectUri: receivedUrl.href,
+          });
+          handler.open();
+        })
+        .catch((error) => {
+          if (status) {
+            status.textContent =
+              error.message || "Plaid Link is unavailable.";
+          }
+        });
+    }
   }
 
   function appleCardImport() {
