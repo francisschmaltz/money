@@ -243,11 +243,11 @@ test("demo category drill-down projects saved splits into its ledger and detail"
   );
   assert.match(
     response.text,
-    /id="selected-transaction-heading">Whole Foods Market<\/h2>[\s\S]*?<p>Other · Everyday checking · 2026-07-25(?: · [^<]+)*<\/p>/,
+    /id="selected-transaction-heading">Whole Foods Market<\/h2>[\s\S]*?<p[^>]*>Other · Everyday checking · 2026-07-25(?: · [^<]+)*<\/p>/,
   );
   assert.match(
     response.text,
-    /Whole Foods Market<\/strong>\s*<span>Other · Everyday checking(?: · [^<]+)*<\/span>[\s\S]*?-\$50\.00/,
+    /Whole Foods Market<\/strong>\s*<span[^>]*>Other · Everyday checking(?: · [^<]+)*<\/span>[\s\S]*?-\$50\.00/,
   );
   assert.match(response.text, /data-source-amount="-13842"/);
   assert.match(

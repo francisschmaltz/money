@@ -75,7 +75,7 @@ test("Plaid OAuth callback renders a resumable authenticated return page", async
   assert.match(response.text, /data-page="plaid-oauth"/);
   assert.match(response.text, /data-plaid-oauth-return/);
   assert.match(response.text, /Returning to Plaid/);
-  assert.match(response.text, /\/js\/money\.js\?v=13/);
+  assert.match(response.text, /\/js\/money\.js\?v=15/);
   assert.doesNotMatch(response.text, /data-search-dialog/);
 });
 
@@ -400,7 +400,7 @@ test("category-filtered transaction HTTP keeps the split projection in rows and 
   assert.doesNotMatch(result.text, /Shopping · Checking/);
 });
 
-test("accounts show inventory with direct Settings edit links", async () => {
+test("accounts show inventory with local rename and direct Settings controls", async () => {
   const html = await render("accounts", {
     pageTitle: "Accounts",
     activePath: "/accounts",
@@ -416,6 +416,10 @@ test("accounts show inventory with direct Settings edit links", async () => {
   assert.match(html, /2024 vehicle/);
   assert.match(html, /\$34,714\.61/);
   assert.match(html, /id="account-acc_001"/);
+  assert.match(html, /data-account-alias-edit="acc_001"/);
+  assert.match(html, /data-account-display-name="acc_001"/);
+  assert.match(html, /data-account-alias-dialog/);
+  assert.match(html, /Plaid’s original name stays untouched/);
   assert.match(html, /href="\/settings#account-acc_001"/);
   assert.match(
     html,
@@ -426,7 +430,7 @@ test("accounts show inventory with direct Settings edit links", async () => {
   assert.doesNotMatch(html, /Close account details/);
 });
 
-test("account edit controls stay admin-only", async () => {
+test("backend account controls stay admin-only while local aliases stay available", async () => {
   const html = await render("accounts", {
     pageTitle: "Accounts",
     activePath: "/accounts",
@@ -439,6 +443,7 @@ test("account edit controls stay admin-only", async () => {
   });
   assert.match(html, /href="\/accounts" aria-current="page"/);
   assert.match(html, /account-row--readonly/);
+  assert.match(html, /data-account-alias-edit="acc_001"/);
   assert.doesNotMatch(html, /href="\/settings#account-/);
   assert.doesNotMatch(html, /Connect account/);
   assert.doesNotMatch(html, /Manage manual assets/);
@@ -485,6 +490,10 @@ test("settings exposes account grouping and manual asset CRUD controls", async (
   assert.match(html, /Cash balance minus credit-card debt/);
   assert.match(html, /data-manual-asset-create/);
   assert.match(html, /data-manual-asset-edit/);
+  assert.match(
+    html,
+    /name="value" type="text" inputmode="decimal"/,
+  );
   assert.match(
     html,
     /id="asset-asset_001"[\s\S]*?data-manual-asset-item="asset_001"[\s\S]*?open/,
@@ -552,6 +561,7 @@ test("transaction cleanup preloads raw values and leaves fuzzy rows unchecked", 
         category_primary: "Groceries",
         tags: ["Household"],
         posted_on: "2026-07-25",
+        account_id: "acc_001",
         account_name: "Everyday checking",
         amount: { amount_minor: -13_842, currency: "USD" },
         similarity_basis_points: 10_000,
@@ -567,6 +577,7 @@ test("transaction cleanup preloads raw values and leaves fuzzy rows unchecked", 
           category_primary: "Groceries",
           tags: [],
           posted_on: "2026-07-14",
+          account_id: "acc_003",
           account_name: "Sapphire card",
           amount: { amount_minor: -6_249, currency: "USD" },
           similarity_basis_points: 7_642,
@@ -583,6 +594,7 @@ test("transaction cleanup preloads raw values and leaves fuzzy rows unchecked", 
     2,
   );
   assert.match(html, /Provider: WHOLE FOODS MKT #1024/);
+  assert.match(html, /data-account-display-name="acc_001"/);
   assert.match(html, /76% match/);
   assert.match(
     html,

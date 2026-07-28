@@ -116,6 +116,7 @@ test("match lookup returns the strict Settings shape and rejects pending anchors
     currency: "USD",
   });
   assert.equal(result.anchor.raw_merchant, "WHOLEFDS MKT 117");
+  assert.equal(result.anchor.account_id, "account-1");
   assert.equal(result.matches[0].display_name, "WHOLEFDS MKT 117");
   assert.equal(result.matches[0].similarity_basis_points, 8_750);
 

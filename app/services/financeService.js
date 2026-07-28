@@ -14,8 +14,10 @@ import {
   shiftDateOnly,
 } from "./analytics.js";
 import { formatMinorMoney } from "../currency.js";
+import { log } from "../log.js";
 import {
   canonicalTransactionCategory,
+  transactionCategoryLabel,
   transactionCategoryOptions,
 } from "./transactionCategories.js";
 import { presentInsightForWeb } from "./insightPresentation.js";
@@ -335,14 +337,28 @@ export class FinanceService {
       now,
     );
     const currentOn = dateOnly(now);
-    const [accounts, snapshots, freshness] = await Promise.all([
-      this.#repository.listAccounts(this.#workspaceId),
-      this.#repository.getAccountSnapshots(this.#workspaceId, {
+    const snapshotRead = this.#repository
+      .getAccountSnapshots(this.#workspaceId, {
         startOn: period.start_on,
         endOn: period.end_on,
-      }),
+      })
+      .then((snapshots) => ({ snapshots, error: null }))
+      .catch((error) => ({ snapshots: [], error }));
+    const [accounts, snapshotResult, freshness] = await Promise.all([
+      this.#repository.listAccounts(this.#workspaceId),
+      snapshotRead,
       this.#repository.getDataFreshness(this.#workspaceId),
     ]);
+    const { snapshots } = snapshotResult;
+    if (snapshotResult.error) {
+      log("error", "Credit history refresh failed", {
+        requestId: options.requestId ?? null,
+        error: {
+          name: snapshotResult.error?.name,
+          message: snapshotResult.error?.message,
+        },
+      });
+    }
     const data = buildCreditSummary({
       accounts,
       snapshots,
@@ -373,6 +389,11 @@ export class FinanceService {
     };
 
     const warnings = [];
+    if (snapshotResult.error) {
+      warnings.push(
+        "Credit history couldn’t be refreshed. Current card balances and utilization are still shown.",
+      );
+    }
     if (data.summary.missing_limit_card_count > 0) {
       warnings.push(
         `${data.summary.missing_limit_card_count} USD credit card${
@@ -421,6 +442,7 @@ export class FinanceService {
     }
 
     const incomplete =
+      Boolean(snapshotResult.error) ||
       data.summary.missing_limit_card_count > 0 ||
       data.summary.missing_balance_card_count > 0 ||
       (data.cards.length > 0 && !hasPriorHistory) ||
@@ -2013,20 +2035,37 @@ export class FinanceService {
       const period = ["1w", "1m", "1y", "all"].includes(requestedPeriod)
         ? requestedPeriod
         : "1m";
+      let creditScoresUnavailable = false;
       const [credit, creditScores] = await Promise.all([
         this.getCreditSummary({
           period,
+          requestId: request.id ?? null,
         }),
         this.getCreditScoreSummary({
           period,
           currentUserId: request.user?.id ?? null,
+        }).catch((error) => {
+          creditScoresUnavailable = true;
+          log("error", "Tracked credit score refresh failed", {
+            requestId: request.id ?? null,
+            error: {
+              name: error?.name,
+              message: error?.message,
+            },
+          });
+          return {
+            data: unavailableCreditScoreData({
+              period,
+              currentOn: dateOnly(this.#now()),
+            }),
+          };
         }),
       ]);
       return {
         ...base,
         creditData: credit.data,
         creditWarnings: credit.warnings,
-        creditPartial: credit.partial,
+        creditPartial: credit.partial || creditScoresUnavailable,
         creditScoreData: creditScores.data,
         creditScorePresets: CREDIT_SCORE_PRESETS,
       };
@@ -2524,6 +2563,24 @@ async function optionalRepositoryCall(
 ) {
   if (typeof repository[method] !== "function") return fallback;
   return (await repository[method](...args)) ?? fallback;
+}
+
+function unavailableCreditScoreData({ period, currentOn }) {
+  const data = buildCreditScoreSummary({
+    members: [],
+    sources: [],
+    observations: [],
+    currentOn,
+    period,
+    currentUserId: null,
+    forMcp: false,
+  });
+  data.warnings.unshift({
+    code: "credit_score_refresh_failed",
+    message:
+      "Tracked credit scores couldn’t be refreshed. Card balances and utilization are still shown.",
+  });
+  return data;
 }
 
 function expandAndFilterTransactions(
@@ -3203,7 +3260,8 @@ function webSpendingDetails(data) {
 
 function webCategory(segment, index) {
   return {
-    label: segment.label,
+    value: segment.label,
+    label: transactionCategoryLabel(segment.label),
     amount: segment.amount,
     previousAmount: segment.previous_amount,
     momAmount: segment.trend?.amount ?? null,
@@ -3235,6 +3293,11 @@ function formatShortDate(value, { year = false } = {}) {
 }
 
 function webTransaction(transaction) {
+  const categoryValue = transaction.category ?? "Uncategorized";
+  const category = transactionCategoryLabel(
+    categoryValue,
+    transaction.detailed_category,
+  );
   return {
     id: transaction.id,
     merchant: transaction.merchant ?? transaction.description,
@@ -3245,8 +3308,10 @@ function webTransaction(transaction) {
     rawMerchant: transaction.raw_merchant ?? null,
     rawName: transaction.raw_name ?? transaction.description,
     tags: Array.isArray(transaction.tags) ? transaction.tags : [],
-    category: transaction.category ?? "Uncategorized",
+    category,
+    categoryValue,
     account: transaction.account.name,
+    accountId: transaction.account.id,
     amount: transaction.amount,
     providerAmount:
       transaction.provider_amount ?? transaction.amount,
@@ -3256,12 +3321,12 @@ function webTransaction(transaction) {
     splitCategoryLineCount: Number(
       transaction.split_category_line_count ?? 0,
     ),
-    date: transaction.date,
+    date: formatShortDate(transaction.date, { year: true }),
     status: transaction.pending ? "pending" : "posted",
     excludedFromSpending: transaction.excluded_from_spending,
     isFixed: transaction.is_fixed,
     splitVersion: Number(transaction.split_version ?? 0),
-    icon: categoryIcon(transaction.category),
+    icon: categoryIcon(category),
   };
 }
 
@@ -3277,6 +3342,7 @@ function transactionCleanupRow(transaction, fallbackCurrency) {
     category_primary: transaction.category_primary ?? null,
     tags: Array.isArray(transaction.tags) ? transaction.tags : [],
     posted_on: transaction.posted_on,
+    account_id: transaction.account_id,
     account_name: transaction.account_name,
     amount: money(
       transaction.amount_minor,
@@ -3338,6 +3404,7 @@ function webRecurring(stream) {
     name: stream.service,
     cadence: humanize(stream.cadence),
     account: stream.account?.name ?? "Unknown account",
+    accountId: stream.account?.id ?? null,
     amount: stream.monthly_equivalent,
     annual: stream.annual_equivalent,
     icon: "ph-repeat",

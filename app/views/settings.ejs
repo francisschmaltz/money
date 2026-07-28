@@ -301,7 +301,10 @@
         <form id="account-<%= encodeURIComponent(account.id) %>" class="setting-row account-group-row" data-account-group-form data-account-id="<%= account.id %>">
           <span class="account-icon account-icon--<%= account.tone || 'neutral' %>"><i class="ph <%= account.icon || 'ph-bank' %>"></i></span>
           <span>
-            <strong><%= account.name %></strong>
+            <strong
+              data-account-display-name="<%= account.id %>"
+              data-account-provider-name="<%= account.name %>"
+            ><%= account.name %></strong>
             <small><%= account.institution %> · <%= account.type %> · currently <%= balanceGroups.find(([value]) => value === effectiveGroup)?.[1] || "unclassified" %></small>
           </span>
           <label class="compact-field">
@@ -345,7 +348,7 @@
           <span>Value</span>
           <div class="money-input">
             <input name="currency_code" value="USD" maxlength="3" pattern="[A-Za-z]{3}" aria-label="Currency code" required>
-            <input name="value" type="number" min="0" step="0.01" inputmode="decimal" placeholder="0.00" required>
+            <input name="value" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" placeholder="0.00" required>
           </div>
         </label>
         <label>
@@ -397,7 +400,7 @@
                 <span>Value</span>
                 <div class="money-input">
                   <input name="currency_code" value="<%= currency %>" maxlength="3" pattern="[A-Za-z]{3}" aria-label="Currency code" required>
-                  <input name="value" type="number" min="0" step="0.01" inputmode="decimal" value="<%= minorAsDecimal(value, currency) %>" required>
+                  <input name="value" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" value="<%= minorAsDecimal(value, currency) %>" required>
                 </div>
               </label>
               <label><span>As of</span><input name="valued_on" type="date" value="<%= assetValuedOn(asset) %>" required></label>
@@ -681,9 +684,14 @@
                 >
                 <span class="cleanup-match-row__identity">
                   <strong><%= match.display_name || match.raw_merchant || match.raw_name %></strong>
-                  <small>
-                    <%= match.posted_on %> · <%= match.account_name %> · <%= match.category_primary || "Uncategorized" %>
-                  </small>
+                  <small
+                    <% if (match.account_id) { %>
+                      data-account-display-name="<%= match.account_id %>"
+                      data-account-provider-name="<%= match.account_name %>"
+                      data-account-prefix="<%= `${match.posted_on} · ` %>"
+                      data-account-suffix="<%= ` · ${match.category_primary || "Uncategorized"}` %>"
+                    <% } %>
+                  ><%= match.posted_on %> · <%= match.account_name %> · <%= match.category_primary || "Uncategorized" %></small>
                   <% if (match.raw_merchant && match.raw_merchant !== match.display_name) { %>
                     <small>Provider: <%= match.raw_merchant %></small>
                   <% } %>

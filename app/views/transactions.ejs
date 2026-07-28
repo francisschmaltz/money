@@ -30,11 +30,11 @@
       <% } %>
       <select name="category" aria-label="Category">
         <option value="">All categories</option>
-        <% categories.forEach((category) => { %><option value="<%= category.label %>" <%= query.category === category.label ? "selected" : "" %>><%= category.label %></option><% }) %>
+        <% categories.forEach((category) => { %><option value="<%= category.value ?? category.label %>" <%= query.category === (category.value ?? category.label) ? "selected" : "" %>><%= category.label %></option><% }) %>
       </select>
       <select name="account" aria-label="Account">
         <option value="">All accounts</option>
-        <% accounts.forEach((account) => { %><option value="<%= account.id %>" <%= query.account === account.id ? "selected" : "" %>><%= account.name %></option><% }) %>
+        <% accounts.forEach((account) => { %><option value="<%= account.id %>" data-account-display-name="<%= account.id %>" data-account-provider-name="<%= account.name %>" <%= query.account === account.id ? "selected" : "" %>><%= account.name %></option><% }) %>
       </select>
       <button class="button button--dark" type="submit">Apply</button>
       <a class="button button--ghost" href="/transactions">Clear</a>
@@ -46,7 +46,14 @@
         <div>
           <p class="card-kicker">Selected transaction</p>
           <h2 id="selected-transaction-heading"><%= selectedTransaction.merchant %></h2>
-          <p><%= selectedTransaction.category %> · <%= selectedTransaction.account %> · <%= selectedTransaction.date %><%= selectedTransaction.status === "pending" ? " · Pending" : "" %><%= selectedTransaction.tags?.length ? ` · ${selectedTransaction.tags.join(" · ")}` : "" %></p>
+          <p
+            <% if (selectedTransaction.accountId) { %>
+              data-account-display-name="<%= selectedTransaction.accountId %>"
+              data-account-provider-name="<%= selectedTransaction.account %>"
+              data-account-prefix="<%= `${selectedTransaction.category} · ` %>"
+              data-account-suffix="<%= ` · ${selectedTransaction.date}${selectedTransaction.status === "pending" ? " · Pending" : ""}${selectedTransaction.tags?.length ? ` · ${selectedTransaction.tags.join(" · ")}` : ""}` %>"
+            <% } %>
+          ><%= selectedTransaction.category %> · <%= selectedTransaction.account %> · <%= selectedTransaction.date %><%= selectedTransaction.status === "pending" ? " · Pending" : "" %><%= selectedTransaction.tags?.length ? ` · ${selectedTransaction.tags.join(" · ")}` : "" %></p>
           <% if (viewer?.is_admin && selectedTransaction.status !== "pending") { %>
             <a class="selected-detail__link" href="/settings?transaction=<%= encodeURIComponent(selectedTransaction.id) %>#transaction-cleanup">
               Clean up name, category &amp; tags <i class="ph ph-arrow-up-right" aria-hidden="true"></i>
@@ -70,7 +77,11 @@
                     line.category,
                   ])
                 : [
-                    [firstHalf, selectedTransaction.category],
+                    [
+                      firstHalf,
+                      selectedTransaction.categoryValue ??
+                        selectedTransaction.category,
+                    ],
                     [secondHalf, "Other"],
                   ];
           %>
@@ -86,7 +97,7 @@
                 <input type="hidden" name="expected_version" value="<%= typeof selectedTransactionSplitVersion === 'number' ? selectedTransactionSplitVersion : selectedTransaction.splitVersion %>">
                 <% splitRows.forEach(([amount, category], index) => { %>
                   <div data-split-line>
-                    <label>Category <select data-split-category><% if (!categories.some((option) => option.label === category)) { %><option value="<%= category %>" selected><%= category %></option><% } %><% categories.forEach((option) => { %><option value="<%= option.label %>" <%= option.label === category ? "selected" : "" %>><%= option.label %></option><% }) %></select></label>
+                    <label>Category <select data-split-category><% if (!categories.some((option) => (option.value ?? option.label) === category)) { %><option value="<%= category %>" selected><%= category %></option><% } %><% categories.forEach((option) => { const optionValue = option.value ?? option.label; %><option value="<%= optionValue %>" <%= optionValue === category ? "selected" : "" %>><%= option.label %></option><% }) %></select></label>
                     <label>Amount <span class="money-input"><span>$</span><input data-split-amount inputmode="decimal" value="<%= (amount / 100).toFixed(2) %>" aria-label="Split <%= index + 1 %> amount"></span></label>
                   </div>
                 <% }) %>
@@ -290,7 +301,7 @@
                   ...(query.end ? { end: query.end } : {}),
                   ...(query.q ? { q: query.q } : {}),
                   ...(query.account ? { account: query.account } : {}),
-                  category: category.label,
+                  category: category.value ?? category.label,
                 });
               %>
               <a class="spending-detail-category" href="/transactions?<%= categoryQuery.toString() %>">

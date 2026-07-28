@@ -21,9 +21,47 @@ test("first-party asset revisions change with the current deployment", async () 
     path.resolve("app/views/partials/head.ejs"),
     "utf8",
   );
-  assert.match(head, /\/css\/money\.css\?v=19/);
+  assert.match(head, /\/css\/money\.css\?v=20/);
   assert.match(head, /\/js\/charts\.js\?v=5/);
-  assert.match(head, /\/js\/money\.js\?v=13/);
+  assert.match(head, /\/js\/money\.js\?v=15/);
+});
+
+test("manual asset entry accepts formatted money and refreshes saved production data", async () => {
+  const [settings, money] = await Promise.all([
+    readFile(path.resolve("app/views/settings.ejs"), "utf8"),
+    readFile(path.resolve("app/public/js/money.js"), "utf8"),
+  ]);
+
+  assert.match(
+    settings,
+    /name="value" type="text" inputmode="decimal"/,
+  );
+  assert.doesNotMatch(
+    settings,
+    /name="value" type="number"/,
+  );
+  assert.match(money, /\.replaceAll\(",", ""\)/);
+  assert.match(
+    money,
+    /\/settings\?asset=\$\{encodedAssetId\}#asset-\$\{encodedAssetId\}/,
+  );
+  assert.match(money, /if \(!result\.demo\) window\.location\.reload\(\)/);
+});
+
+test("account aliases stay in local storage and never call the backend", async () => {
+  const money = await readFile(
+    path.resolve("app/public/js/money.js"),
+    "utf8",
+  );
+  const start = money.indexOf("const accountAliasStorageKey");
+  const end = money.indexOf("function globalSearch()", start);
+  const accountAliasCode = money.slice(start, end);
+
+  assert.ok(start >= 0);
+  assert.ok(end > start);
+  assert.match(accountAliasCode, /money\.account-aliases\.v1/);
+  assert.match(accountAliasCode, /window\.localStorage\.setItem/);
+  assert.doesNotMatch(accountAliasCode, /\bfetch\s*\(/);
 });
 
 test("Nomad runs one task and startup orders migrations before worker and HTTP", async () => {

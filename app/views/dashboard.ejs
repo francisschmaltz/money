@@ -275,7 +275,7 @@
       </div>
       <div class="category-grid">
         <% categories.forEach((category, index) => { %>
-          <a href="/transactions?category=<%= encodeURIComponent(category.label) %>" class="category-row">
+          <a href="/transactions?category=<%= encodeURIComponent(category.value ?? category.label) %>" class="category-row">
             <span class="category-dot category-dot--<%= (index % 8) + 1 %>"></span>
             <span class="list-icon list-icon--compact"><i class="ph <%= category.icon %>"></i></span>
             <span class="category-row__label"><strong><%= category.label %></strong><small><%= category.percent %>% of spending</small></span>

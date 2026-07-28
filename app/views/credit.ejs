@@ -81,6 +81,7 @@
         );
         return {
           label: card.name,
+          account_id: card.id,
           color: cardColors[cardIndex % cardColors.length],
           border_width: 2,
           values: creditChartTimestamps.map(
@@ -487,7 +488,7 @@
         </p>
         <div class="credit-legend" aria-hidden="true">
           <% creditChartSeries.forEach((series) => { %>
-            <span><i style="--credit-series-color: <%= series.color %>"></i><%= series.label %></span>
+            <span><i style="--credit-series-color: <%= series.color %>"></i><span <% if (series.account_id) { %>data-account-display-name="<%= series.account_id %>" data-account-provider-name="<%= series.label %>"<% } %>><%= series.label %></span></span>
           <% }) %>
         </div>
       <% } else { %>
@@ -567,7 +568,10 @@
             <span class="credit-card-row__identity" role="cell">
               <span class="account-icon account-icon--blue"><i class="ph ph-credit-card" aria-hidden="true"></i></span>
               <span>
-                <strong><%= card.name %></strong>
+                <strong
+                  data-account-display-name="<%= card.id %>"
+                  data-account-provider-name="<%= card.name %>"
+                ><%= card.name %></strong>
                 <small><%= card.institution || card.institution_name || "Institution" %> · •••• <%= card.mask || "—" %></small>
               </span>
             </span>

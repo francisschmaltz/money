@@ -35,7 +35,14 @@
         <div>
           <p class="card-kicker">Selected recurring payment</p>
           <h2 id="selected-recurring-heading"><%= selectedRecurring.name %></h2>
-          <p><%= selectedRecurring.cadence %> · <%= selectedRecurring.account %> · <%= selectedRecurring.state %></p>
+          <p
+            <% if (selectedRecurring.accountId) { %>
+              data-account-display-name="<%= selectedRecurring.accountId %>"
+              data-account-provider-name="<%= selectedRecurring.account %>"
+              data-account-prefix="<%= `${selectedRecurring.cadence} · ` %>"
+              data-account-suffix="<%= ` · ${selectedRecurring.state}` %>"
+            <% } %>
+          ><%= selectedRecurring.cadence %> · <%= selectedRecurring.account %> · <%= selectedRecurring.state %></p>
         </div>
         <strong><%= formatMoney(selectedRecurring.amount) %></strong>
         <a class="icon-button" href="/recurring" aria-label="Close recurring details"><i class="ph ph-x"></i></a>
@@ -61,7 +68,7 @@
         <% subscriptions.forEach((item) => { %>
           <a href="/recurring?item=<%= item.id %>" class="recurring-row">
             <span class="list-icon"><i class="ph <%= item.icon %>"></i></span>
-            <span class="recurring-row__main"><strong><%= item.name %></strong><span><%= item.cadence %> · <%= item.account %></span></span>
+            <span class="recurring-row__main"><strong><%= item.name %></strong><span <% if (item.accountId) { %>data-account-display-name="<%= item.accountId %>" data-account-provider-name="<%= item.account %>" data-account-prefix="<%= `${item.cadence} · ` %>"<% } %>><%= item.cadence %> · <%= item.account %></span></span>
             <span class="recurring-row__date">Next <%= item.next %></span>
             <strong data-amount data-monthly="<%= formatMoney(item.amount) %>" data-annual="<%= formatMoney(item.annual) %>"><%= formatMoney(item.amount) %></strong>
           </a>
@@ -91,7 +98,7 @@
         <% bills.forEach((item) => { %>
           <a href="/recurring?item=<%= item.id %>" class="recurring-row">
             <span class="list-icon"><i class="ph <%= item.icon %>"></i></span>
-            <span class="recurring-row__main"><strong><%= item.name %></strong><span><%= item.cadence %> · <%= item.account %></span></span>
+            <span class="recurring-row__main"><strong><%= item.name %></strong><span <% if (item.accountId) { %>data-account-display-name="<%= item.accountId %>" data-account-provider-name="<%= item.account %>" data-account-prefix="<%= `${item.cadence} · ` %>"<% } %>><%= item.cadence %> · <%= item.account %></span></span>
             <span class="recurring-row__date">Expected <%= item.next %></span>
             <% const annualAmount = item.annual || { amount_minor: item.amount.amount_minor * 12, currency: item.amount.currency }; %>
             <strong data-amount data-monthly="<%= formatMoney(item.amount) %>" data-annual="<%= formatMoney(annualAmount) %>"><%= formatMoney(item.amount) %></strong>
@@ -116,7 +123,7 @@
           <% inactiveItems.forEach((item) => { %>
             <div class="recurring-row">
               <span class="list-icon"><i class="ph <%= item.icon %>"></i></span>
-              <span class="recurring-row__main"><strong><%= item.name %></strong><span><%= item.cadence %> · <%= item.account %></span></span>
+              <span class="recurring-row__main"><strong><%= item.name %></strong><span <% if (item.accountId) { %>data-account-display-name="<%= item.accountId %>" data-account-provider-name="<%= item.account %>" data-account-prefix="<%= `${item.cadence} · ` %>"<% } %>><%= item.cadence %> · <%= item.account %></span></span>
               <span class="recurring-row__date"><%= item.state %></span>
               <strong><%= formatMoney(item.amount) %></strong>
             </div>

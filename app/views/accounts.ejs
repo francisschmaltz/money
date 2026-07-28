@@ -74,17 +74,30 @@
             <div
               id="account-<%= encodeURIComponent(account.id) %>"
               class="account-row <%= viewer?.is_admin ? '' : 'account-row--readonly' %>"
+              data-account-id="<%= account.id %>"
             >
               <span class="account-icon account-icon--<%= account.tone %>"><i class="ph <%= account.icon %>"></i></span>
               <span>
-                <strong><%= account.name %></strong>
+                <strong
+                  data-account-display-name="<%= account.id %>"
+                  data-account-provider-name="<%= account.name %>"
+                ><%= account.name %></strong>
                 <small><%= account.type %> · •••• <%= account.mask %></small>
                 <em class="balance-group-label"><%= accountGroupLabels[account.balanceGroup] || "Unclassified" %></em>
               </span>
               <span><strong><%= formatMoney(account.balance) %></strong><small><%= account.available ? `${formatMoney(account.available)} available` : "Current value" %></small></span>
-              <% if (viewer?.is_admin) { %>
-                <a class="button button--secondary account-row__edit" href="/settings#account-<%= encodeURIComponent(account.id) %>" aria-label="Edit <%= account.name %>">Edit</a>
-              <% } %>
+              <span class="account-row__actions">
+                <button
+                  class="button button--secondary account-row__edit"
+                  type="button"
+                  data-account-alias-edit="<%= account.id %>"
+                  data-account-provider-name="<%= account.name %>"
+                  aria-label="Rename <%= account.name %> in this browser"
+                >Rename</button>
+                <% if (viewer?.is_admin) { %>
+                  <a class="button button--ghost account-row__edit" href="/settings#account-<%= encodeURIComponent(account.id) %>">Settings</a>
+                <% } %>
+              </span>
             </div>
           <% }) %>
         </div>
@@ -95,6 +108,30 @@
         <p class="card-note"><i class="ph ph-bank"></i> No accounts are connected yet. Use Settings to connect one.</p>
       </section>
     <% } %>
+
+    <dialog class="account-alias-dialog" data-account-alias-dialog aria-labelledby="account-alias-heading">
+      <form class="account-alias-form" data-account-alias-form>
+        <div class="account-alias-dialog__heading">
+          <div>
+            <span class="eyebrow">This browser only</span>
+            <h2 id="account-alias-heading">Rename account</h2>
+            <p>Plaid’s original name stays untouched.</p>
+          </div>
+          <button class="icon-button" type="button" aria-label="Close" data-account-alias-close><i class="ph ph-x"></i></button>
+        </div>
+        <label>
+          <span>Display name</span>
+          <input name="alias" maxlength="120" autocomplete="off" required data-account-alias-input>
+          <small data-account-alias-provider></small>
+        </label>
+        <div class="form-actions">
+          <button class="button button--ghost" type="button" data-account-alias-reset>Use original</button>
+          <button class="button button--ghost" type="button" data-account-alias-close>Cancel</button>
+          <button class="button button--dark" type="submit">Save name</button>
+        </div>
+        <p class="save-status" role="status" aria-live="polite" data-account-alias-status></p>
+      </form>
+    </dialog>
 
     <section id="manual-assets" class="card institution-card manual-assets-card">
       <div class="institution-heading">

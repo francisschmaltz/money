@@ -14,6 +14,56 @@
   const normalizedSearchEntityType = (value) =>
     searchEntityTypes.has(String(value ?? "")) ? String(value) : "";
 
+  const accountAliasStorageKey = "money.account-aliases.v1";
+
+  function storedAccountAliases() {
+    try {
+      const parsed = JSON.parse(
+        window.localStorage.getItem(accountAliasStorageKey) || "{}",
+      );
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        return {};
+      }
+      return Object.fromEntries(
+        Object.entries(parsed)
+          .filter(
+            ([accountId, alias]) =>
+              accountId &&
+              typeof alias === "string" &&
+              alias.trim() &&
+              alias.trim().length <= 120,
+          )
+          .map(([accountId, alias]) => [accountId, alias.trim()]),
+      );
+    } catch {
+      return {};
+    }
+  }
+
+  function accountIdFromUrl(value) {
+    const match = String(value ?? "").match(
+      /^\/accounts(?:\?[^#]*)?#account-(.+)$/,
+    );
+    if (!match) return null;
+    try {
+      return decodeURIComponent(match[1]);
+    } catch {
+      return null;
+    }
+  }
+
+  function applyAccountAliasTarget(target, aliases = storedAccountAliases()) {
+    const accountId = target?.dataset?.accountDisplayName;
+    if (!accountId) return;
+    const providerName =
+      target.dataset.accountProviderName || target.textContent.trim();
+    const displayName = aliases[accountId] || providerName;
+    target.textContent =
+      `${target.dataset.accountPrefix || ""}` +
+      displayName +
+      `${target.dataset.accountSuffix || ""}`;
+  }
+
   function searchUrl(query, entityType = "") {
     const parameters = new URLSearchParams();
     const normalizedQuery = normalizedSearchQuery(query);
@@ -58,6 +108,12 @@
     const copy = document.createElement("span");
     const title = document.createElement("strong");
     title.textContent = escapeText(item.title);
+    const accountId = accountIdFromUrl(href);
+    if (accountId) {
+      title.dataset.accountDisplayName = accountId;
+      title.dataset.accountProviderName = title.textContent;
+      applyAccountAliasTarget(title);
+    }
     const meta = document.createElement("small");
     meta.textContent = escapeText(item.meta);
     copy.append(title, meta);
@@ -105,6 +161,136 @@
       icon?.classList.toggle("ph-list", !willOpen);
       icon?.classList.toggle("ph-x", willOpen);
     });
+  }
+
+  function accountAliases() {
+    const dialog = document.querySelector("[data-account-alias-dialog]");
+    const form = dialog?.querySelector("[data-account-alias-form]");
+    const input = form?.querySelector("[data-account-alias-input]");
+    const providerCopy = form?.querySelector(
+      "[data-account-alias-provider]",
+    );
+    const status = form?.querySelector("[data-account-alias-status]");
+    let aliases = storedAccountAliases();
+    let activeAccountId = null;
+    let activeProviderName = "";
+    let activeButton = null;
+
+    const updateCreditChart = () => {
+      const canvas = document.querySelector(
+        'canvas[data-chart="credit"][data-series]',
+      );
+      const chart = canvas?.moneyChart;
+      if (!canvas || !chart) return;
+      try {
+        const series = JSON.parse(canvas.dataset.series || "[]");
+        chart.data.datasets.forEach((dataset, index) => {
+          const accountId = series[index]?.account_id;
+          if (!accountId) return;
+          dataset.label =
+            aliases[accountId] || series[index].label;
+        });
+        chart.update("none");
+      } catch {}
+    };
+
+    const apply = () => {
+      document
+        .querySelectorAll("[data-account-display-name]")
+        .forEach((target) => applyAccountAliasTarget(target, aliases));
+      document
+        .querySelectorAll("[data-account-alias-edit]")
+        .forEach((button) => {
+          const accountId = button.dataset.accountAliasEdit;
+          const providerName =
+            button.dataset.accountProviderName || "account";
+          const displayedName = aliases[accountId] || providerName;
+          button.setAttribute(
+            "aria-label",
+            `Rename ${displayedName} in this browser`,
+          );
+        });
+      updateCreditChart();
+    };
+
+    const persist = () => {
+      try {
+        window.localStorage.setItem(
+          accountAliasStorageKey,
+          JSON.stringify(aliases),
+        );
+        return true;
+      } catch {
+        if (status) {
+          status.textContent =
+            "This browser blocked local storage, so the name wasn’t saved.";
+        }
+        return false;
+      }
+    };
+
+    const close = () => {
+      if (dialog?.open) dialog.close();
+      activeButton?.focus();
+    };
+
+    document
+      .querySelectorAll("[data-account-alias-edit]")
+      .forEach((button) => {
+        button.addEventListener("click", () => {
+          activeAccountId = button.dataset.accountAliasEdit || null;
+          activeProviderName =
+            button.dataset.accountProviderName || "Account";
+          activeButton = button;
+          if (input) {
+            input.value =
+              aliases[activeAccountId] || activeProviderName;
+          }
+          if (providerCopy) {
+            providerCopy.textContent = `Original: ${activeProviderName}`;
+          }
+          if (status) status.textContent = "";
+          if (dialog && !dialog.open) dialog.showModal();
+          window.setTimeout(() => input?.select(), 0);
+        });
+      });
+
+    form?.addEventListener("submit", (event) => {
+      event.preventDefault();
+      if (!activeAccountId || !input) return;
+      const alias = input.value.trim();
+      if (!alias || alias.length > 120) {
+        if (status) status.textContent = "Enter a name up to 120 characters.";
+        return;
+      }
+      if (alias === activeProviderName) {
+        delete aliases[activeAccountId];
+      } else {
+        aliases[activeAccountId] = alias;
+      }
+      if (!persist()) return;
+      apply();
+      close();
+    });
+
+    form
+      ?.querySelector("[data-account-alias-reset]")
+      ?.addEventListener("click", () => {
+        if (!activeAccountId) return;
+        delete aliases[activeAccountId];
+        if (!persist()) return;
+        apply();
+        close();
+      });
+
+    dialog
+      ?.querySelectorAll("[data-account-alias-close]")
+      .forEach((button) => button.addEventListener("click", close));
+    dialog?.addEventListener("cancel", (event) => {
+      event.preventDefault();
+      close();
+    });
+    apply();
   }
 
   function globalSearch() {
@@ -908,8 +1094,13 @@
     };
 
     const decimalToMinor = (rawValue, currency) => {
-      const normalized = String(rawValue ?? "").trim();
-      if (!/^\d+(?:\.\d+)?$/.test(normalized)) {
+      const normalized = String(rawValue ?? "")
+        .trim()
+        .replace(new RegExp(`^${currency}\\s*`, "i"), "")
+        .replace(/^[$€£¥₹]\s*/, "")
+        .replaceAll(",", "")
+        .replace(/\s/g, "");
+      if (!/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(normalized)) {
         throw new Error("Enter a valid non-negative asset value");
       }
       const digits = currencyFractionDigits(currency);
@@ -930,17 +1121,17 @@
       return Number(amount);
     };
 
-    const updateCurrencyStep = (form) => {
+    const updateCurrencyInput = (form) => {
       const currencyInput = form.querySelector('[name="currency_code"]');
       const valueInput = form.querySelector('[name="value"]');
       if (!currencyInput || !valueInput) return;
       const currency = currencyInput.value.trim().toUpperCase();
       try {
         const digits = currencyFractionDigits(currency);
-        valueInput.step =
-          digits === 0 ? "1" : `0.${"0".repeat(digits - 1)}1`;
+        valueInput.placeholder =
+          digits === 0 ? "0" : `0.${"0".repeat(digits)}`;
       } catch {
-        valueInput.step = "any";
+        valueInput.placeholder = "0.00";
       }
     };
 
@@ -967,10 +1158,10 @@
     };
 
     document.querySelectorAll("[data-manual-asset-create], [data-manual-asset-edit]").forEach((form) => {
-      updateCurrencyStep(form);
+      updateCurrencyInput(form);
       form
         .querySelector('[name="currency_code"]')
-        ?.addEventListener("input", () => updateCurrencyStep(form));
+        ?.addEventListener("input", () => updateCurrencyInput(form));
     });
 
     document.querySelector("[data-manual-asset-create]")?.addEventListener("submit", async (event) => {
@@ -1003,10 +1194,18 @@
           if (date) date.value = new Date().toISOString().slice(0, 10);
           const currency = form.querySelector('[name="currency_code"]');
           if (currency) currency.value = "USD";
-          updateCurrencyStep(form);
+          updateCurrencyInput(form);
           if (status) status.textContent = "Asset added";
         } else {
-          window.location.assign("/settings#manual-assets");
+          const assetId = result.asset?.id;
+          if (assetId) {
+            const encodedAssetId = encodeURIComponent(assetId);
+            window.location.assign(
+              `/settings?asset=${encodedAssetId}#asset-${encodedAssetId}`,
+            );
+          } else {
+            window.location.reload();
+          }
         }
       } catch (error) {
         if (status) status.textContent = error.message || "Couldn’t add asset";
@@ -1024,7 +1223,7 @@
         submit.disabled = true;
         if (status) status.textContent = "Saving…";
         try {
-          await requestJson(
+          const result = await requestJson(
             `/api/v1/manual-assets/${encodeURIComponent(assetId)}`,
             {
               method: "PUT",
@@ -1032,6 +1231,7 @@
             },
           );
           if (status) status.textContent = "Changes saved";
+          if (!result.demo) window.location.reload();
         } catch (error) {
           if (status) status.textContent = error.message || "Couldn’t save changes";
         } finally {
@@ -2308,17 +2508,34 @@
         "strong",
         match.display_name || match.raw_merchant || match.raw_name,
       );
-      appendText(
-        identity,
-        "small",
-        [
-          match.posted_on,
-          match.account_name,
-          match.category_primary || "Uncategorized",
-        ]
-          .filter(Boolean)
-          .join(" · "),
-      );
+      const transactionMeta = appendText(identity, "small", "");
+      if (match.posted_on) {
+        transactionMeta.append(
+          document.createTextNode(match.posted_on),
+        );
+      }
+      if (match.account_name) {
+        if (transactionMeta.childNodes.length) {
+          transactionMeta.append(document.createTextNode(" · "));
+        }
+        const accountName = document.createElement("span");
+        if (match.account_id) {
+          accountName.dataset.accountDisplayName = match.account_id;
+          accountName.dataset.accountProviderName = match.account_name;
+        }
+        accountName.textContent = match.account_name;
+        applyAccountAliasTarget(accountName);
+        transactionMeta.append(accountName);
+      }
+      const category = match.category_primary || "Uncategorized";
+      if (category) {
+        if (transactionMeta.childNodes.length) {
+          transactionMeta.append(document.createTextNode(" · "));
+        }
+        transactionMeta.append(
+          document.createTextNode(category),
+        );
+      }
       if (
         match.raw_merchant &&
         match.raw_merchant !== match.display_name
@@ -3082,6 +3299,7 @@
   }
 
   function initialize() {
+    accountAliases();
     mobileNavigation();
     globalSearch();
     searchPage();

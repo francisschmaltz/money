@@ -166,6 +166,61 @@ test("credit page data and accounts expose the same current credit facts", async
   );
 });
 
+test("credit page keeps current card data when history and tracked scores fail", async () => {
+  const failingRepository = repository();
+  failingRepository.getAccountSnapshots = async () => {
+    throw new Error("snapshot read failed");
+  };
+  failingRepository.listCreditScoreSources = async () => {
+    throw new Error("score read failed");
+  };
+  const service = createFinanceService({
+    repository: failingRepository,
+    now: () => new Date("2026-07-26T20:00:00.000Z"),
+  });
+  const logged = [];
+  const originalConsoleError = console.error;
+  console.error = (line) => logged.push(line);
+
+  try {
+    const page = await service.getPageData("credit", {
+      id: "request_credit_partial",
+      query: { period: "1m" },
+    });
+
+    assert.equal(page.creditData.summary.card_count, 1);
+    assert.equal(page.creditData.cards[0].name, "Everyday card");
+    assert.equal(
+      page.creditData.summary.utilization_basis_points,
+      2_500,
+    );
+    assert.equal(page.creditPartial, true);
+    assert.match(
+      page.creditWarnings.join(" "),
+      /Credit history couldn’t be refreshed/,
+    );
+    assert.equal(
+      page.creditScoreData.warnings[0].code,
+      "credit_score_refresh_failed",
+    );
+    assert.match(
+      page.creditScoreData.warnings[0].message,
+      /Tracked credit scores couldn’t be refreshed/,
+    );
+    assert.match(
+      logged.join("\n"),
+      /Credit history refresh failed/,
+    );
+    assert.match(
+      logged.join("\n"),
+      /Tracked credit score refresh failed/,
+    );
+    assert.match(logged.join("\n"), /request_credit_partial/);
+  } finally {
+    console.error = originalConsoleError;
+  }
+});
+
 test("demo credit data follows the production shape and exposes manual scores through MCP", async () => {
   const service = createDemoFinanceService();
   const credit = await service.getCreditSummary();

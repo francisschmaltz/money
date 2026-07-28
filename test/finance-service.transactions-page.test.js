@@ -239,6 +239,70 @@ test("transactions page builds detailed spending from one complete filtered anal
   );
 });
 
+test("transactions page presents provider categories and dates as human text", async () => {
+  const restaurant = {
+    ...transaction({
+      id: "restaurant",
+      postedOn: "2026-07-27",
+      amountMinor: -2_916,
+      category: "FOOD_AND_DRINK",
+      merchant: "Deans",
+      pending: true,
+    }),
+    posted_on: new Date("2026-07-27T00:00:00.000Z"),
+    category_detailed: "FOOD_AND_DRINK_RESTAURANT",
+  };
+  const repository = {
+    async getDataFreshness() {
+      return FRESHNESS;
+    },
+    async listTransactions() {
+      return {
+        transactions: [restaurant],
+        pageInfo: { has_more: false, next_cursor: null },
+      };
+    },
+    async getTransactionsForPeriod() {
+      return [];
+    },
+    async listAccounts() {
+      return [];
+    },
+    async listTransactionCategories() {
+      return ["FOOD_AND_DRINK", "GENERAL_MERCHANDISE"];
+    },
+  };
+  const service = createFinanceService({
+    repository,
+    now: () => new Date("2026-07-27T19:00:00.000Z"),
+  });
+
+  const result = await service.getPageData("transactions");
+
+  assert.equal(result.transactions[0].category, "Dining");
+  assert.equal(
+    result.transactions[0].categoryValue,
+    "FOOD_AND_DRINK",
+  );
+  assert.equal(
+    result.transactions[0].accountId,
+    "account-checking",
+  );
+  assert.equal(result.transactions[0].date, "Jul 27, 2026");
+  assert.deepEqual(
+    result.categories
+      .filter((category) =>
+        ["FOOD_AND_DRINK", "GENERAL_MERCHANDISE"].includes(
+          category.value,
+        ),
+      ),
+    [
+      { value: "FOOD_AND_DRINK", label: "Food & Drink" },
+      { value: "GENERAL_MERCHANDISE", label: "Shopping" },
+    ],
+  );
+});
+
 test("category drill-down keeps split ledger, detail, and summary on the same amount", async () => {
   const parent = transaction({
     id: "split-parent",

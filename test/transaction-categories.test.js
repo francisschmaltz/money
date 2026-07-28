@@ -5,6 +5,7 @@ import test from "node:test";
 import {
   canonicalTransactionCategory,
   FEES_INTEREST_CATEGORY,
+  transactionCategoryLabel,
   transactionCategoryOptions,
 } from "../app/services/transactionCategories.js";
 
@@ -40,8 +41,11 @@ test("transaction category options always expose one canonical fee category", ()
       null,
     ]),
     [
-      { label: "Dining" },
-      { label: FEES_INTEREST_CATEGORY },
+      { value: "Dining", label: "Dining" },
+      {
+        value: FEES_INTEREST_CATEGORY,
+        label: FEES_INTEREST_CATEGORY,
+      },
     ],
   );
 });
@@ -58,6 +62,47 @@ test("transaction category options keep Other last", () => {
       FEES_INTEREST_CATEGORY,
       "Utilities",
       "Other",
+    ],
+  );
+});
+
+test("provider categories get useful labels without losing their filter values", () => {
+  assert.equal(
+    transactionCategoryLabel(
+      "FOOD_AND_DRINK",
+      "FOOD_AND_DRINK_RESTAURANT",
+    ),
+    "Dining",
+  );
+  assert.equal(
+    transactionCategoryLabel(
+      "FOOD_AND_DRINK",
+      "FOOD_AND_DRINK_GROCERIES",
+    ),
+    "Groceries",
+  );
+  assert.equal(
+    transactionCategoryLabel("GENERAL_MERCHANDISE"),
+    "Shopping",
+  );
+  assert.deepEqual(
+    transactionCategoryOptions([
+      "FOOD_AND_DRINK",
+      "GENERAL_MERCHANDISE",
+    ]),
+    [
+      {
+        value: FEES_INTEREST_CATEGORY,
+        label: FEES_INTEREST_CATEGORY,
+      },
+      {
+        value: "FOOD_AND_DRINK",
+        label: "Food & Drink",
+      },
+      {
+        value: "GENERAL_MERCHANDISE",
+        label: "Shopping",
+      },
     ],
   );
 });
