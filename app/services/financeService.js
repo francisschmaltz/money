@@ -12,6 +12,7 @@ import {
   money,
   periodForMonth,
   shiftDateOnly,
+  splitHoldingEquity,
 } from "./analytics.js";
 import { formatMinorMoney } from "../currency.js";
 import { log } from "../log.js";
@@ -903,14 +904,22 @@ export class FinanceService {
           holding.currency_code === this.#currency &&
           holding.balance_group === "retirement",
       )
-      .reduce((sum, holding) => sum + holding.value_minor, 0);
+      .reduce(
+        (sum, holding) =>
+          sum + splitHoldingEquity(holding).current_value_minor,
+        0,
+      );
     const taxableValue = enrichedHoldings
       .filter(
         (holding) =>
           holding.currency_code === this.#currency &&
           holding.balance_group === "taxable_investment",
       )
-      .reduce((sum, holding) => sum + holding.value_minor, 0);
+      .reduce(
+        (sum, holding) =>
+          sum + splitHoldingEquity(holding).current_value_minor,
+        0,
+      );
     const data = buildPortfolioSummary({
       holdings,
       snapshots,
@@ -2352,6 +2361,8 @@ function transactionCard(transaction) {
     id: transaction.id,
     date: transaction.posted_on,
     authorized_at: transaction.authorized_at,
+    authorized_on: transaction.authorized_on,
+    posted_at: transaction.posted_at,
     display_name: displayName,
     merchant: displayName,
     raw_merchant: transaction.merchant_name ?? null,
@@ -3292,12 +3303,52 @@ function formatShortDate(value, { year = false } = {}) {
   }).format(new Date(`${dateOnly(value)}T00:00:00Z`));
 }
 
+function trustworthyTransactionTimestamp(value) {
+  if (!value) return null;
+  const timestamp = new Date(value);
+  if (!Number.isFinite(timestamp.getTime())) return null;
+  if (
+    timestamp.getUTCHours() === 0 &&
+    timestamp.getUTCMinutes() === 0 &&
+    timestamp.getUTCSeconds() === 0 &&
+    timestamp.getUTCMilliseconds() === 0
+  ) {
+    return null;
+  }
+  return timestamp.toISOString();
+}
+
+function transactionDateOnly(transaction, timestamp) {
+  const candidates = [
+    timestamp,
+    transaction.authorized_on,
+    transaction.authorized_at,
+    transaction.date,
+  ];
+  for (const candidate of candidates) {
+    if (candidate instanceof Date && Number.isFinite(candidate.getTime())) {
+      return dateOnly(candidate);
+    }
+    if (
+      typeof candidate === "string" &&
+      /^\d{4}-\d{2}-\d{2}/.test(candidate)
+    ) {
+      return candidate.slice(0, 10);
+    }
+  }
+  return dateOnly(transaction.date);
+}
+
 function webTransaction(transaction) {
   const categoryValue = transaction.category ?? "Uncategorized";
   const category = transactionCategoryLabel(
     categoryValue,
     transaction.detailed_category,
   );
+  const dateTime =
+    trustworthyTransactionTimestamp(transaction.authorized_at) ??
+    trustworthyTransactionTimestamp(transaction.posted_at);
+  const dateIso = transactionDateOnly(transaction, dateTime);
   return {
     id: transaction.id,
     merchant: transaction.merchant ?? transaction.description,
@@ -3321,7 +3372,9 @@ function webTransaction(transaction) {
     splitCategoryLineCount: Number(
       transaction.split_category_line_count ?? 0,
     ),
-    date: formatShortDate(transaction.date, { year: true }),
+    date: formatShortDate(dateIso, { year: true }),
+    dateIso,
+    dateTime,
     status: transaction.pending ? "pending" : "posted",
     excludedFromSpending: transaction.excluded_from_spending,
     isFixed: transaction.is_fixed,
@@ -3369,6 +3422,10 @@ function webAccount(account) {
     available: account.available_balance,
     icon: accountIcon(account.type),
     tone: account.type === "depository" ? "green" : account.type === "credit" ? "blue" : "black",
+    syncedAt:
+      account.ingestion_method === "csv"
+        ? null
+        : account.freshness.synced_at ?? null,
     freshness:
       account.ingestion_method === "csv"
         ? account.freshness.posted_through_on

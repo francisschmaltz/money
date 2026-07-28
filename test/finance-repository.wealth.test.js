@@ -402,7 +402,9 @@ test("holdings expose their effective retirement classification", async () => {
           ticker_symbol: "VTI",
           security_type: "equity",
           quantity: "10",
+          vested_quantity: "4",
           institution_value_minor: "250000",
+          vested_value_minor: "100000",
           institution_price_minor: "25000",
           cost_basis_minor: "200000",
           currency_code: "USD",
@@ -415,6 +417,54 @@ test("holdings expose their effective retirement classification", async () => {
   const repository = new PgFinanceRepository(db.pool);
   const [holding] = await repository.getHoldings("shared");
   assert.equal(holding.balance_group, "retirement");
+  assert.equal(holding.vested_quantity, 4);
+  assert.equal(holding.vested_value_minor, 100_000);
+});
+
+test("investment replacement and daily snapshots preserve Plaid vesting facts", async () => {
+  const db = fakePool(async () => ({ rows: [], rowCount: 1 }));
+  const repository = new PgFinanceRepository(db.pool);
+  const providerHolding = {
+    id: "holding-1",
+    provider_account_id: "provider-account",
+    provider_security_id: "provider-security",
+    quantity: 10,
+    vested_quantity: 4,
+    institution_value_minor: 250_000,
+    vested_value_minor: 100_000,
+    institution_price_minor: 25_000,
+    cost_basis_minor: null,
+    currency_code: "USD",
+  };
+
+  await repository.replaceInvestments("connection-1", {
+    holdings: [providerHolding],
+    asOf: new Date("2026-07-28T12:00:00.000Z"),
+  });
+  await repository.takeDailySnapshots("shared", "2026-07-28");
+
+  const holdingInsert = db.calls.find((call) =>
+    call.sql.includes("INSERT INTO holdings"),
+  );
+  assert.match(
+    holdingInsert.sql,
+    /vested_quantity, institution_value_minor, vested_value_minor/,
+  );
+  assert.deepEqual(JSON.parse(holdingInsert.params[0]), [
+    providerHolding,
+  ]);
+
+  const snapshotInsert = db.calls.find((call) =>
+    call.sql.includes("INSERT INTO daily_holding_snapshots"),
+  );
+  assert.match(
+    snapshotInsert.sql,
+    /institution_price_minor, vested_quantity, vested_value_minor/,
+  );
+  assert.match(
+    snapshotInsert.sql,
+    /vested_quantity = EXCLUDED\.vested_quantity/,
+  );
 });
 
 test("refunds inherit the original effective category and expose lineage", async () => {

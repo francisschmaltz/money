@@ -60,11 +60,28 @@
       <p class="card-note"><i class="ph ph-currency-circle-dollar"></i> <%= nonUsdAccountCount %> non-USD account<%= nonUsdAccountCount === 1 ? "" : "s" %> remain visible below and are excluded from totals.</p>
     <% } %>
 
-    <% [...new Set(accounts.map((account) => account.institution))].forEach((institution) => { %>
+    <% [...new Set(accounts.map((account) => account.institution))].forEach((institution) => {
+      const institutionAccount = accounts.find(
+        (account) => account.institution === institution,
+      );
+    %>
       <section class="card institution-card">
         <div class="institution-heading">
           <div class="institution-logo"><i class="ph ph-bank"></i></div>
-          <div><h2><%= institution %></h2><p><%= accounts.filter((account) => account.institution === institution)[0].freshness %></p></div>
+          <div>
+            <h2><%= institution %></h2>
+            <p>
+              <% if (institutionAccount.syncedAt) { %>
+                <time
+                  datetime="<%= institutionAccount.syncedAt %>"
+                  data-local-date-time="<%= institutionAccount.syncedAt %>"
+                  data-local-date-time-prefix="Synced "
+                ><%= institutionAccount.freshness %></time>
+              <% } else { %>
+                <%= institutionAccount.freshness %>
+              <% } %>
+            </p>
+          </div>
           <% if (viewer?.is_admin) { %>
             <a class="icon-button" href="/settings#connections" aria-label="Manage <%= institution %> connection"><i class="ph ph-pencil-simple"></i></a>
           <% } %>

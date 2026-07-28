@@ -104,11 +104,12 @@ export function normalizePlaidTransaction(transaction) {
     // ordinary human convention: outflows negative, inflows positive.
     amount_minor: -amountToMinor(transaction.amount, currency),
     currency_code: currency,
-    authorized_at:
-      transaction.authorized_datetime ??
-      (transaction.authorized_date
-        ? `${transaction.authorized_date}T00:00:00.000Z`
-        : null),
+    authorized_at: transaction.authorized_datetime ?? null,
+    authorized_on:
+      transaction.authorized_date ??
+      transaction.authorized_datetime?.slice(0, 10) ??
+      null,
+    posted_at: transaction.datetime ?? null,
     posted_on: transaction.date,
     pending: Boolean(transaction.pending),
     excluded_from_spending: excluded,
@@ -146,8 +147,16 @@ export function normalizePlaidHolding(holding) {
     provider_account_id: holding.account_id,
     provider_security_id: holding.security_id,
     quantity: Number(holding.quantity ?? 0),
+    vested_quantity:
+      holding.vested_quantity == null
+        ? null
+        : Number(holding.vested_quantity),
     institution_value_minor: amountToMinor(
       holding.institution_value,
+      currency,
+    ),
+    vested_value_minor: amountToMinor(
+      holding.vested_value,
       currency,
     ),
     institution_price_minor: amountToMinor(

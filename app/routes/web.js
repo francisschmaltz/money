@@ -63,9 +63,9 @@ const SEARCH_ENTITY_OPTIONS = Object.freeze([
 ]);
 
 const transactions = [
-  { id: "txn_whole_foods", date: "2026-07-25", merchant: "Whole Foods Market", rawMerchant: "WHOLE FOODS MKT #1024", rawName: "WHOLE FOODS MKT #1024", category: "Groceries", tags: ["Household"], account: "Everyday checking", amount: usd(-13842), icon: "ph-shopping-cart", status: "posted" },
+  { id: "txn_whole_foods", date: "Jul 25, 2026", dateIso: "2026-07-25", dateTime: "2026-07-25T20:34:00.000Z", merchant: "Whole Foods Market", rawMerchant: "WHOLE FOODS MKT #1024", rawName: "WHOLE FOODS MKT #1024", category: "Groceries", tags: ["Household"], account: "Everyday checking", amount: usd(-13842), icon: "ph-shopping-cart", status: "posted" },
   { id: "txn_con_edison", date: "2026-07-25", merchant: "Con Edison", category: "Utilities", account: "Everyday checking", amount: usd(-18419), icon: "ph-lightning", status: "pending" },
-  { id: "txn_apple_services", date: "2026-07-24", merchant: "Apple Services", category: "Subscriptions", account: "Sapphire card", amount: usd(-2803), icon: "ph-device-mobile", status: "posted" },
+  { id: "txn_apple_services", date: "Jul 24, 2026", dateIso: "2026-07-24", dateTime: null, merchant: "Apple Services", category: "Subscriptions", account: "Sapphire card", amount: usd(-2803), icon: "ph-device-mobile", status: "posted" },
   { id: "txn_004", date: "2026-07-24", merchant: "Blue Bottle Coffee", category: "Dining", account: "Sapphire card", amount: usd(-1275), icon: "ph-coffee", status: "posted" },
   { id: "txn_payroll", date: "2026-07-23", merchant: "Acme Payroll", category: "Income", account: "Everyday checking", amount: usd(465000), icon: "ph-buildings", status: "posted" },
   { id: "txn_006", date: "2026-07-22", merchant: "MTA OMNY", category: "Transportation", account: "Sapphire card", amount: usd(-3400), icon: "ph-train", status: "posted" },
@@ -1039,6 +1039,21 @@ function demoServiceTransactionForWeb(transaction, demo) {
   const stored = demo.transactions.find(
     (candidate) => candidate.id === transaction.id,
   );
+  const dateIso =
+    transaction.authorized_on ??
+    transaction.date ??
+    transaction.posted_on ??
+    stored?.dateIso ??
+    "";
+  const date =
+    /^\d{4}-\d{2}-\d{2}$/.test(dateIso)
+      ? new Intl.DateTimeFormat("en-US", {
+          month: "short",
+          day: "numeric",
+          year: "numeric",
+          timeZone: "UTC",
+        }).format(new Date(`${dateIso}T00:00:00Z`))
+      : stored?.date ?? dateIso;
   const accountName =
     transaction.account?.name ??
     transaction.account_name ??
@@ -1047,11 +1062,8 @@ function demoServiceTransactionForWeb(transaction, demo) {
   return {
     ...(stored || {}),
     id: transaction.id,
-    date:
-      transaction.date ??
-      transaction.posted_on ??
-      stored?.date ??
-      "",
+    date,
+    dateIso,
     merchant:
       transaction.display_name ??
       transaction.merchant ??

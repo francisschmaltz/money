@@ -75,7 +75,7 @@ test("Plaid OAuth callback renders a resumable authenticated return page", async
   assert.match(response.text, /data-page="plaid-oauth"/);
   assert.match(response.text, /data-plaid-oauth-return/);
   assert.match(response.text, /Returning to Plaid/);
-  assert.match(response.text, /\/js\/money\.js\?v=15/);
+  assert.match(response.text, /\/js\/money\.js\?v=17/);
   assert.doesNotMatch(response.text, /data-search-dialog/);
 });
 
@@ -264,6 +264,14 @@ test("transactions puts detailed spending analysis before the ledger", async () 
     (html.match(/class="spending-detail-category"/g) ?? []).length,
     demo.spendingDetails.categories.length,
   );
+  assert.match(
+    html,
+    /datetime="2026-07-25T20:34:00\.000Z"\s+data-local-date-time="2026-07-25T20:34:00\.000Z"\s+data-local-date-time-style="transaction"/,
+  );
+  assert.match(
+    html,
+    /datetime="2026-07-24"\s*>\s*Jul 24, 2026<\/time>/,
+  );
   const feeFilteredHtml = await render("transactions", {
     pageTitle: "Transactions",
     activePath: "/transactions",
@@ -393,7 +401,10 @@ test("category-filtered transaction HTTP keeps the split projection in rows and 
     result.text,
     /id="selected-transaction-heading">Family market<\/h2>/,
   );
-  assert.match(result.text, /Dining · Checking · 2026-07-20/);
+  assert.match(
+    result.text,
+    /Dining · Checking<\/span>\s+· <time[\s\S]*?>2026-07-20<\/time>/,
+  );
   assert.match(result.text, /data-source-amount="-10000"/);
   assert.match(result.text, /name="expected_version" value="3"/);
   assert.match(result.text, /-\$42\.50/);
@@ -428,6 +439,29 @@ test("accounts show inventory with local rename and direct Settings controls", a
   assert.doesNotMatch(html, /\/accounts\?account=/);
   assert.doesNotMatch(html, /Selected account/);
   assert.doesNotMatch(html, /Close account details/);
+});
+
+test("accounts expose exact sync instants for local browser formatting", async () => {
+  const syncedAt = "2026-07-28T01:08:58.000Z";
+  const html = await render("accounts", {
+    pageTitle: "Accounts",
+    activePath: "/accounts",
+    accounts: [
+      {
+        ...demo.accounts[0],
+        institution: "Chase",
+        syncedAt,
+        freshness: "Synced 7/28/2026, 1:08:58 AM",
+      },
+    ],
+  });
+
+  assert.match(
+    html,
+    new RegExp(
+      `<time\\s+datetime="${syncedAt}"\\s+data-local-date-time="${syncedAt}"\\s+data-local-date-time-prefix="Synced "`,
+    ),
+  );
 });
 
 test("backend account controls stay admin-only while local aliases stay available", async () => {
@@ -476,6 +510,73 @@ test("portfolio exposes all, trading, and retirement views while preserving peri
     legacy,
     /href="\/portfolio\?period=1m&amp;scope=trading" aria-current="page"/,
   );
+});
+
+test("portfolio renders future equity only when Plaid exposes a positive value", async () => {
+  const portfolioData = {
+    scope: "trading",
+    series: [],
+    total_value: {
+      amount_minor: 1_000_000,
+      currency: "USD",
+    },
+    estimated_return_basis_points: null,
+    external_cash_flow: {
+      amount_minor: 0,
+      currency: "USD",
+    },
+    period: { name: "1m" },
+    warnings: [],
+    future_equity: {
+      total_value: {
+        amount_minor: 425_000,
+        currency: "USD",
+      },
+      valuation_basis: "provider_reported_price",
+      holdings: [
+        {
+          holding_id: "holding-acme",
+          account_id: "account-stock-plan",
+          account_name: "Company stock plan",
+          security_id: "security-acme",
+          name: "Acme Corp.",
+          ticker_symbol: "ACME",
+          unvested_quantity: 4.25,
+          value: {
+            amount_minor: 425_000,
+            currency: "USD",
+          },
+          observed_at: "2026-07-28T01:08:58.000Z",
+          valuation_basis: "reported_vested_value",
+        },
+      ],
+    },
+  };
+  const html = await render("portfolio", {
+    pageTitle: "Portfolio",
+    activePath: "/portfolio",
+    query: { period: "1m", scope: "trading" },
+    portfolioData,
+  });
+
+  assert.match(html, /id="future-equity-heading">Future equity</);
+  assert.match(html, /aria-label="Unvested equity holdings"/);
+  assert.match(html, /Company stock plan/);
+  assert.match(html, />\s*4\.25\s*</);
+  assert.match(html, /\$4,250\.00/);
+  assert.match(
+    html,
+    /Estimated at the provider’s reported price\. Not included in current portfolio value\./,
+  );
+
+  const hidden = await render("portfolio", {
+    pageTitle: "Portfolio",
+    activePath: "/portfolio",
+    query: { period: "1m", scope: "trading" },
+    portfolioData: { ...portfolioData, future_equity: null },
+  });
+  assert.doesNotMatch(hidden, /future-equity-heading/);
+  assert.doesNotMatch(hidden, /No future equity/);
 });
 
 test("settings exposes account grouping and manual asset CRUD controls", async () => {

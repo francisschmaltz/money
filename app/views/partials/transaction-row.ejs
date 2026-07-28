@@ -20,6 +20,6 @@
   </span>
   <span class="transaction-row__meta">
     <strong class="<%= transaction.amount.amount_minor > 0 ? 'money-positive' : '' %>"><%= formatMoney(transaction.amount) %></strong>
-    <span><%= transaction.date %><% if (transaction.status === "pending") { %> · Pending<% } %></span>
+    <span><%- include("transaction-date", { transaction }) %><% if (transaction.status === "pending") { %> · Pending<% } %></span>
   </span>
 </a>

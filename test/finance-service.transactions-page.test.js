@@ -303,6 +303,121 @@ test("transactions page presents provider categories and dates as human text", a
   );
 });
 
+test("transactions prefer trustworthy source times and keep date-only precision honest", async () => {
+  const precise = {
+    ...transaction({
+      id: "precise",
+      postedOn: "2026-07-27",
+      amountMinor: -2_916,
+      category: "FOOD_AND_DRINK",
+    }),
+    authorized_on: "2026-07-27",
+    authorized_at: "2026-07-27T20:34:00.000Z",
+    posted_at: "2026-07-28T15:10:09.000Z",
+  };
+  const postedFallback = {
+    ...transaction({
+      id: "posted-fallback",
+      postedOn: "2026-07-27",
+      amountMinor: -1_000,
+      category: "SHOPPING",
+    }),
+    authorized_on: "2026-07-26",
+    authorized_at: "2026-07-26T00:00:00.000Z",
+    posted_at: "2026-07-27T15:10:09.000Z",
+  };
+  const placeholderMidnight = {
+    ...transaction({
+      id: "placeholder-midnight",
+      postedOn: "2026-07-27",
+      amountMinor: -500,
+      category: "UTILITIES",
+    }),
+    authorized_on: "2026-07-26",
+    authorized_at: "2026-07-26T00:00:00.000Z",
+    posted_at: "2026-07-27T00:00:00.000Z",
+  };
+  const repository = {
+    async getDataFreshness() {
+      return FRESHNESS;
+    },
+    async listTransactions() {
+      return {
+        transactions: [precise, postedFallback, placeholderMidnight],
+        pageInfo: { has_more: false, next_cursor: null },
+      };
+    },
+    async getTransactionsForPeriod() {
+      return [];
+    },
+    async listAccounts() {
+      return [];
+    },
+    async listTransactionCategories() {
+      return [];
+    },
+  };
+  const service = createFinanceService({
+    repository,
+    now: () => new Date("2026-07-27T21:00:00.000Z"),
+  });
+
+  const result = await service.getPageData("transactions");
+
+  assert.deepEqual(
+    result.transactions.map(({ id, dateIso, dateTime }) => ({
+      id,
+      dateIso,
+      dateTime,
+    })),
+    [
+      {
+        id: "precise",
+        dateIso: "2026-07-27",
+        dateTime: "2026-07-27T20:34:00.000Z",
+      },
+      {
+        id: "posted-fallback",
+        dateIso: "2026-07-27",
+        dateTime: "2026-07-27T15:10:09.000Z",
+      },
+      {
+        id: "placeholder-midnight",
+        dateIso: "2026-07-26",
+        dateTime: null,
+      },
+    ],
+  );
+
+  const publicResult = await service.listTransactions();
+  assert.deepEqual(
+    publicResult.data.transactions.map(
+      ({ id, authorized_on, posted_at }) => ({
+        id,
+        authorized_on,
+        posted_at,
+      }),
+    ),
+    [
+      {
+        id: "precise",
+        authorized_on: "2026-07-27",
+        posted_at: "2026-07-28T15:10:09.000Z",
+      },
+      {
+        id: "posted-fallback",
+        authorized_on: "2026-07-26",
+        posted_at: "2026-07-27T15:10:09.000Z",
+      },
+      {
+        id: "placeholder-midnight",
+        authorized_on: "2026-07-26",
+        posted_at: "2026-07-27T00:00:00.000Z",
+      },
+    ],
+  );
+});
+
 test("category drill-down keeps split ledger, detail, and summary on the same amount", async () => {
   const parent = transaction({
     id: "split-parent",

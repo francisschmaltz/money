@@ -1612,7 +1612,8 @@ export class PgFinanceRepository {
               id, workspace_id, account_id, provider_transaction_id,
               provider_pending_transaction_id, merchant_name, normalized_merchant,
               name, normalized_name, category_primary, category_detailed, amount_minor,
-              currency_code, authorized_at, posted_on, pending,
+              currency_code, authorized_at, authorized_on, posted_at,
+              posted_on, pending,
               excluded_from_spending, original_transaction_id,
               payment_channel
             )
@@ -1621,7 +1622,8 @@ export class PgFinanceRepository {
               r.provider_pending_transaction_id, r.merchant_name,
               r.normalized_merchant, r.name, r.normalized_name, r.category_primary,
               r.category_detailed, r.amount_minor, r.currency_code,
-              r.authorized_at, r.posted_on, r.pending,
+              r.authorized_at, r.authorized_on, r.posted_at,
+              r.posted_on, r.pending,
               r.excluded_from_spending, r.original_transaction_id,
               r.payment_channel
             FROM jsonb_to_recordset($1::jsonb) AS r(
@@ -1638,6 +1640,8 @@ export class PgFinanceRepository {
               amount_minor bigint,
               currency_code char(3),
               authorized_at timestamptz,
+              authorized_on date,
+              posted_at timestamptz,
               posted_on date,
               pending boolean,
               excluded_from_spending boolean,
@@ -1659,6 +1663,8 @@ export class PgFinanceRepository {
               amount_minor = EXCLUDED.amount_minor,
               currency_code = EXCLUDED.currency_code,
               authorized_at = EXCLUDED.authorized_at,
+              authorized_on = EXCLUDED.authorized_on,
+              posted_at = EXCLUDED.posted_at,
               posted_on = EXCLUDED.posted_on,
               pending = EXCLUDED.pending,
               excluded_from_spending = EXCLUDED.excluded_from_spending,
@@ -1760,19 +1766,22 @@ export class PgFinanceRepository {
           `
             INSERT INTO holdings (
               id, workspace_id, account_id, security_id, quantity,
-              institution_value_minor, institution_price_minor, cost_basis_minor,
-              currency_code, as_of
+              vested_quantity, institution_value_minor, vested_value_minor,
+              institution_price_minor, cost_basis_minor, currency_code, as_of
             )
             SELECT
               r.id, a.workspace_id, a.id, s.id, r.quantity,
-              r.institution_value_minor, r.institution_price_minor,
+              r.vested_quantity, r.institution_value_minor,
+              r.vested_value_minor, r.institution_price_minor,
               r.cost_basis_minor, r.currency_code, $2
             FROM jsonb_to_recordset($1::jsonb) AS r(
               id text,
               provider_account_id text,
               provider_security_id text,
               quantity numeric,
+              vested_quantity numeric,
               institution_value_minor bigint,
+              vested_value_minor bigint,
               institution_price_minor bigint,
               cost_basis_minor bigint,
               currency_code char(3)
@@ -1905,11 +1914,14 @@ export class PgFinanceRepository {
         `
           INSERT INTO daily_holding_snapshots (
             workspace_id, account_id, security_id, snapshot_on,
-            value_minor, quantity, currency_code
+            value_minor, quantity, institution_price_minor,
+            vested_quantity, vested_value_minor, currency_code
           )
           SELECT
             h.workspace_id, h.account_id, h.security_id, $2,
-            h.institution_value_minor, h.quantity, h.currency_code
+            h.institution_value_minor, h.quantity,
+            h.institution_price_minor, h.vested_quantity,
+            h.vested_value_minor, h.currency_code
           FROM holdings h
           JOIN accounts a ON a.id = h.account_id
           JOIN finance_connections i ON i.id = a.connection_id
@@ -1918,7 +1930,10 @@ export class PgFinanceRepository {
             AND i.status <> 'removed'
           ON CONFLICT (account_id, security_id, snapshot_on) DO UPDATE SET
             value_minor = EXCLUDED.value_minor,
-            quantity = EXCLUDED.quantity
+            quantity = EXCLUDED.quantity,
+            institution_price_minor = EXCLUDED.institution_price_minor,
+            vested_quantity = EXCLUDED.vested_quantity,
+            vested_value_minor = EXCLUDED.vested_value_minor
         `,
         [workspaceId, snapshotOn],
       );
@@ -4183,7 +4198,12 @@ export class PgFinanceRepository {
       ticker_symbol: row.ticker_symbol,
       security_type: row.security_type,
       quantity: Number(row.quantity),
+      vested_quantity:
+        row.vested_quantity == null
+          ? null
+          : Number(row.vested_quantity),
       value_minor: integer(row.institution_value_minor),
+      vested_value_minor: integer(row.vested_value_minor),
       price_minor: integer(row.institution_price_minor),
       cost_basis_minor: integer(row.cost_basis_minor),
       currency_code: row.currency_code,
@@ -4235,6 +4255,12 @@ export class PgFinanceRepository {
       snapshot_on: String(row.snapshot_on),
       value_minor: integer(row.value_minor),
       quantity: Number(row.quantity),
+      vested_quantity:
+        row.vested_quantity == null
+          ? null
+          : Number(row.vested_quantity),
+      vested_value_minor: integer(row.vested_value_minor),
+      price_minor: integer(row.institution_price_minor),
       currency_code: row.currency_code,
       balance_group_override: row.balance_group_override ?? null,
       balance_group: inferBalanceGroup({
@@ -5564,6 +5590,7 @@ function mapTransaction(row) {
         : Number(row.split_category_line_count ?? 0),
     currency_code: row.currency_code,
     authorized_at: dateValue(row.authorized_at),
+    posted_at: dateValue(row.posted_at),
     posted_on: String(row.posted_on),
     pending: row.pending,
     excluded_from_spending:

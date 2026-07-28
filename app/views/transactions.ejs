@@ -46,14 +46,16 @@
         <div>
           <p class="card-kicker">Selected transaction</p>
           <h2 id="selected-transaction-heading"><%= selectedTransaction.merchant %></h2>
-          <p
-            <% if (selectedTransaction.accountId) { %>
-              data-account-display-name="<%= selectedTransaction.accountId %>"
-              data-account-provider-name="<%= selectedTransaction.account %>"
-              data-account-prefix="<%= `${selectedTransaction.category} · ` %>"
-              data-account-suffix="<%= ` · ${selectedTransaction.date}${selectedTransaction.status === "pending" ? " · Pending" : ""}${selectedTransaction.tags?.length ? ` · ${selectedTransaction.tags.join(" · ")}` : ""}` %>"
-            <% } %>
-          ><%= selectedTransaction.category %> · <%= selectedTransaction.account %> · <%= selectedTransaction.date %><%= selectedTransaction.status === "pending" ? " · Pending" : "" %><%= selectedTransaction.tags?.length ? ` · ${selectedTransaction.tags.join(" · ")}` : "" %></p>
+          <p>
+            <span
+              <% if (selectedTransaction.accountId) { %>
+                data-account-display-name="<%= selectedTransaction.accountId %>"
+                data-account-provider-name="<%= selectedTransaction.account %>"
+                data-account-prefix="<%= `${selectedTransaction.category} · ` %>"
+              <% } %>
+            ><%= selectedTransaction.category %> · <%= selectedTransaction.account %></span>
+            · <%- include("partials/transaction-date", { transaction: selectedTransaction }) %><%= selectedTransaction.status === "pending" ? " · Pending" : "" %><%= selectedTransaction.tags?.length ? ` · ${selectedTransaction.tags.join(" · ")}` : "" %>
+          </p>
           <% if (viewer?.is_admin && selectedTransaction.status !== "pending") { %>
             <a class="selected-detail__link" href="/settings?transaction=<%= encodeURIComponent(selectedTransaction.id) %>#transaction-cleanup">
               Clean up name, category &amp; tags <i class="ph ph-arrow-up-right" aria-hidden="true"></i>

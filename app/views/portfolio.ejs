@@ -36,6 +36,7 @@
     const estimatedReturn = livePortfolio?.estimated_return_basis_points;
     const externalCashFlow = livePortfolio?.external_cash_flow;
     const selectedPeriod = livePortfolio?.period?.name || query.period || "1m";
+    const futureEquity = livePortfolio?.future_equity || null;
   %>
   <main class="page-shell">
     <%- include("partials/page-heading", {
@@ -126,6 +127,44 @@
         </div>
       </article>
     </section>
+
+    <% if (futureEquity?.total_value?.amount_minor > 0) { %>
+      <section class="card future-equity-card" aria-labelledby="future-equity-heading">
+        <div class="card-heading future-equity-card__heading">
+          <div>
+            <p class="card-kicker">Not yet vested</p>
+            <h2 id="future-equity-heading">Future equity</h2>
+          </div>
+          <strong class="display-money"><%= formatMoney(futureEquity.total_value) %></strong>
+        </div>
+        <div class="future-equity-list" role="list" aria-label="Unvested equity holdings">
+          <% futureEquity.holdings.forEach((holding) => { %>
+            <div class="future-equity-row" role="listitem">
+              <span class="future-equity-row__identity">
+                <b class="ticker"><%= (holding.ticker_symbol || holding.name).slice(0, 4) %></b>
+                <span>
+                  <strong><%= holding.ticker_symbol || holding.name %></strong>
+                  <small><%= holding.name %><%= holding.account_name ? ` · ${holding.account_name}` : "" %></small>
+                </span>
+              </span>
+              <span>
+                <small>Unvested shares</small>
+                <strong>
+                  <%= holding.unvested_quantity == null
+                    ? "Provider-reported"
+                    : holding.unvested_quantity.toLocaleString("en-US", { maximumFractionDigits: 10 }) %>
+                </strong>
+              </span>
+              <span>
+                <small>Current-price value</small>
+                <strong><%= formatMoney(holding.value) %></strong>
+              </span>
+            </div>
+          <% }) %>
+        </div>
+        <p class="card-note"><i class="ph ph-info"></i> Estimated at the provider’s reported price. Not included in current portfolio value.</p>
+      </section>
+    <% } %>
 
     <section class="card holdings-card">
       <div class="card-heading">

@@ -21,9 +21,9 @@ test("first-party asset revisions change with the current deployment", async () 
     path.resolve("app/views/partials/head.ejs"),
     "utf8",
   );
-  assert.match(head, /\/css\/money\.css\?v=20/);
+  assert.match(head, /\/css\/money\.css\?v=21/);
   assert.match(head, /\/js\/charts\.js\?v=5/);
-  assert.match(head, /\/js\/money\.js\?v=15/);
+  assert.match(head, /\/js\/money\.js\?v=17/);
 });
 
 test("manual asset entry accepts formatted money and refreshes saved production data", async () => {
@@ -62,6 +62,36 @@ test("account aliases stay in local storage and never call the backend", async (
   assert.match(accountAliasCode, /money\.account-aliases\.v1/);
   assert.match(accountAliasCode, /window\.localStorage\.setItem/);
   assert.doesNotMatch(accountAliasCode, /\bfetch\s*\(/);
+});
+
+test("account sync times are formatted in the browser timezone", async () => {
+  const [accounts, money] = await Promise.all([
+    readFile(path.resolve("app/views/accounts.ejs"), "utf8"),
+    readFile(path.resolve("app/public/js/money.js"), "utf8"),
+  ]);
+
+  assert.match(accounts, /data-local-date-time="<%= institutionAccount\.syncedAt %>"/);
+  assert.match(money, /new Intl\.DateTimeFormat\(undefined,/);
+  assert.match(money, /new Date\(element\.dataset\.localDateTime\)/);
+  assert.doesNotMatch(
+    money.slice(
+      money.indexOf("function localDateTimes()"),
+      money.indexOf("function accountAliases()"),
+    ),
+    /timeZone:/,
+  );
+});
+
+test("page centering reserves a stable scrollbar gutter", async () => {
+  const money = await readFile(
+    path.resolve("app/public/css/money.css"),
+    "utf8",
+  );
+
+  assert.match(
+    money,
+    /html\s*\{[^}]*scrollbar-gutter:\s*stable;/,
+  );
 });
 
 test("Nomad runs one task and startup orders migrations before worker and HTTP", async () => {

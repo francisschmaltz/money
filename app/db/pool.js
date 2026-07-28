@@ -1,6 +1,11 @@
 import pg from "pg";
 
-const { Pool } = pg;
+const { Pool, types } = pg;
+
+// PostgreSQL DATE values carry no time zone. node-postgres otherwise turns
+// them into local-midnight Date objects, which both changes their displayed
+// shape and makes ISO date comparisons fail. Keep them as YYYY-MM-DD strings.
+types.setTypeParser(types.builtins.DATE, (value) => value);
 
 function boolean(value, fallback) {
   if (value === undefined || value === "") return fallback;

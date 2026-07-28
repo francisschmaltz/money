@@ -18,6 +18,85 @@ export function money(amountMinor, currency = "USD") {
   return { amount_minor: amountMinor, currency };
 }
 
+export function splitHoldingEquity(holding = {}) {
+  const totalValue = holding.value_minor;
+  const quantity = Number(holding.quantity);
+  const vestedQuantity =
+    holding.vested_quantity == null
+      ? null
+      : Number(holding.vested_quantity);
+  const vestedValue = holding.vested_value_minor;
+  const price = holding.price_minor;
+  const base = {
+    current_value_minor: totalValue,
+    future_value_minor: null,
+    unvested_quantity: null,
+    valuation_basis: null,
+    observed: false,
+    invalid: false,
+  };
+
+  if (!Number.isSafeInteger(totalValue) || totalValue < 0) {
+    return { ...base, invalid: true };
+  }
+
+  const validQuantities =
+    Number.isFinite(quantity) &&
+    quantity >= 0 &&
+    Number.isFinite(vestedQuantity) &&
+    vestedQuantity >= 0 &&
+    vestedQuantity <= quantity;
+  const unvestedQuantity = validQuantities
+    ? quantity - vestedQuantity
+    : null;
+
+  if (vestedValue != null) {
+    if (
+      !Number.isSafeInteger(vestedValue) ||
+      vestedValue < 0 ||
+      vestedValue > totalValue ||
+      (vestedQuantity != null && !validQuantities)
+    ) {
+      return { ...base, invalid: true };
+    }
+    return {
+      current_value_minor: vestedValue,
+      future_value_minor: totalValue - vestedValue,
+      unvested_quantity: unvestedQuantity,
+      valuation_basis: "reported_vested_value",
+      observed: true,
+      invalid: false,
+    };
+  }
+
+  if (vestedQuantity == null) return base;
+  if (
+    !validQuantities ||
+    !Number.isSafeInteger(price) ||
+    price < 0
+  ) {
+    return { ...base, invalid: true };
+  }
+
+  const futureValue = Math.round(unvestedQuantity * price);
+  if (
+    !Number.isSafeInteger(futureValue) ||
+    futureValue < 0 ||
+    futureValue > totalValue + 1
+  ) {
+    return { ...base, invalid: true };
+  }
+  const boundedFutureValue = Math.min(totalValue, futureValue);
+  return {
+    current_value_minor: totalValue - boundedFutureValue,
+    future_value_minor: boundedFutureValue,
+    unvested_quantity: unvestedQuantity,
+    valuation_basis: "quantity_at_reported_price",
+    observed: true,
+    invalid: false,
+  };
+}
+
 export function percentChangeBasisPoints(current, previous) {
   if (previous === 0) return current === 0 ? 0 : null;
   return Math.round(((current - previous) / Math.abs(previous)) * 10_000);
@@ -796,6 +875,11 @@ export function buildNetWorthHistory({
   };
 }
 
+function holdingKey(holding) {
+  const securityId = holding.security_id ?? holding.id ?? "";
+  return `${holding.account_id ?? ""}:${securityId}`;
+}
+
 export function buildPortfolioSummary({
   holdings,
   snapshots,
@@ -813,34 +897,69 @@ export function buildPortfolioSummary({
   const includedHoldings = holdings.filter(
     (holding) => holding.currency_code === currency,
   );
-  const total = includedHoldings.reduce(
-    (sum, holding) => sum + holding.value_minor,
+  const holdingSplits = includedHoldings.map((holding) => ({
+    holding,
+    split: splitHoldingEquity(holding),
+  }));
+  const total = holdingSplits.reduce(
+    (sum, entry) => sum + entry.split.current_value_minor,
     0,
   );
-  const holdingsResult = includedHoldings.map((holding) => ({
+  const holdingsResult = holdingSplits.map(({ holding, split }) => ({
     id: holding.id,
     security_id: holding.security_id,
     name: holding.name,
     ticker_symbol: holding.ticker_symbol,
     security_type: holding.security_type,
     balance_group: holding.balance_group ?? null,
-    value: money(holding.value_minor, currency),
+    value: money(split.current_value_minor, currency),
     cost_basis:
-      holding.cost_basis_minor == null
+      holding.cost_basis_minor == null ||
+      (split.future_value_minor ?? 0) > 0
         ? null
         : money(holding.cost_basis_minor, currency),
-    quantity: holding.quantity,
+    quantity: split.observed
+      ? holding.vested_quantity ?? null
+      : holding.quantity,
     allocation_basis_points:
-      total === 0 ? 0 : Math.round((holding.value_minor / total) * 10_000),
+      total === 0
+        ? 0
+        : Math.round(
+            (split.current_value_minor / total) * 10_000,
+          ),
     price_as_of: holding.close_price_as_of,
   }));
 
+  const futureHoldings = holdingSplits
+    .filter(({ split }) => (split.future_value_minor ?? 0) > 0)
+    .map(({ holding, split }) => ({
+      holding_id: holding.id,
+      account_id: holding.account_id,
+      account_name: holding.account_name ?? null,
+      security_id: holding.security_id,
+      name: holding.name,
+      ticker_symbol: holding.ticker_symbol,
+      unvested_quantity: split.unvested_quantity,
+      value: money(split.future_value_minor, currency),
+      observed_at: holding.as_of ?? null,
+      valuation_basis: split.valuation_basis,
+    }))
+    .sort(
+      (left, right) =>
+        right.value.amount_minor - left.value.amount_minor,
+    );
+  const futureTotal = futureHoldings.reduce(
+    (sum, holding) => sum + holding.value.amount_minor,
+    0,
+  );
+
   const allocationGroups = new Map();
-  for (const holding of includedHoldings) {
+  for (const { holding, split } of holdingSplits) {
     const key = holding.security_type ?? "other";
     allocationGroups.set(
       key,
-      (allocationGroups.get(key) ?? 0) + holding.value_minor,
+      (allocationGroups.get(key) ?? 0) +
+        split.current_value_minor,
     );
   }
   const allocation = [...allocationGroups.entries()]
@@ -852,13 +971,45 @@ export function buildPortfolioSummary({
     }))
     .sort((a, b) => b.value.amount_minor - a.value.amount_minor);
 
-  const byDate = new Map();
+  const vestingAwareKeys = new Set(
+    holdingSplits
+      .filter(({ split }) => split.observed)
+      .map(({ holding }) => holdingKey(holding)),
+  );
+  const snapshotsByDate = new Map();
   for (const snapshot of snapshots) {
     if (snapshot.currency_code !== currency) continue;
-    byDate.set(
-      snapshot.snapshot_on,
-      (byDate.get(snapshot.snapshot_on) ?? 0) + snapshot.value_minor,
+    const values = snapshotsByDate.get(snapshot.snapshot_on) ?? [];
+    values.push(snapshot);
+    snapshotsByDate.set(snapshot.snapshot_on, values);
+  }
+  const byDate = new Map();
+  const includedSnapshots = [];
+  for (const [snapshotOn, values] of snapshotsByDate) {
+    const splitValues = values.map((snapshot) => ({
+      snapshot,
+      split: splitHoldingEquity(snapshot),
+    }));
+    const observedKeys = new Set(
+      splitValues
+        .filter(({ split }) => split.observed)
+        .map(({ snapshot }) => holdingKey(snapshot)),
     );
+    if (
+      [...vestingAwareKeys].some(
+        (key) => !observedKeys.has(key),
+      )
+    ) {
+      continue;
+    }
+    byDate.set(
+      snapshotOn,
+      splitValues.reduce(
+        (sum, entry) => sum + entry.split.current_value_minor,
+        0,
+      ),
+    );
+    includedSnapshots.push(...splitValues);
   }
   const series = [...byDate.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
@@ -886,6 +1037,24 @@ export function buildPortfolioSummary({
       0,
     );
   const externalFlows = contributions - withdrawals;
+  const valueOnlyVesting = includedSnapshots.some(
+    ({ snapshot, split }) =>
+      split.observed &&
+      snapshot.vested_quantity == null,
+  );
+  const vestedQuantityChanged = [...vestingAwareKeys].some((key) => {
+    const quantities = includedSnapshots
+      .filter(
+        ({ snapshot, split }) =>
+          holdingKey(snapshot) === key &&
+          split.observed &&
+          snapshot.vested_quantity != null,
+      )
+      .map(({ snapshot }) => Number(snapshot.vested_quantity));
+    return new Set(quantities).size > 1;
+  });
+  const vestingPerformanceUnreliable =
+    valueOnlyVesting || vestedQuantityChanged;
   const completeHistory =
     investmentHistoryComplete &&
     Boolean(first) &&
@@ -895,7 +1064,8 @@ export function buildPortfolioSummary({
       (holding) =>
         holding.close_price_as_of != null &&
         differenceInDays(holding.close_price_as_of, dateOnly(now)) <= 3,
-    );
+    ) &&
+    !vestingPerformanceUnreliable;
   const estimatedGain =
     completeHistory && first
       ? total - first.value.amount_minor - externalFlows
@@ -925,11 +1095,29 @@ export function buildPortfolioSummary({
   if (!completeHistory) {
     warnings.push("Estimated return is hidden until history and cash flows are complete.");
   }
+  if (holdingSplits.some(({ split }) => split.invalid)) {
+    warnings.push(
+      "Some provider vesting data was inconsistent, so future equity was hidden.",
+    );
+  }
+  if (vestingPerformanceUnreliable) {
+    warnings.push(
+      "Estimated return is hidden when vesting changes cannot be separated from market performance.",
+    );
+  }
 
   return {
     currency,
     retirement_scope: retirementScope,
     total_value: money(total, currency),
+    future_equity:
+      futureTotal > 0
+        ? {
+            total_value: money(futureTotal, currency),
+            valuation_basis: "provider_reported_price",
+            holdings: futureHoldings,
+          }
+        : null,
     holdings: holdingsResult,
     allocation,
     series,

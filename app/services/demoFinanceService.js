@@ -1745,6 +1745,7 @@ export class DemoFinanceService {
         retirement_scope: retirementScope,
         scope: pageScope,
         total_value: money(total),
+        future_equity: null,
         taxable_value: money(taxableValue),
         retirement_value: money(retirementValue),
         changes: {

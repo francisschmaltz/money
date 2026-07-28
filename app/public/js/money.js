@@ -163,6 +163,35 @@
     });
   }
 
+  function localDateTimes() {
+    const exactFormatter = new Intl.DateTimeFormat(undefined, {
+      year: "numeric",
+      month: "numeric",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+    const transactionFormatter = new Intl.DateTimeFormat("en-US", {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    });
+    document.querySelectorAll("[data-local-date-time]").forEach((element) => {
+      const date = new Date(element.dataset.localDateTime);
+      if (!Number.isFinite(date.getTime())) return;
+      const formatter =
+        element.dataset.localDateTimeStyle === "transaction"
+          ? transactionFormatter
+          : exactFormatter;
+      element.textContent =
+        `${element.dataset.localDateTimePrefix || ""}${formatter.format(date)}`;
+      element.title = `Stored as ${date.toISOString()}`;
+    });
+  }
+
   function accountAliases() {
     const dialog = document.querySelector("[data-account-alias-dialog]");
     const form = dialog?.querySelector("[data-account-alias-form]");
@@ -3299,6 +3328,7 @@
   }
 
   function initialize() {
+    localDateTimes();
     accountAliases();
     mobileNavigation();
     globalSearch();

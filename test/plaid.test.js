@@ -147,6 +147,36 @@ test("normalizer uses signed minor units and pending replacement IDs", () => {
   assert.equal(normalized.normalized_name, "store");
 });
 
+test("normalizer preserves real transaction precision without inventing midnight", () => {
+  const precise = normalizePlaidTransaction({
+    transaction_id: "precise",
+    account_id: "account",
+    amount: 12.34,
+    iso_currency_code: "USD",
+    name: "Store",
+    authorized_date: "2026-07-26",
+    authorized_datetime: "2026-07-26T20:34:00Z",
+    date: "2026-07-27",
+    datetime: "2026-07-27T15:10:09Z",
+  });
+  const dateOnly = normalizePlaidTransaction({
+    transaction_id: "date-only",
+    account_id: "account",
+    amount: 5,
+    iso_currency_code: "USD",
+    name: "Date only",
+    authorized_date: "2026-07-26",
+    date: "2026-07-27",
+  });
+
+  assert.equal(precise.authorized_on, "2026-07-26");
+  assert.equal(precise.authorized_at, "2026-07-26T20:34:00Z");
+  assert.equal(precise.posted_at, "2026-07-27T15:10:09Z");
+  assert.equal(dateOnly.authorized_on, "2026-07-26");
+  assert.equal(dateOnly.authorized_at, null);
+  assert.equal(dateOnly.posted_at, null);
+});
+
 test("transaction names normalize for stable fuzzy matching", () => {
   assert.equal(
     normalizeTransactionName("  Café Nørth #482910  "),

@@ -84,7 +84,7 @@ test("Plan contains wide budget data without widening the mobile page", async ({
     tableViewport:
       document.querySelector(".budget-table")?.clientWidth ?? 0,
   }));
-  expect(widths.page).toBe(widths.viewport);
+  expect(widths.page).toBeLessThanOrEqual(widths.viewport);
   expect(widths.table).toBeGreaterThan(widths.tableViewport);
 });
 

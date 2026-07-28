@@ -97,6 +97,16 @@ The MCP `get_portfolio_summary` equivalent is
 Contributions and withdrawals stay separate from estimated performance in
 every scope.
 
+When Plaid reports vested equity facts, portfolio totals, holdings, allocation,
+and concentration use only the vested portion. A separate `future_equity`
+object carries positive unvested value at the institution's reported price.
+It is informational and does not change dashboard, net-worth, or account
+balance calculations.
+
+Vesting-aware portfolio history starts with the first snapshot that can split
+every currently observed equity holding. Estimated return stays hidden across
+vesting changes that cannot be separated cleanly from market performance.
+
 ## Manual assets
 
 Admins can add assets that Plaid cannot represent, including homes, vehicles,

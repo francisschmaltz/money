@@ -28,6 +28,7 @@
 
 html {
   scroll-behavior: smooth;
+  scrollbar-gutter: stable;
 }
 
 body {
@@ -1628,6 +1629,64 @@ h3 {
 .allocation-legend span:nth-child(3) i { background: #91d8a5; }
 .allocation-legend span:nth-child(4) i { background: #438bd7; }
 .allocation-legend span:nth-child(5) i { background: #2764ae; }
+
+.future-equity-card {
+  padding: 27px 28px;
+}
+
+.future-equity-card__heading {
+  align-items: flex-end;
+}
+
+.future-equity-card__heading .display-money {
+  font-size: clamp(1.65rem, 4vw, 2.35rem);
+}
+
+.future-equity-list {
+  margin-top: 16px;
+}
+
+.future-equity-row {
+  display: grid;
+  grid-template-columns: minmax(280px, 1.5fr) minmax(150px, 0.7fr) minmax(150px, 0.7fr);
+  align-items: center;
+  gap: 18px;
+  min-height: 72px;
+  padding: 12px 2px;
+  border-top: 1px solid var(--line);
+}
+
+.future-equity-row__identity {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 12px;
+}
+
+.future-equity-row__identity > span,
+.future-equity-row > span:not(.future-equity-row__identity) {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.future-equity-row small {
+  overflow: hidden;
+  color: var(--ink-faint);
+  font-size: 0.72rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.future-equity-row > span:last-child {
+  text-align: right;
+}
+
+.future-equity-card .card-note {
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
 
 .holdings-table {
   margin-top: 16px;
@@ -4173,6 +4232,14 @@ kbd {
     display: none;
   }
 
+  .future-equity-row {
+    grid-template-columns: minmax(220px, 1.3fr) minmax(130px, 0.7fr);
+  }
+
+  .future-equity-row > span:nth-child(2) {
+    display: none;
+  }
+
   .manual-asset-form {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -4508,6 +4575,26 @@ kbd {
 
   .holdings-row {
     min-width: 520px;
+  }
+
+  .future-equity-card__heading {
+    align-items: flex-start;
+    gap: 10px;
+    flex-direction: column;
+  }
+
+  .future-equity-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+  }
+
+  .future-equity-row > span:nth-child(2) {
+    display: none;
+  }
+
+  .future-equity-row > span:last-child {
+    padding-left: 50px;
+    text-align: left;
   }
 
   .credit-card-row--header {

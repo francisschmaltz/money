@@ -1,0 +1,7 @@
+<time
+  datetime="<%= transaction.dateTime ?? transaction.dateIso ?? transaction.date %>"
+  <% if (transaction.dateTime) { %>
+    data-local-date-time="<%= transaction.dateTime %>"
+    data-local-date-time-style="transaction"
+  <% } %>
+><%= transaction.date %></time>
