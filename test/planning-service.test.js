@@ -43,6 +43,8 @@ function fixture() {
     goalArchive: null,
     checkingBalanceMinor: 2_000,
     cardBalanceMinor: 0,
+    budgetTransactionReads: [],
+    budgetSplitReads: [],
   };
   const repository = {
     async getWorkspaceTimezone() {
@@ -197,6 +199,9 @@ function fixture() {
       };
     },
     async listTransactionSplits(_workspaceId, filters = {}) {
+      if (Object.hasOwn(filters, "dateMode")) {
+        calls.budgetSplitReads.push(structuredClone(filters));
+      }
       if (
         Array.isArray(filters.transactionIds) &&
         !filters.transactionIds.includes("posted")
@@ -407,7 +412,8 @@ function fixture() {
         partial: false,
       };
     },
-    async getTransactionsForPeriod() {
+    async getTransactionsForPeriod(_workspaceId, filters = {}) {
+      calls.budgetTransactionReads.push(structuredClone(filters));
       return [];
     },
     async getTransaction(_workspaceId, id) {
@@ -912,6 +918,16 @@ test("planning reads stay pure and budget edits update the current standing plan
     budget.data.standing_effective_month_on,
     "2026-07-01",
   );
+  assert.deepEqual(calls.budgetTransactionReads[0], {
+    startOn: "2026-07-01",
+    endOn: "2026-08-01",
+    dateMode: "budget",
+  });
+  assert.deepEqual(calls.budgetSplitReads[0], {
+    startOn: "2026-07-01",
+    endOn: "2026-08-01",
+    dateMode: "budget",
+  });
 
   await service.setCategoryBudget({
     category: "Groceries",

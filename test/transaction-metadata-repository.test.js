@@ -224,6 +224,71 @@ test("batch metadata edits lock exact posted rows and refresh search once", asyn
   );
 });
 
+test("Plan month batch edits are relative to each posted month and clear with zero", async () => {
+  const ids = ["january-rent", "december-rent"];
+  const db = fakePool(async (sql) => {
+    if (sql.includes("FOR UPDATE")) {
+      return {
+        rows: [
+          { id: ids[0], posted_on: "2026-01-02" },
+          { id: ids[1], posted_on: "2026-12-31" },
+        ],
+      };
+    }
+    return { rows: [] };
+  });
+  const repository = new PgFinanceRepository(db.pool);
+
+  await repository.batchEditTransactions("shared", {
+    transactionIds: ids,
+    changes: { budgetMonthOffset: -1 },
+    userId: "admin-1",
+  });
+
+  const assignment = db.calls.find(
+    (call) =>
+      call.sql.includes("INSERT INTO transaction_metadata") &&
+      call.sql.includes("budget_month_on"),
+  );
+  assert.ok(assignment);
+  assert.match(
+    assignment.sql,
+    /date_trunc\('month', selected\.posted_on\)\s*\+ make_interval\(months => \$3::integer\)/,
+  );
+  assert.deepEqual(assignment.params, [
+    "shared",
+    ids,
+    -1,
+    "admin-1",
+  ]);
+
+  const clearDb = fakePool(async (sql) => {
+    if (sql.includes("FOR UPDATE")) {
+      return {
+        rows: ids.map((id) => ({
+          id,
+          posted_on: "2026-07-02",
+        })),
+      };
+    }
+    return { rows: [] };
+  });
+  await new PgFinanceRepository(
+    clearDb.pool,
+  ).batchEditTransactions("shared", {
+    transactionIds: ids,
+    changes: { budgetMonthOffset: 0 },
+    userId: "admin-1",
+  });
+  const clear = clearDb.calls.find(
+    (call) =>
+      call.sql.includes("INSERT INTO transaction_metadata") &&
+      call.sql.includes("budget_month_on"),
+  );
+  assert.match(clear.sql, /WHEN \$3::integer = 0 THEN NULL/);
+  assert.equal(clear.params[2], 0);
+});
+
 test("batch metadata rejects the whole write when any selected row is unavailable", async () => {
   const db = fakePool(async (sql) => {
     if (sql.includes("FOR UPDATE")) {

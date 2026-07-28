@@ -287,6 +287,84 @@ test("one transaction can change category without creating a rule", async ({
   });
 });
 
+test("a posted transaction can move to an exact adjacent Plan month on mobile", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  let write;
+  await page.route(
+    "**/api/v1/transactions/batch-edit",
+    async (route) => {
+      write = route.request().postDataJSON();
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ updated_count: 1 }),
+      });
+    },
+  );
+  await page.goto("/transactions?transaction=txn_whole_foods");
+
+  const form = page.locator("[data-transaction-organize-form]");
+  const planMonth = form.getByLabel("Apply to Plan month");
+  await expect(planMonth.locator("option")).toHaveText([
+    "June 2026 · Previous month",
+    "July 2026 · Posted month",
+    "August 2026 · Next month",
+  ]);
+  await planMonth.selectOption("-1");
+  await form.getByRole("button", { name: "Save changes" }).click();
+  await expect(form.getByRole("status")).toHaveText("Changes saved");
+
+  expect(write).toEqual({
+    transaction_ids: ["txn_whole_foods"],
+    changes: { budget_month_offset: -1 },
+  });
+  const geometry = await form.evaluate((element) => ({
+    right: element.getBoundingClientRect().right,
+    viewport: document.documentElement.clientWidth,
+  }));
+  expect(geometry.right).toBeLessThanOrEqual(geometry.viewport);
+});
+
+test("bulk Plan month changes stay relative to each selected posted month", async ({
+  page,
+}) => {
+  let write;
+  await page.route(
+    "**/api/v1/transactions/batch-edit",
+    async (route) => {
+      write = route.request().postDataJSON();
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ updated_count: 2 }),
+      });
+    },
+  );
+  await page.goto("/transactions");
+  await page.getByRole("button", { name: "Select & edit" }).click();
+  const posted = page.locator(
+    "[data-bulk-transaction-select]:not(:disabled)",
+  );
+  await posted.nth(0).check();
+  await posted.nth(1).check();
+  await page.getByRole("button", { name: "Edit 2 selected" }).click();
+
+  const dialog = page.locator("[data-bulk-edit-dialog]");
+  await dialog
+    .locator('[data-bulk-change="budget_month_offset"]')
+    .check();
+  await dialog.locator("[data-bulk-budget-month]").selectOption("1");
+  await dialog.getByRole("button", { name: "Save changes" }).click();
+  await expect(dialog.getByRole("status")).toHaveText(
+    "2 transactions updated",
+  );
+
+  expect(write.transaction_ids).toHaveLength(2);
+  expect(write.changes).toEqual({ budget_month_offset: 1 });
+});
+
 test("transaction notes save and the detail body uses the full modal width", async ({
   page,
 }) => {

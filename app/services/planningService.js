@@ -219,11 +219,12 @@ export class PlanningService {
           : { version: 0, income_category_ids: [] },
         this.#financeRepository.getTransactionsForPeriod(
           this.#workspaceId,
-          { startOn: month, endOn },
+          { startOn: month, endOn, dateMode: "budget" },
         ),
         this.#repository.listTransactionSplits(this.#workspaceId, {
           startOn: month,
           endOn,
+          dateMode: "budget",
         }),
         this.#financeRepository.getDataFreshness(this.#workspaceId),
       ]);
@@ -244,11 +245,19 @@ export class PlanningService {
       ? await Promise.all([
           this.#financeRepository.getTransactionsForPeriod(
             this.#workspaceId,
-            { startOn: incomeStart, endOn: currentMonth },
+            {
+              startOn: incomeStart,
+              endOn: currentMonth,
+              dateMode: "budget",
+            },
           ),
           this.#repository.listTransactionSplits(
             this.#workspaceId,
-            { startOn: incomeStart, endOn: currentMonth },
+            {
+              startOn: incomeStart,
+              endOn: currentMonth,
+              dateMode: "budget",
+            },
           ),
         ])
       : [[], []];

@@ -254,6 +254,7 @@ test("one batch service call preserves omitted fields and recomputes canonical-n
     changes: {
       category_primary: "Fees & interest",
       excluded_from_spending: true,
+      budget_month_offset: 1,
     },
   });
   assert.equal(
@@ -261,6 +262,14 @@ test("one batch service call preserves omitted fields and recomputes canonical-n
     "Fees & Interest",
   );
   assert.equal(calls[1].input.changes.excludedFromSpending, true);
+  assert.equal(calls[1].input.changes.budgetMonthOffset, 1);
+  assert.equal(jobs.length, 2);
+
+  await service.batchEditTransactions({
+    transaction_ids: ["transaction-1"],
+    changes: { budget_month_offset: -1 },
+  });
+  assert.equal(calls[2].input.changes.budgetMonthOffset, -1);
   assert.equal(jobs.length, 2);
 
   await assert.rejects(
@@ -276,5 +285,12 @@ test("one batch service call preserves omitted fields and recomputes canonical-n
       changes: {},
     }),
     /At least one transaction change is required/,
+  );
+  await assert.rejects(
+    service.batchEditTransactions({
+      transaction_ids: ["transaction-1"],
+      changes: { budget_month_offset: -2 },
+    }),
+    /budget_month_offset must be -1, 0, or 1/,
   );
 });

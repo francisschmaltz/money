@@ -1810,6 +1810,13 @@ function transactionBatchEditInput(body = {}) {
     if (typeof body.changes[field] !== "boolean") return null;
     changes[field] = body.changes[field];
   }
+  if (Object.hasOwn(body.changes, "budget_month_offset")) {
+    const value = body.changes.budget_month_offset;
+    if (!Number.isInteger(value) || ![-1, 0, 1].includes(value)) {
+      return null;
+    }
+    changes.budget_month_offset = value;
+  }
 
   if (Object.hasOwn(body.changes, "tags")) {
     if (

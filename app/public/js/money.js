@@ -3501,6 +3501,9 @@
         excluded_from_spending: root.querySelector(
           "[data-bulk-excluded]",
         ),
+        budget_month_offset: root.querySelector(
+          "[data-bulk-budget-month]",
+        ),
       };
       return fields[toggle.dataset.bulkChange];
     };
@@ -3622,6 +3625,15 @@
       ) {
         changes.excluded_from_spending =
           root.querySelector("[data-bulk-excluded]")?.value === "true";
+      }
+      if (
+        root.querySelector(
+          '[data-bulk-change="budget_month_offset"]',
+        )?.checked
+      ) {
+        changes.budget_month_offset = Number(
+          root.querySelector("[data-bulk-budget-month]")?.value,
+        );
       }
       if (!transactionIds.length || !Object.keys(changes).length) {
         if (status) {
@@ -3769,6 +3781,9 @@
           const excluded = form.elements.namedItem(
             "excluded_from_spending",
           );
+          const budgetMonth = form.elements.namedItem(
+            "budget_month_offset",
+          );
           if (
             displayName &&
             displayName.value.trim() !== displayName.dataset.initialValue
@@ -3802,6 +3817,12 @@
             excluded.value !== excluded.dataset.initialValue
           ) {
             changes.excluded_from_spending = excluded.value === "true";
+          }
+          if (
+            budgetMonth &&
+            budgetMonth.value !== budgetMonth.dataset.initialValue
+          ) {
+            changes.budget_month_offset = Number(budgetMonth.value);
           }
           if (!Object.keys(changes).length) {
             if (status) status.textContent = "Nothing changed.";

@@ -106,7 +106,7 @@ test("Plaid OAuth callback renders a resumable authenticated return page", async
   assert.match(response.text, /data-page="plaid-oauth"/);
   assert.match(response.text, /data-plaid-oauth-return/);
   assert.match(response.text, /Returning to Plaid/);
-  assert.match(response.text, /\/js\/money\.js\?v=27/);
+  assert.match(response.text, /\/js\/money\.js\?v=28/);
   assert.doesNotMatch(response.text, /data-search-dialog/);
 });
 
@@ -437,6 +437,7 @@ test("transaction ledger supports selecting rows and choosing bulk overrides", a
     "category_primary",
     "tags",
     "excluded_from_spending",
+    "budget_month_offset",
   ]) {
     assert.match(
       html,
@@ -474,6 +475,15 @@ test("selected transactions expose notes and one-time organization", async () =>
   assert.match(html, /maxlength="2000"/);
   assert.match(html, /data-transaction-organize-form/);
   assert.match(html, /data-transaction-organize-category/);
+  assert.match(html, /name="budget_month_offset"/);
+  assert.match(html, /Apply to Plan month/);
+  assert.match(html, /June 2026 · Previous month/);
+  assert.match(html, /July 2026 · Posted month/);
+  assert.match(html, /August 2026 · Next month/);
+  assert.match(
+    html,
+    /Only Plan actuals move\. The posted date and every other report stay unchanged\./,
+  );
   assert.match(html, /data-transaction-id="txn_whole_foods"/);
   assert.match(html, /Save note/);
   assert.match(html, /Save changes/);
@@ -491,6 +501,32 @@ test("selected transactions expose notes and one-time organization", async () =>
   assert.match(html, /data-detail-dialog-close aria-label="Close transaction details"/);
   assert.match(html, /data-detail-dialog-link/);
   assert.doesNotMatch(html, /data-transaction-classification/);
+});
+
+test("transactions visibly mark a manually overridden Plan month", async () => {
+  const overridden = {
+    ...demo.transactions[0],
+    budgetMonthOn: "2026-06-01",
+    effectiveBudgetMonthOn: "2026-06-01",
+  };
+  const html = await render("transactions", {
+    pageTitle: "Transactions",
+    activePath: "/transactions",
+    transactions: [
+      overridden,
+      ...demo.transactions.slice(1),
+    ],
+    selectedTransaction: overridden,
+  });
+
+  assert.match(
+    html,
+    /transaction-row__plan-month">Plan: Jun 2026/,
+  );
+  assert.match(
+    html,
+    /<dt>Plan month<\/dt><dd>June 2026 · Manually applied<\/dd>/,
+  );
 });
 
 test("transaction split editing preserves custom categories and hides unsupported currencies", async () => {

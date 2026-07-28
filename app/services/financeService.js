@@ -503,6 +503,7 @@ export class FinanceService {
     const endOn = options.endOn ?? options.end_date;
     const accountId = options.accountId ?? options.account_id;
     const search = options.search ?? options.query;
+    const merchant = options.merchant ?? null;
     const minAmountMinor =
       options.minAmountMinor ?? options.min_amount_minor;
     const maxAmountMinor =
@@ -514,6 +515,7 @@ export class FinanceService {
       ...(endOn ? { endOn } : {}),
       ...(accountId ? { accountId } : {}),
       ...(options.category ? { category: options.category } : {}),
+      ...(merchant ? { merchant } : {}),
       status: options.status ?? "all",
       includePending:
         (options.status ?? "all") !== "posted" &&
@@ -542,6 +544,7 @@ export class FinanceService {
           end_date: endOn ?? null,
           account_id: accountId ?? null,
           category: options.category ?? null,
+          merchant,
           query: search ?? null,
           status: repositoryOptions.status,
           min_amount_minor: minAmountMinor ?? null,
@@ -608,7 +611,7 @@ export class FinanceService {
           },
         ),
         this.#repository.getDataFreshness(this.#workspaceId),
-        groupBy === "category"
+        groupBy === "category" || category
           ? optionalRepositoryCall(
               this.#repository,
               "listSpendingCategories",
@@ -622,6 +625,7 @@ export class FinanceService {
         transactions,
         splits,
         splitAware ? category : null,
+        categoryDefinitions,
       ),
       currentPeriod: current,
       previousPeriod: previous,
@@ -671,7 +675,8 @@ export class FinanceService {
     const search = options.search ?? options.query ?? null;
     const splitAware =
       typeof this.#repository.listTransactionSplits === "function";
-    const [transactions, splits, freshness] = await Promise.all([
+    const [transactions, splits, freshness, categoryDefinitions] =
+      await Promise.all([
       this.#repository.getTransactionsForPeriod(this.#workspaceId, {
         startOn: current.start_on,
         endOn: current.end_on,
@@ -690,12 +695,21 @@ export class FinanceService {
         },
       ),
       this.#repository.getDataFreshness(this.#workspaceId),
+      category
+        ? optionalRepositoryCall(
+            this.#repository,
+            "listSpendingCategories",
+            [],
+            this.#workspaceId,
+          )
+        : [],
     ]);
     const data = buildCashFlow({
       transactions: expandAndFilterTransactions(
         transactions,
         splits,
         splitAware ? category : null,
+        categoryDefinitions,
       ),
       period: current,
       interval,
@@ -1304,6 +1318,8 @@ export class FinanceService {
       "tags",
       "excluded_from_spending",
       "excludedFromSpending",
+      "budget_month_offset",
+      "budgetMonthOffset",
     ]);
     if (
       Object.keys(rawChanges).some(
@@ -1353,6 +1369,22 @@ export class FinanceService {
         throw new TypeError(`${snakeCase} must be a boolean`);
       }
       changes[camelCase] = value;
+    }
+    if (
+      Object.hasOwn(rawChanges, "budget_month_offset") ||
+      Object.hasOwn(rawChanges, "budgetMonthOffset")
+    ) {
+      const value = Number(
+        Object.hasOwn(rawChanges, "budget_month_offset")
+          ? rawChanges.budget_month_offset
+          : rawChanges.budgetMonthOffset,
+      );
+      if (![-1, 0, 1].includes(value)) {
+        throw new TypeError(
+          "budget_month_offset must be -1, 0, or 1",
+        );
+      }
+      changes.budgetMonthOffset = value;
     }
     if (!Object.keys(changes).length) {
       throw new TypeError("At least one transaction change is required");
@@ -2968,6 +3000,7 @@ export class FinanceService {
         typeof this.#repository.listTransactionSplits === "function";
       const requestedCategory =
         query.category_id ?? query.category ?? null;
+      const requestedMerchant = query.merchant ?? null;
       const periodSelection = resolveTransactionPeriod(query, this.#now());
       const periods = periodSelection.period;
       const sort = normalizeTransactionSort(query.sort);
@@ -2994,6 +3027,7 @@ export class FinanceService {
             endOn: periods.end_on,
             search: query.q,
             category: requestedCategory,
+            merchant: requestedMerchant,
             accountId: query.account,
             cursor: query.cursor,
             sort,
@@ -3007,6 +3041,9 @@ export class FinanceService {
               accountId: query.account,
               category: splitAware ? null : requestedCategory,
               search: query.q,
+              ...(requestedMerchant
+                ? { merchant: requestedMerchant }
+                : {}),
               includePending: true,
             },
           ),
@@ -3044,6 +3081,8 @@ export class FinanceService {
           analysisTransactions,
           analysisSplits,
           splitAware ? analysisCategory : null,
+          categoryDefinitions,
+          requestedMerchant,
         );
       const cashFlow = buildCashFlow({
         transactions: expandedAnalysisTransactions,
@@ -3083,7 +3122,7 @@ export class FinanceService {
           categoryDefinitions,
           {
             activeGrouping: analyticsGroup,
-            activeSegmentKey: query.analytics_segment,
+            activeSegmentKey: null,
           },
         ),
         accounts: flattenAccountGroups(accounts.data.groups).map(webAccount),
@@ -3521,6 +3560,10 @@ function transactionCard(transaction) {
     note_version: Number(transaction.note_version ?? 0),
     note_updated_by: transaction.note_updated_by ?? null,
     note_updated_at: transaction.note_updated_at ?? null,
+    budget_month_on: transaction.budget_month_on ?? null,
+    effective_budget_month_on:
+      transaction.budget_month_on ??
+      monthStartForDate(transaction.posted_on),
     tags: Array.isArray(transaction.tags) ? transaction.tags : [],
     category_id: transaction.category_id ?? null,
     category: transaction.category_primary,
@@ -3773,15 +3816,33 @@ function expandAndFilterTransactions(
   transactions,
   splits,
   category = null,
+  categoryDefinitions = [],
+  merchant = null,
 ) {
   const expanded = expandTransactionsWithSplits(
     transactions,
     splits,
   );
-  if (!category) return expanded;
-  const filtered = expanded.filter(
-    (transaction) => transaction.category_primary === category,
-  );
+  const categoryFilter = category
+    ? transactionCategorySubtreeFilter(
+        category,
+        categoryDefinitions,
+      )
+    : null;
+  const filtered = expanded.filter((transaction) => {
+    if (
+      merchant &&
+      effectiveTransactionName(transaction) !== merchant
+    ) {
+      return false;
+    }
+    if (!categoryFilter) return true;
+    return (
+      categoryFilter.ids.has(transaction.category_id) ||
+      categoryFilter.paths.has(transaction.category_primary)
+    );
+  });
+  if (!category) return filtered;
   const collapsed = new Map();
   for (const transaction of filtered) {
     if (!transaction.split_parent_id) {
@@ -3800,6 +3861,46 @@ function expandAndFilterTransactions(
     });
   }
   return [...collapsed.values()];
+}
+
+function transactionCategorySubtreeFilter(
+  requestedCategory,
+  categories = [],
+) {
+  const requested = String(requestedCategory);
+  const byId = new Map(
+    categories.map((category) => [category.id, category]),
+  );
+  const root =
+    byId.get(requested) ??
+    categories.find(
+      (category) =>
+        category.path === requested ||
+        category.name === requested,
+    );
+  if (!root) {
+    return {
+      ids: new Set([requested]),
+      paths: new Set([requested]),
+    };
+  }
+  const ids = new Set();
+  const paths = new Set();
+  for (const category of categories) {
+    let current = category;
+    const visited = new Set();
+    while (current && !visited.has(current.id)) {
+      if (current.id === root.id) {
+        ids.add(category.id);
+        paths.add(category.path);
+        paths.add(category.name);
+        break;
+      }
+      visited.add(current.id);
+      current = byId.get(current.parent_category_id);
+    }
+  }
+  return { ids, paths };
 }
 
 function parseAsOf(value, fallback) {
@@ -4754,6 +4855,10 @@ function transactionDateOnly(transaction, timestamp) {
   return dateOnly(transaction.date);
 }
 
+function monthStartForDate(value) {
+  return `${dateOnly(value).slice(0, 7)}-01`;
+}
+
 function webTransaction(transaction) {
   const categoryValue = transaction.category ?? "Uncategorized";
   const category = transaction.category_id
@@ -4781,6 +4886,11 @@ function webTransaction(transaction) {
     noteVersion: Number(transaction.note_version ?? 0),
     noteUpdatedBy: transaction.note_updated_by ?? null,
     noteUpdatedAt: transaction.note_updated_at ?? null,
+    budgetMonthOn: transaction.budget_month_on ?? null,
+    effectiveBudgetMonthOn:
+      transaction.effective_budget_month_on ??
+      transaction.budget_month_on ??
+      monthStartForDate(transaction.date ?? transaction.posted_on),
     tags: Array.isArray(transaction.tags) ? transaction.tags : [],
     category,
     categoryValue,

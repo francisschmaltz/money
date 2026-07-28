@@ -8253,6 +8253,40 @@ svg {
   gap: 7px;
 }
 
+.filter-chip {
+  display: inline-flex;
+  min-height: 44px;
+  max-width: min(34vw, 360px);
+  align-items: center;
+  gap: 5px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--ink-soft);
+  font-size: 0.78rem;
+}
+
+.filter-chip strong {
+  overflow: hidden;
+  color: var(--ink);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.filter-chip a {
+  display: inline-grid;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: 50%;
+}
+
+[data-spending-segment-reset][hidden] {
+  display: none;
+}
+
 .transaction-filter[aria-busy="true"] {
   opacity: 0.72;
 }
@@ -8623,6 +8657,11 @@ svg {
     grid-column: 2;
     grid-row: 2;
     width: auto;
+  }
+
+  .filter-chip {
+    width: 100%;
+    max-width: 100%;
   }
 
   .transaction-filter__actions .button {

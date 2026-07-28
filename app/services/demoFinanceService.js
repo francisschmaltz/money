@@ -522,6 +522,7 @@ function cloneDemoTransaction(transaction) {
     note_version: Number(transaction.note_version ?? 0),
     note_updated_by: transaction.note_updated_by ?? null,
     note_updated_at: transaction.note_updated_at ?? null,
+    budget_month_on: transaction.budget_month_on ?? null,
     category_primary: transaction.category_primary ?? rawCategory,
     tags: [...(transaction.tags ?? [])],
   };
@@ -603,6 +604,12 @@ function compareDemoServiceTransactions(left, right, sort) {
     return rightSpend - leftSpend || newestFirst;
   }
   return newestFirst;
+}
+
+function shiftDemoTransactionMonth(value, offset) {
+  const date = new Date(`${String(value).slice(0, 7)}-01T00:00:00.000Z`);
+  date.setUTCMonth(date.getUTCMonth() + offset);
+  return date.toISOString().slice(0, 10);
 }
 
 function cloneTransactionCleanupRule(rule) {
@@ -2917,6 +2924,7 @@ export class DemoFinanceService {
       "category_primary",
       "tags",
       "excluded_from_spending",
+      "budget_month_offset",
     ].filter((field) => Object.hasOwn(changes, field));
     if (recognizedChanges.length === 0) {
       const error = new TypeError("At least one change is required");
@@ -2949,6 +2957,19 @@ export class DemoFinanceService {
         error.statusCode = 400;
         throw error;
       }
+    }
+    if (
+      Object.hasOwn(changes, "budget_month_offset") &&
+      (
+        !Number.isInteger(changes.budget_month_offset) ||
+        ![-1, 0, 1].includes(changes.budget_month_offset)
+      )
+    ) {
+      const error = new TypeError(
+        "budget_month_offset must be -1, 0, or 1",
+      );
+      error.statusCode = 400;
+      throw error;
     }
 
     for (const transaction of selected) {
@@ -2987,6 +3008,16 @@ export class DemoFinanceService {
         manual.add("excluded_from_spending");
         transaction.excluded_from_spending =
           changes.excluded_from_spending;
+      }
+      if (Object.hasOwn(changes, "budget_month_offset")) {
+        manual.add("budget_month_on");
+        transaction.budget_month_on =
+          changes.budget_month_offset === 0
+            ? null
+            : shiftDemoTransactionMonth(
+                transaction.posted_on ?? transaction.date,
+                changes.budget_month_offset,
+              );
       }
     }
     this.#refreshTransactionCleanupRuleApplications();

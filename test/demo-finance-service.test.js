@@ -562,6 +562,41 @@ test("demo batch edits are atomic and immediately affect transactions and search
   );
 });
 
+test("demo Plan month edits assign an adjacent month and clear back to posted month", async () => {
+  const service = createDemoFinanceService();
+  const posted = await service.listTransactions({ status: "posted" });
+  const target = posted.data.transactions.find(
+    (transaction) => transaction.date.startsWith("2026-07"),
+  );
+  assert.ok(target);
+
+  await service.batchEditTransactions({
+    transaction_ids: [target.id],
+    changes: { budget_month_offset: -1 },
+  });
+  let edited = (
+    await service.listTransactions({ status: "posted" })
+  ).data.transactions.find((transaction) => transaction.id === target.id);
+  assert.equal(edited.budget_month_on, "2026-06-01");
+
+  await service.batchEditTransactions({
+    transaction_ids: [target.id],
+    changes: { budget_month_offset: 0 },
+  });
+  edited = (
+    await service.listTransactions({ status: "posted" })
+  ).data.transactions.find((transaction) => transaction.id === target.id);
+  assert.equal(edited.budget_month_on, null);
+
+  await assert.rejects(
+    service.batchEditTransactions({
+      transaction_ids: [target.id],
+      changes: { budget_month_offset: 12 },
+    }),
+    /budget_month_offset must be -1, 0, or 1/,
+  );
+});
+
 test("demo cleanup rules apply exact provider normalization without overriding manual edits", async () => {
   const service = createDemoFinanceService();
   const initial = await service.listTransactionCleanupRules();

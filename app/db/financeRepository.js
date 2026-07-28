@@ -3107,8 +3107,14 @@ export class PgFinanceRepository {
 
   async listTransactionSplits(
     workspaceId = DEFAULT_WORKSPACE_ID,
-    { transactionIds = null, startOn = null, endOn = null } = {},
+    {
+      transactionIds = null,
+      startOn = null,
+      endOn = null,
+      dateMode = "posted",
+    } = {},
   ) {
+    const useBudgetMonth = dateMode === "budget";
     const result = await this.#pool.query(
       `
         SELECT
@@ -3127,6 +3133,9 @@ export class PgFinanceRepository {
         JOIN transactions transaction
           ON transaction.workspace_id = split.workspace_id
          AND transaction.id = split.transaction_id
+        LEFT JOIN transaction_metadata metadata
+          ON metadata.workspace_id = transaction.workspace_id
+         AND metadata.transaction_id = transaction.id
         JOIN spending_categories category
           ON category.workspace_id = split.workspace_id
          AND category.id = active_spending_category_id(
@@ -3135,11 +3144,41 @@ export class PgFinanceRepository {
          )
         WHERE split.workspace_id = $1
           AND ($2::text[] IS NULL OR split.transaction_id = ANY($2))
-          AND ($3::date IS NULL OR transaction.posted_on >= $3)
-          AND ($4::date IS NULL OR transaction.posted_on < $4)
+          AND (
+            $3::date IS NULL
+            OR (
+              CASE
+                WHEN $5::boolean
+                  THEN COALESCE(
+                    metadata.budget_month_on,
+                    date_trunc('month', transaction.posted_on)::date
+                  )
+                ELSE transaction.posted_on
+              END
+            ) >= $3
+          )
+          AND (
+            $4::date IS NULL
+            OR (
+              CASE
+                WHEN $5::boolean
+                  THEN COALESCE(
+                    metadata.budget_month_on,
+                    date_trunc('month', transaction.posted_on)::date
+                  )
+                ELSE transaction.posted_on
+              END
+            ) < $4
+          )
         ORDER BY split.transaction_id, split.line_index
       `,
-      [workspaceId, transactionIds, startOn, endOn],
+      [
+        workspaceId,
+        transactionIds,
+        startOn,
+        endOn,
+        useBudgetMonth,
+      ],
     );
     return result.rows.map(mapTransactionSplit);
   }
@@ -3160,10 +3199,13 @@ export class PgFinanceRepository {
       limit = 50,
       cursor = null,
       activeAccountsOnly = false,
+      merchant = null,
+      dateMode = "posted",
     } = {},
   ) {
     const boundedLimit = Math.max(1, Math.min(100, Number(limit) || 50));
     const normalizedSort = transactionSort(sort);
+    const useBudgetMonth = dateMode === "budget";
     const decoded = decodeCursor(cursor, normalizedSort);
     const sortConfig = {
       date: {
@@ -3226,6 +3268,7 @@ export class PgFinanceRepository {
           metadata.note_version,
           metadata.note_updated_by,
           metadata.note_updated_at,
+          metadata.budget_month_on,
           lower(
             COALESCE(
               metadata.display_name,
@@ -3430,8 +3473,32 @@ export class PgFinanceRepository {
           ON split_category_definition.workspace_id = t.workspace_id
          AND split_category_definition.id = category_split.category_id
         WHERE t.workspace_id = $1
-          AND ($2::date IS NULL OR t.posted_on >= $2)
-          AND ($3::date IS NULL OR t.posted_on < $3)
+          AND (
+            $2::date IS NULL
+            OR (
+              CASE
+                WHEN $17::boolean
+                  THEN COALESCE(
+                    metadata.budget_month_on,
+                    date_trunc('month', t.posted_on)::date
+                  )
+                ELSE t.posted_on
+              END
+            ) >= $2
+          )
+          AND (
+            $3::date IS NULL
+            OR (
+              CASE
+                WHEN $17::boolean
+                  THEN COALESCE(
+                    metadata.budget_month_on,
+                    date_trunc('month', t.posted_on)::date
+                  )
+                ELSE t.posted_on
+              END
+            ) < $3
+          )
           AND ($4::text IS NULL OR t.account_id = $4)
           AND (
             $5::text IS NULL
@@ -3528,6 +3595,15 @@ export class PgFinanceRepository {
                 )
             )
           )
+          AND (
+            $16::text IS NULL
+            OR COALESCE(
+              metadata.display_name,
+              cleanup_rule.display_name,
+              t.merchant_name,
+              t.name
+            ) = $16
+          )
         )
         SELECT *
         FROM transaction_page
@@ -3551,6 +3627,8 @@ export class PgFinanceRepository {
         minAmountMinor,
         maxAmountMinor,
         activeAccountsOnly,
+        merchant,
+        useBudgetMonth,
       ],
     );
     const hasMore = result.rows.length > boundedLimit;
@@ -3576,6 +3654,8 @@ export class PgFinanceRepository {
       category = null,
       search = null,
       activeAccountsOnly = false,
+      merchant = null,
+      dateMode = "posted",
     } = {},
   ) {
     const result = await this.listTransactions(workspaceId, {
@@ -3586,6 +3666,8 @@ export class PgFinanceRepository {
       category,
       search,
       activeAccountsOnly,
+      merchant,
+      dateMode,
       limit: 100,
     });
     const all = [...result.transactions];
@@ -3599,6 +3681,8 @@ export class PgFinanceRepository {
         category,
         search,
         activeAccountsOnly,
+        merchant,
+        dateMode,
         limit: 100,
         cursor,
       });
@@ -3627,6 +3711,7 @@ export class PgFinanceRepository {
           metadata.note_version,
           metadata.note_updated_by,
           metadata.note_updated_at,
+          metadata.budget_month_on,
           CASE
             WHEN metadata.tags_overridden
               THEN COALESCE(tag_data.tags, '[]'::jsonb)
@@ -4363,6 +4448,10 @@ export class PgFinanceRepository {
       changes,
       "excludedFromSpending",
     );
+    const hasBudgetMonthOffset = Object.hasOwn(
+      changes,
+      "budgetMonthOffset",
+    );
     const normalizedTags = hasTags
       ? [
           ...new Map(
@@ -4377,7 +4466,7 @@ export class PgFinanceRepository {
     return withTransaction(this.#pool, async (client) => {
       const locked = await client.query(
         `
-          SELECT id
+          SELECT id, posted_on
           FROM transactions
           WHERE workspace_id = $1
             AND id = ANY($2::text[])
@@ -4415,6 +4504,8 @@ export class PgFinanceRepository {
                 AND display_name IS NULL
                 AND tags_overridden = false
                 AND note IS NULL
+                AND note_version = 0
+                AND budget_month_on IS NULL
             `,
             [workspaceId, ids],
           );
@@ -4574,6 +4665,58 @@ export class PgFinanceRepository {
             ],
           );
         }
+      }
+
+      if (hasBudgetMonthOffset) {
+        await client.query(
+          `
+            INSERT INTO transaction_metadata (
+              workspace_id,
+              transaction_id,
+              budget_month_on,
+              created_by
+            )
+            SELECT
+              $1,
+              selected.id,
+              CASE
+                WHEN $3::integer = 0 THEN NULL
+                ELSE (
+                  date_trunc('month', selected.posted_on)
+                  + make_interval(months => $3::integer)
+                )::date
+              END,
+              $4
+            FROM transactions selected
+            WHERE selected.workspace_id = $1
+              AND selected.id = ANY($2::text[])
+            ON CONFLICT (workspace_id, transaction_id) DO UPDATE SET
+              budget_month_on = EXCLUDED.budget_month_on,
+              updated_at = now()
+          `,
+          [
+            workspaceId,
+            ids,
+            changes.budgetMonthOffset,
+            userId,
+          ],
+        );
+      }
+
+      if (hasDisplayName || hasTags || hasBudgetMonthOffset) {
+        await client.query(
+          `
+            DELETE FROM transaction_metadata
+            WHERE workspace_id = $1
+              AND transaction_id = ANY($2::text[])
+              AND display_name IS NULL
+              AND tags_overridden = false
+              AND note IS NULL
+              AND note_version = 0
+              AND budget_month_on IS NULL
+          `,
+          [workspaceId, ids],
+        );
       }
 
       await this.#refreshTransactionSearchDocuments(
@@ -8444,6 +8587,10 @@ function mapTransaction(row) {
     note_version: integer(row.note_version) ?? 0,
     note_updated_by: row.note_updated_by ?? null,
     note_updated_at: dateValue(row.note_updated_at),
+    budget_month_on:
+      row.budget_month_on == null
+        ? null
+        : String(row.budget_month_on),
     tags: Array.isArray(row.tags) ? row.tags : [],
     category_id:
       row.split_category_id ??

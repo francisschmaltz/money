@@ -468,6 +468,98 @@ test("refunds can make net spending negative and increase actual leftover", () =
   assert.equal(budget.actual_leftover.amount_minor, 28_000);
 });
 
+test("Plan actuals use the effective month while posted dates remain untouched", () => {
+  const categories = [
+    {
+      id: "home",
+      name: "Home",
+      path: "Home",
+      parent_category_id: null,
+    },
+    {
+      id: "rent",
+      name: "Rent",
+      path: "Home / Rent",
+      parent_category_id: "home",
+    },
+  ];
+  const transactions = [
+    {
+      id: "july-rent-applied-to-june",
+      category_id: "rent",
+      category_primary: "Home / Rent",
+      posted_on: "2026-07-02",
+      budget_month_on: "2026-06-01",
+      amount_minor: -560_000,
+      currency_code: "USD",
+      pending: false,
+      excluded_from_spending: false,
+    },
+    {
+      id: "june-rent-applied-to-july",
+      category_id: "rent",
+      category_primary: "Home / Rent",
+      posted_on: "2026-06-30",
+      budget_month_on: "2026-07-01",
+      amount_minor: -570_000,
+      currency_code: "USD",
+      pending: false,
+      excluded_from_spending: false,
+    },
+    {
+      id: "ordinary-july-refund",
+      category_id: "rent",
+      category_primary: "Home / Rent",
+      posted_on: "2026-07-10",
+      budget_month_on: null,
+      amount_minor: 10_000,
+      currency_code: "USD",
+      pending: false,
+      excluded_from_spending: false,
+    },
+  ];
+  const common = {
+    categories,
+    budgetLines: [
+      {
+        category_id: "home",
+        category: "Home",
+        amount_minor: 600_000,
+      },
+      {
+        category_id: "rent",
+        category: "Home / Rent",
+        amount_minor: 600_000,
+      },
+    ],
+    transactions,
+  };
+
+  const june = buildBudgetStatus({
+    ...common,
+    monthOn: "2026-06-01",
+  });
+  const july = buildBudgetStatus({
+    ...common,
+    monthOn: "2026-07-01",
+  });
+
+  assert.equal(june.actual_total.amount_minor, 560_000);
+  assert.equal(july.actual_total.amount_minor, 560_000);
+  assert.equal(
+    june.lines.find((line) => line.category_id === "rent").actual
+      .amount_minor,
+    560_000,
+  );
+  assert.equal(
+    july.lines.find((line) => line.category_id === "rent").actual
+      .amount_minor,
+    560_000,
+  );
+  assert.equal(transactions[0].posted_on, "2026-07-02");
+  assert.equal(transactions[1].posted_on, "2026-06-30");
+});
+
 test("budget categories stay alphabetical with Other last across months", () => {
   const build = (monthOn, otherActualMinor) =>
     buildBudgetStatus({

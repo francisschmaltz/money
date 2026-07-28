@@ -410,12 +410,14 @@ export function buildBudgetStatus({
   };
   const directActualById = new Map();
   for (const transaction of expanded) {
+    const transactionBudgetMonth = monthStart(
+      transaction.budget_month_on ?? transaction.posted_on,
+    );
     if (
       transaction.pending ||
       transaction.excluded_from_spending ||
       transaction.currency_code !== currency ||
-      transaction.posted_on < month ||
-      transaction.posted_on >= endOn
+      transactionBudgetMonth !== month
     ) {
       continue;
     }

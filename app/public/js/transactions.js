@@ -118,6 +118,7 @@
     const urlFor = (updates = {}) => {
       const url = new URL(window.location.href);
       url.searchParams.delete("cursor");
+      url.searchParams.delete("analytics_segment");
       for (const [key, value] of Object.entries(updates)) {
         if (value == null || String(value).trim() === "") {
           url.searchParams.delete(key);
@@ -144,10 +145,6 @@
       }
       input.value = value;
     };
-    const mutedColor = (color) =>
-      /^#[0-9a-f]{6}$/i.test(color || "")
-        ? `${color}55`
-        : "#d5d5d5";
     const activeState = () => {
       const params = new URL(window.location.href).searchParams;
       const requestedGroup = params.get("analytics_group");
@@ -156,51 +153,50 @@
         : groupingKeys.includes("category")
           ? "category"
           : groupingKeys[0];
-      const grouping = groupings[groupKey];
-      const requestedSegment = params.get("analytics_segment");
-      const segment =
-        grouping.segments.find(
-          (candidate) => candidate.key === requestedSegment,
-        ) || null;
-      return { groupKey, grouping, segment };
+      return {
+        groupKey,
+        grouping: groupings[groupKey],
+        params,
+      };
     };
-    const appendText = (parent, tag, text, className) => {
+    const appendText = (parent, tag, text) => {
       const element = document.createElement(tag);
-      if (className) element.className = className;
       element.textContent = text;
       parent.append(element);
       return element;
     };
-    const segmentUrl = (groupKey, segmentKey) =>
-      urlFor({
+    const segmentUrl = (groupKey, segment) => {
+      if (!segment || segment.key === `${groupKey}-other`) {
+        return null;
+      }
+      return urlFor({
         analytics_group: groupKey,
-        analytics_segment: segmentKey,
+        [groupKey === "merchant" ? "merchant" : "category"]:
+          segment.value,
       });
+    };
 
-    const renderSegmentList = (
-      groupKey,
-      grouping,
-      selectedSegment,
-      { focusSelection = false } = {},
-    ) => {
+    const renderSegmentList = (groupKey, grouping) => {
       if (!segmentList) return;
       segmentList.replaceChildren();
       for (const segment of grouping.segments) {
-        const selected = segment.key === selectedSegment?.key;
+        const href = segmentUrl(groupKey, segment);
         const item = document.createElement("article");
         item.className = "spending-detail-category";
         item.toggleAttribute("data-spending-segment-item", true);
-        item.classList.toggle("is-selected", selected);
 
-        const select = document.createElement("a");
-        select.className = "spending-detail-category__select";
-        select.href = segmentUrl(groupKey, segment.key);
-        select.dataset.spendingSegment = "";
-        select.dataset.segmentKey = segment.key;
-        select.setAttribute(
-          "aria-current",
-          selected ? "true" : "false",
-        );
+        const control = document.createElement(href ? "a" : "div");
+        control.className = "spending-detail-category__select";
+        if (href) {
+          control.href = href;
+          control.dataset.spendingSegment = "";
+          control.dataset.segmentKey = segment.key;
+        } else {
+          control.setAttribute(
+            "aria-label",
+            "Other groups combined",
+          );
+        }
 
         const dot = document.createElement("span");
         dot.className = "category-dot";
@@ -209,7 +205,7 @@
           segment.color || "#777777",
         );
         dot.setAttribute("aria-hidden", "true");
-        select.append(dot);
+        control.append(dot);
 
         const icon = document.createElement("span");
         icon.className = "list-icon list-icon--compact";
@@ -217,37 +213,27 @@
         const glyph = document.createElement("i");
         glyph.className = `ph ${segment.icon || "ph-receipt"}`;
         icon.append(glyph);
-        select.append(icon);
+        control.append(icon);
 
         const copy = document.createElement("span");
-        appendText(copy, "strong", segment.label);
+        appendText(
+          copy,
+          "strong",
+          href ? segment.label : "Other groups combined",
+        );
         appendText(
           copy,
           "small",
           `${formatPercent(segment.percent)}% · ${segment.count} transaction${segment.count === 1 ? "" : "s"}`,
         );
-        select.append(copy);
-        appendText(
-          select,
-          "strong",
-          formatMoney(segment.amount),
-        );
-        item.append(select);
+        control.append(copy);
+        appendText(control, "strong", formatMoney(segment.amount));
+        item.append(control);
         segmentList.append(item);
-      }
-      if (focusSelection && selectedSegment) {
-        segmentList
-          .querySelector(
-            `[data-spending-segment][data-segment-key="${CSS.escape(selectedSegment.key)}"]`,
-          )
-          ?.focus();
       }
     };
 
-    const updateBreakdownChart = (
-      grouping,
-      selectedSegment,
-    ) => {
+    const updateBreakdownChart = (grouping) => {
       if (!breakdownCanvas) return;
       const segments = grouping.segments;
       breakdownCanvas.dataset.labels = JSON.stringify(
@@ -268,18 +254,14 @@
             (segment) =>
               `${segment.label} ${formatMoney(segment.amount)}`,
           )
-          .join(", ")}${selectedSegment ? `. ${selectedSegment.label} is selected.` : "."}`,
+          .join(", ")}.`,
       );
       const chart = breakdownCanvas.moneyChart;
       if (!chart) return;
       chart.data.datasets = segments.map((segment, index) => ({
         label: segment.label,
         data: [segment.amount?.amount_minor ?? 0],
-        backgroundColor:
-          !selectedSegment ||
-          selectedSegment.key === segment.key
-            ? segment.color
-            : mutedColor(segment.color),
+        backgroundColor: segment.color,
         borderColor: "#ffffff",
         borderWidth: 1.5,
         borderSkipped: false,
@@ -294,18 +276,11 @@
       chart.update();
     };
 
-    const updateLineChart = (
-      grouping,
-      selectedSegment,
-    ) => {
+    const updateLineChart = (grouping) => {
       if (!lineCanvas) return;
-      const labels =
-        selectedSegment?.seriesLabels ?? grouping.seriesLabels;
-      const values =
-        selectedSegment?.seriesValues ?? grouping.seriesValues;
-      const title = `${intervalTitle(grouping.seriesInterval)}${
-        selectedSegment ? ` ${selectedSegment.label}` : ""
-      } spending`;
+      const labels = grouping.seriesLabels;
+      const values = grouping.seriesValues;
+      const title = `${intervalTitle(grouping.seriesInterval)} spending`;
       lineCanvas.dataset.labels = JSON.stringify(labels);
       lineCanvas.dataset.values = JSON.stringify(values);
       lineCanvas.setAttribute(
@@ -316,9 +291,7 @@
             0,
           ),
           currency:
-            selectedSegment?.amount?.currency ||
-            grouping.segments[0]?.amount?.currency ||
-            "USD",
+            grouping.segments[0]?.amount?.currency || "USD",
         })} total.`,
       );
       if (seriesTitle) seriesTitle.textContent = title;
@@ -343,22 +316,21 @@
             link.getAttribute("href"),
             window.location.origin,
           );
-          for (const key of [
-            "analytics_group",
-            "analytics_segment",
-          ]) {
-            const value = current.searchParams.get(key);
-            if (value) target.searchParams.set(key, value);
-            else target.searchParams.delete(key);
-          }
+          const value = current.searchParams.get("analytics_group");
+          if (value) target.searchParams.set("analytics_group", value);
+          else target.searchParams.delete("analytics_group");
+          target.searchParams.delete("analytics_segment");
           link.href = `${target.pathname}${target.search}${target.hash}`;
         });
     };
 
-    const render = ({ focusSelection = false } = {}) => {
-      const { groupKey, grouping, segment } = activeState();
+    const render = () => {
+      const { groupKey, grouping, params } = activeState();
+      const filterName =
+        groupKey === "merchant" ? "merchant" : "category";
+      const activeFilter = params.get(filterName);
       root.dataset.activeGroup = groupKey;
-      root.dataset.activeSegment = segment?.key || "";
+      root.removeAttribute("data-active-segment");
       root
         .querySelectorAll("[data-spending-group]")
         .forEach((control) => {
@@ -370,46 +342,39 @@
           control.classList.toggle("is-selected", active);
           control.href = urlFor({
             analytics_group: control.dataset.group,
-            analytics_segment: null,
           });
         });
       setHiddenFilterValue("analytics_group", groupKey);
-      setHiddenFilterValue(
-        "analytics_segment",
-        segment?.key || null,
-      );
       if (segmentHeading) {
-        segmentHeading.textContent = segment
-          ? segment.label
+        segmentHeading.textContent = activeFilter
+          ? grouping.segments[0]?.label ?? activeFilter
           : `All ${groupingPlural(grouping)}`;
       }
       if (selectionStatus) {
-        selectionStatus.textContent = segment
-          ? `${segment.label} selected. The ledger is unchanged.`
+        selectionStatus.textContent = activeFilter
+          ? groupKey === "merchant"
+            ? `Filtering transactions by merchant ${activeFilter}.`
+            : `Filtering transactions by ${grouping.segments[0]?.label ?? activeFilter} and its descendants.`
           : `Showing all ${grouping.label.toLowerCase()} spending.`;
       }
       if (reset) {
-        reset.hidden = !segment;
-        reset.href = urlFor({ analytics_segment: null });
+        reset.hidden = !activeFilter;
+        reset.textContent = `Clear ${grouping.label.toLowerCase()}`;
+        reset.href = urlFor({ [filterName]: null });
       }
-      renderSegmentList(groupKey, grouping, segment, {
-        focusSelection,
-      });
+      renderSegmentList(groupKey, grouping);
       updateLedgerNavigation();
-      updateBreakdownChart(grouping, segment);
-      updateLineChart(grouping, segment);
+      updateBreakdownChart(grouping);
+      updateLineChart(grouping);
     };
 
-    const pushExplorerState = (
-      updates,
-      { focusSelection = false } = {},
-    ) => {
+    const pushGroupingState = (groupKey) => {
       window.history.pushState(
         { spendingExplorer: true },
         "",
-        urlFor(updates),
+        urlFor({ analytics_group: groupKey }),
       );
-      render({ focusSelection });
+      render();
     };
     const plainActivation = (event) =>
       event.button === 0 &&
@@ -422,39 +387,7 @@
       const group = event.target.closest("[data-spending-group]");
       if (group && plainActivation(event)) {
         event.preventDefault();
-        pushExplorerState({
-          analytics_group: group.dataset.group,
-          analytics_segment: null,
-        });
-        return;
-      }
-      const segment = event.target.closest(
-        "[data-spending-segment]",
-      );
-      if (segment && plainActivation(event)) {
-        event.preventDefault();
-        const current = activeState();
-        pushExplorerState(
-          {
-            analytics_group: current.groupKey,
-            analytics_segment:
-              current.segment?.key === segment.dataset.segmentKey
-                ? null
-                : segment.dataset.segmentKey,
-          },
-          {
-            focusSelection:
-              current.segment?.key !== segment.dataset.segmentKey,
-          },
-        );
-        return;
-      }
-      const clear = event.target.closest(
-        "[data-spending-segment-reset]",
-      );
-      if (clear && plainActivation(event)) {
-        event.preventDefault();
-        pushExplorerState({ analytics_segment: null });
+        pushGroupingState(group.dataset.group);
       }
     });
 
@@ -469,13 +402,11 @@
       );
       const index = points[0]?.datasetIndex;
       const current = activeState();
-      const segment = current.grouping.segments[index];
-      if (!segment) return;
-      pushExplorerState({
-        analytics_group: current.groupKey,
-        analytics_segment:
-          current.segment?.key === segment.key ? null : segment.key,
-      });
+      const href = segmentUrl(
+        current.groupKey,
+        current.grouping.segments[index],
+      );
+      if (href) window.location.assign(href);
     });
 
     window.addEventListener("popstate", () => render());

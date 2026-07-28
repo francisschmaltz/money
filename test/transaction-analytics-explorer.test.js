@@ -64,22 +64,41 @@ function seriesTotal(series) {
 }
 
 function repositoryFor(transactions) {
+  const filteredTransactions = (options = {}) =>
+    transactions.filter((entry) => {
+      if (
+        options.merchant &&
+        (entry.display_name ??
+          entry.merchant_name ??
+          entry.name) !== options.merchant
+      ) {
+        return false;
+      }
+      if (
+        options.category &&
+        entry.category_primary !== options.category
+      ) {
+        return false;
+      }
+      return true;
+    });
   return {
     async getDataFreshness() {
       return FRESHNESS;
     },
-    async listTransactions() {
+    async listTransactions(_workspaceId, options = {}) {
+      const filtered = filteredTransactions(options);
       return {
-        transactions: transactions.slice(0, 100),
+        transactions: filtered.slice(0, 100),
         pageInfo: {
-          has_more: transactions.length > 100,
+          has_more: filtered.length > 100,
           next_cursor:
-            transactions.length > 100 ? "ledger-page-2" : null,
+            filtered.length > 100 ? "ledger-page-2" : null,
         },
       };
     },
-    async getTransactionsForPeriod() {
-      return transactions;
+    async getTransactionsForPeriod(_workspaceId, options = {}) {
+      return filteredTransactions(options);
     },
     async listAccounts() {
       return [];
@@ -349,7 +368,7 @@ test("spending eligibility explains matches that contain no posted spending", ()
   });
 });
 
-test("transactions page uses the full 90-day analysis set and restores explorer selection", async () => {
+test("transactions page uses the full analysis set and merchant rows become exact filters", async () => {
   const transactions = Array.from({ length: 205 }, (_, index) =>
     transaction({
       id: `transaction-${index}`,
@@ -391,28 +410,38 @@ test("transactions page uses the full 90-day analysis set and restores explorer 
     expectedTotal,
   );
 
-  const selectedKey =
-    initial.spendingDetails.groupings.merchant.segments[0].key;
+  const selectedMerchant =
+    initial.spendingDetails.groupings.merchant.segments[0].label;
+  const merchantTransactions = transactions.filter(
+    (entry) => entry.merchant_name === selectedMerchant,
+  );
+  const merchantTotal = merchantTransactions.reduce(
+    (sum, entry) => sum - entry.amount_minor,
+    0,
+  );
   const selected = await service.getPageData("transactions", {
     query: {
       period: "90",
       analytics_group: "merchant",
-      analytics_segment: selectedKey,
+      merchant: selectedMerchant,
     },
   });
 
-  assert.equal(selected.spendingDetails.activeSegmentKey, selectedKey);
-  assert.equal(selected.spendingDetails.selectedSegment.key, selectedKey);
+  assert.equal(selected.spendingDetails.activeSegmentKey, null);
+  assert.equal(selected.spendingDetails.selectedSegment, null);
+  assert.equal(selected.transactions.length, merchantTransactions.length);
+  assert.ok(
+    selected.transactions.every(
+      (entry) => entry.displayName === selectedMerchant,
+    ),
+  );
+  assert.equal(selected.spendingDetails.total.amount_minor, merchantTotal);
   assert.equal(
     selected.spendingDetails.seriesValues.reduce(
       (sum, amount) => sum + amount,
       0,
     ),
-    selected.spendingDetails.selectedSegment.amount.amount_minor,
-  );
-  assert.match(
-    selected.spendingDetails.seriesTitle,
-    /^Weekly Merchant \d spending$/,
+    merchantTotal,
   );
 
   const invalid = await service.getPageData("transactions", {

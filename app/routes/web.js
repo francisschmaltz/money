@@ -587,6 +587,18 @@ function demoServiceTransactionForWeb(transaction, demo) {
       transaction.note_updated_at ??
       stored?.noteUpdatedAt ??
       null,
+    budgetMonthOn:
+      transaction.budget_month_on ??
+      stored?.budgetMonthOn ??
+      null,
+    effectiveBudgetMonthOn:
+      transaction.budget_month_on ??
+      stored?.budgetMonthOn ??
+      `${String(
+        transaction.posted_on ??
+          stored?.postedOn ??
+          dateIso,
+      ).slice(0, 7)}-01`,
     category:
       transaction.category_primary ??
       transaction.category ??
@@ -772,10 +784,26 @@ async function demoCategorySplitProjection(
         split?.lines,
       );
       if (!grouped) {
-        return transaction.category === category ? [transaction] : [];
+        return transaction.category === category ||
+          transaction.category.startsWith(`${category} / `)
+          ? [transaction]
+          : [];
       }
-      const matching = grouped.get(category);
-      if (!matching) return [];
+      const matching = [...grouped.entries()]
+        .filter(
+          ([candidate]) =>
+            candidate === category ||
+            candidate.startsWith(`${category} / `),
+        )
+        .reduce(
+          (result, [, value]) => ({
+            amount_minor:
+              result.amount_minor + value.amount_minor,
+            line_count: result.line_count + value.line_count,
+          }),
+          { amount_minor: 0, line_count: 0 },
+        );
+      if (!matching.line_count) return [];
       return [{
         ...transaction,
         category,
@@ -960,7 +988,12 @@ async function demoPageModel(
             .includes(normalized)) &&
         (!query.category ||
           splitProjection ||
-          transaction.category === query.category) &&
+          transaction.category === query.category ||
+          transaction.category.startsWith(
+            `${query.category} / `,
+          )) &&
+        (!query.merchant ||
+          transaction.merchant === query.merchant) &&
         (!query.account ||
           transaction.accountId === query.account ||
           demo.accounts.some(
@@ -1021,7 +1054,7 @@ async function demoPageModel(
             query.analytics_group === "merchant"
               ? "merchant"
               : "category",
-          activeSegmentKey: query.analytics_segment,
+          activeSegmentKey: null,
         },
       ),
       selectedTransaction:

@@ -21,13 +21,13 @@ test("first-party asset revisions change with the current deployment", async () 
     path.resolve("app/views/partials/head.ejs"),
     "utf8",
   );
-  assert.match(head, /\/css\/money\.css\?v=31/);
+  assert.match(head, /\/css\/money\.css\?v=32/);
   assert.match(head, /\/js\/charts\.js\?v=6/);
-  assert.match(head, /\/js\/money\.js\?v=27/);
-  assert.match(head, /\/js\/transactions\.js\?v=2/);
+  assert.match(head, /\/js\/money\.js\?v=28/);
+  assert.match(head, /\/js\/transactions\.js\?v=3/);
 });
 
-test("transaction explorer keeps chart selection without secondary ledger shortcuts", async () => {
+test("transaction explorer uses real category and merchant links while Other stays aggregate-only", async () => {
   const [view, script, styles] = await Promise.all([
     readFile(path.resolve("app/views/transactions.ejs"), "utf8"),
     readFile(path.resolve("app/public/js/transactions.js"), "utf8"),
@@ -38,6 +38,10 @@ test("transaction explorer keeps chart selection without secondary ledger shortc
     assert.doesNotMatch(source, /Show matching transactions/);
     assert.doesNotMatch(source, /Remaining groups combined/);
   }
+  assert.match(view, /filter the chart and transactions/);
+  assert.match(script, /groupKey === "merchant" \? "merchant" : "category"/);
+  assert.match(script, /"Other groups combined"/);
+  assert.doesNotMatch(view, /query\.analytics_segment/);
   assert.match(
     styles,
     /\.spending-detail-category__select\s*\{[\s\S]*?min-height:\s*56px;/,

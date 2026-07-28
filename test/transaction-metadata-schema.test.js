@@ -125,6 +125,31 @@ test("transaction notes are versioned, searchable metadata", async () => {
   );
 });
 
+test("Plan month overrides are nullable month starts on transaction metadata", async () => {
+  const migration = await readFile(
+    fileURLToPath(
+      new URL(
+        "../migrations/027_transaction_budget_month.sql",
+        import.meta.url,
+      ),
+    ),
+    "utf8",
+  );
+
+  assert.match(
+    migration,
+    /ADD COLUMN IF NOT EXISTS budget_month_on date/,
+  );
+  assert.match(
+    migration,
+    /budget_month_on IS NULL\s+OR budget_month_on =\s+date_trunc\('month', budget_month_on\)::date/,
+  );
+  assert.match(
+    migration,
+    /ON transaction_metadata \(workspace_id, budget_month_on\)\s+WHERE budget_month_on IS NOT NULL/,
+  );
+});
+
 test("transaction sync inserts and updates normalized provider names", async () => {
   const db = fakePool();
   const repository = new PgFinanceRepository(db.pool);

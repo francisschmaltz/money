@@ -28,6 +28,7 @@ test("transaction category and text filters include split categories", async () 
     search: "dining",
     minAmountMinor: 1_000,
     maxAmountMinor: 5_000,
+    merchant: "Exact Merchant",
   });
 
   assert.match(
@@ -71,6 +72,41 @@ test("transaction category and text filters include split categories", async () 
     2,
   );
   assert.deepEqual(db.calls[0].params.slice(12, 14), [1_000, 5_000]);
+  assert.equal(db.calls[0].params[15], "Exact Merchant");
+  assert.match(
+    db.calls[0].sql,
+    /COALESCE\( metadata\.display_name, cleanup_rule\.display_name, t\.merchant_name, t\.name \) = \$16/,
+  );
+});
+
+test("finance repository selects transactions by effective Plan month only when requested", async () => {
+  const db = fakePool([
+    {
+      id: "rent",
+      account_id: "checking",
+      account_name: "Checking",
+      amount_minor: "-560000",
+      currency_code: "USD",
+      posted_on: "2026-07-02",
+      budget_month_on: "2026-06-01",
+      pending: false,
+    },
+  ]);
+  const repository = new PgFinanceRepository(db.pool);
+
+  const result = await repository.getTransactionsForPeriod("shared", {
+    startOn: "2026-06-01",
+    endOn: "2026-07-01",
+    dateMode: "budget",
+  });
+
+  assert.equal(db.calls[0].params[16], true);
+  assert.match(
+    db.calls[0].sql,
+    /COALESCE\(\s*metadata\.budget_month_on,\s*date_trunc\('month', t\.posted_on\)::date\s*\)/,
+  );
+  assert.equal(result[0].budget_month_on, "2026-06-01");
+  assert.equal(result[0].posted_on, "2026-07-02");
 });
 
 test("category-filtered transactions expose one split aggregate without replacing provider data", async () => {
@@ -161,6 +197,30 @@ test("finance repository returns typed split lines for analytics", async () => {
     null,
     "2026-07-01",
     "2026-08-01",
+    false,
+  ]);
+});
+
+test("finance repository can select split lines by effective Plan month", async () => {
+  const db = fakePool();
+  const repository = new PgFinanceRepository(db.pool);
+
+  await repository.listTransactionSplits("shared", {
+    startOn: "2026-06-01",
+    endOn: "2026-07-01",
+    dateMode: "budget",
+  });
+
+  assert.match(
+    db.calls[0].sql,
+    /COALESCE\(\s*metadata\.budget_month_on,\s*date_trunc\('month', transaction\.posted_on\)::date\s*\)/,
+  );
+  assert.deepEqual(db.calls[0].params, [
+    "shared",
+    null,
+    "2026-06-01",
+    "2026-07-01",
+    true,
   ]);
 });
 

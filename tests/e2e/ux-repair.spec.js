@@ -400,7 +400,7 @@ test.describe("@ux-stress Money UX repair", () => {
     }
   });
 
-  test("spending explorer preserves the ledger and restores state through Back and Forward", async ({
+  test("spending explorer filters the ledger and restores filters through Back and Forward", async ({
     page,
   }) => {
     await page.setViewportSize({ width: 1024, height: 900 });
@@ -429,9 +429,11 @@ test.describe("@ux-stress Money UX repair", () => {
 
     const segment = explorer
       .locator("[data-spending-segment]")
-      .filter({ hasNotText: /^Other$/i })
       .nth(1);
     await expect(segment).toBeVisible();
+    const segmentLabel = (
+      await segment.locator("strong").first().textContent()
+    ).trim();
     const beforeChart = await explorer
       .locator("[data-spending-line-chart]")
       .evaluate((canvas) => ({
@@ -440,9 +442,15 @@ test.describe("@ux-stress Money UX repair", () => {
       }));
 
     await segment.press("Enter");
-    await expect(page).toHaveURL(/analytics_segment=[^&]+/);
-    await expectSelected(segment);
-    await expect(page.locator(".transaction-row")).toHaveCount(ledgerCount);
+    await expect(page).toHaveURL(/merchant=[^&]+/);
+    const filteredLedgerCount = await page
+      .locator(".transaction-row")
+      .count();
+    expect(filteredLedgerCount).toBeGreaterThan(0);
+    expect(filteredLedgerCount).toBeLessThan(ledgerCount);
+    for (const row of await page.locator(".transaction-row").all()) {
+      await expect(row).toContainText(segmentLabel);
+    }
 
     const afterChart = await explorer
       .locator("[data-spending-line-chart]")
@@ -452,14 +460,6 @@ test.describe("@ux-stress Money UX repair", () => {
       }));
     expect(afterChart).not.toEqual(beforeChart);
 
-    const selectedSegmentControl = explorer
-      .locator("[data-spending-segment-item].is-selected")
-      .locator("[data-spending-segment]");
-    expect(
-      await selectedSegmentControl.evaluate(
-        (element) => element.getBoundingClientRect().height,
-      ),
-    ).toBeGreaterThanOrEqual(55);
     await expect(
       explorer.locator(".spending-detail-category__filter"),
     ).toHaveCount(0);
@@ -482,7 +482,6 @@ test.describe("@ux-stress Money UX repair", () => {
 
     await page.goBack();
     await expect(page).toHaveURL(/analytics_group=merchant/);
-    await expect(page).not.toHaveURL(/analytics_segment=/);
     await expect(page.locator(".transaction-row")).toHaveCount(ledgerCount);
 
     await page.goBack();
@@ -491,28 +490,28 @@ test.describe("@ux-stress Money UX repair", () => {
 
     await page.goForward();
     await expect(page).toHaveURL(/analytics_group=merchant/);
-    await expect(page).not.toHaveURL(/analytics_segment=/);
     await expectSelected(merchantGroup);
 
     await page.goForward();
     await expect(page).toHaveURL(/analytics_group=merchant/);
-    await expect(page).toHaveURL(/analytics_segment=[^&]+/);
-    await expectSelected(segment);
-    await expect(page.locator(".transaction-row")).toHaveCount(ledgerCount);
+    await expect(page).toHaveURL(/merchant=[^&]+/);
+    await expect(page.locator(".transaction-row")).toHaveCount(
+      filteredLedgerCount,
+    );
 
     await page.locator(".transaction-row").first().click();
     await expect(page).toHaveURL(/transaction=/);
     await expect(page).toHaveURL(/analytics_group=merchant/);
-    await expect(page).toHaveURL(/analytics_segment=[^&]+/);
+    await expect(page).toHaveURL(/merchant=[^&]+/);
     await page
       .getByRole("button", { name: "Close transaction details" })
       .click();
     await expect(page).not.toHaveURL(/transaction=/);
     await expect(page).toHaveURL(/analytics_group=merchant/);
-    await expect(page).toHaveURL(/analytics_segment=[^&]+/);
+    await expect(page).toHaveURL(/merchant=[^&]+/);
   });
 
-  test("clicking a spending chart segment mirrors the accessible segment controls", async ({
+  test("clicking a spending chart segment applies the same real ledger filter", async ({
     page,
   }) => {
     await gotoSettled(page, "/transactions?period=90");
@@ -542,14 +541,15 @@ test.describe("@ux-stress Money UX repair", () => {
       bounds.y + point.y,
     );
 
-    await expect(page).toHaveURL(/analytics_segment=[^&]+/);
+    await expect(page).toHaveURL(/category=[^&]+/);
     await expect(
       explorer.locator("[data-spending-selection-status]"),
     ).toContainText(point.label);
-    await expect(
-      explorer.locator("[data-spending-segment][aria-current='true']"),
-    ).toContainText(point.label);
-    await expect(page.locator(".transaction-row")).toHaveCount(ledgerCount);
+    const filteredLedgerCount = await page
+      .locator(".transaction-row")
+      .count();
+    expect(filteredLedgerCount).toBeGreaterThan(0);
+    expect(filteredLedgerCount).toBeLessThanOrEqual(ledgerCount);
   });
 
   test("income-only results explain the spending exclusion instead of drawing a fake zero chart", async ({

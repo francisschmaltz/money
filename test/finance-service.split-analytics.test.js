@@ -95,6 +95,28 @@ function splitAwareService() {
     async listTransactionCategories() {
       return ["Dining", "Groceries", "Shopping"];
     },
+    async listSpendingCategories() {
+      return [
+        {
+          id: "dining",
+          name: "Dining",
+          path: "Dining",
+          parent_category_id: null,
+        },
+        {
+          id: "groceries",
+          name: "Groceries",
+          path: "Groceries",
+          parent_category_id: null,
+        },
+        {
+          id: "shopping",
+          name: "Shopping",
+          path: "Shopping",
+          parent_category_id: null,
+        },
+      ];
+    },
   };
   return {
     service: createFinanceService({
@@ -131,6 +153,146 @@ test("spending segments and category filters use split lines instead of the pare
       segment.amount.amount_minor,
     ]),
     [["Dining", 4_000]],
+  );
+});
+
+test("a parent category includes direct, child, nested, and split activity once", async () => {
+  const ledgerCalls = [];
+  const transactions = [
+    {
+      ...transaction({
+        id: "direct-home",
+        postedOn: "2026-07-03",
+        amountMinor: -1_000,
+        category: "Home",
+      }),
+      category_id: "home",
+    },
+    {
+      ...transaction({
+        id: "rent",
+        postedOn: "2026-07-04",
+        amountMinor: -5_600,
+        category: "Home / Rent",
+      }),
+      category_id: "rent",
+    },
+    {
+      ...transaction({
+        id: "electric",
+        postedOn: "2026-07-05",
+        amountMinor: -700,
+        category: "Home / Utilities / Electric",
+      }),
+      category_id: "electric",
+    },
+    {
+      ...transaction({
+        id: "split-purchase",
+        postedOn: "2026-07-06",
+        amountMinor: -2_000,
+        category: "Shopping",
+      }),
+      category_id: "shopping",
+      split_version: 1,
+    },
+  ];
+  const categories = [
+    {
+      id: "home",
+      name: "Home",
+      path: "Home",
+      parent_category_id: null,
+    },
+    {
+      id: "rent",
+      name: "Rent",
+      path: "Home / Rent",
+      parent_category_id: "home",
+    },
+    {
+      id: "utilities",
+      name: "Utilities",
+      path: "Home / Utilities",
+      parent_category_id: "home",
+    },
+    {
+      id: "electric",
+      name: "Electric",
+      path: "Home / Utilities / Electric",
+      parent_category_id: "utilities",
+    },
+    {
+      id: "shopping",
+      name: "Shopping",
+      path: "Shopping",
+      parent_category_id: null,
+    },
+  ];
+  const repository = {
+    async listTransactions(_workspaceId, options) {
+      ledgerCalls.push(options);
+      return {
+        transactions,
+        pageInfo: { has_more: false, next_cursor: null },
+      };
+    },
+    async getTransactionsForPeriod() {
+      return transactions;
+    },
+    async listTransactionSplits() {
+      return [
+        {
+          id: "split-home",
+          transaction_id: "split-purchase",
+          split_version: 1,
+          line_index: 0,
+          category_id: "rent",
+          category: "Home / Rent",
+          amount_minor: -800,
+        },
+        {
+          id: "split-shopping",
+          transaction_id: "split-purchase",
+          split_version: 1,
+          line_index: 1,
+          category_id: "shopping",
+          category: "Shopping",
+          amount_minor: -1_200,
+        },
+      ];
+    },
+    async listSpendingCategories() {
+      return categories;
+    },
+    async listTransactionCategories() {
+      return categories.map((category) => category.path);
+    },
+    async listAccounts() {
+      return [];
+    },
+    async getDataFreshness() {
+      return FRESHNESS;
+    },
+  };
+  const service = createFinanceService({
+    repository,
+    now: () => new Date("2026-07-27T19:00:00.000Z"),
+  });
+
+  const page = await service.getPageData("transactions", {
+    query: { period: "month", category: "home" },
+  });
+
+  assert.equal(ledgerCalls[0].category, "home");
+  assert.equal(page.spendingDetails.total.amount_minor, 8_100);
+  assert.equal(page.spendingDetails.transactionCount, 4);
+  assert.deepEqual(
+    page.spendingDetails.categories.map((entry) => [
+      entry.label,
+      entry.amount.amount_minor,
+    ]),
+    [["Home", 8_100]],
   );
 });
 

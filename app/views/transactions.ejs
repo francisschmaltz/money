@@ -22,10 +22,10 @@
       "start",
       "end",
       "category",
+      "merchant",
       "account",
       "sort",
       "analytics_group",
-      "analytics_segment",
     ]) {
       const value = query[key];
       if (value != null && String(value).trim()) {
@@ -42,6 +42,17 @@
     }
     return `/transactions${parameters.size ? `?${parameters.toString()}` : ""}`;
   };
+  const shiftMonth = (monthOn, offset) => {
+    const date = new Date(`${String(monthOn).slice(0, 7)}-01T00:00:00.000Z`);
+    date.setUTCMonth(date.getUTCMonth() + offset);
+    return date.toISOString().slice(0, 10);
+  };
+  const formatPlanMonth = (monthOn) =>
+    new Intl.DateTimeFormat("en-US", {
+      month: "long",
+      year: "numeric",
+      timeZone: "UTC",
+    }).format(new Date(`${monthOn}T00:00:00.000Z`));
 %>
 <body data-page="transactions">
   <%- include("partials/site-header", { activePath, viewer }) %>
@@ -82,8 +93,8 @@
         <% if (query.analytics_group) { %>
           <input type="hidden" name="analytics_group" value="<%= query.analytics_group %>">
         <% } %>
-        <% if (query.analytics_segment) { %>
-          <input type="hidden" name="analytics_segment" value="<%= query.analytics_segment %>">
+        <% if (query.merchant) { %>
+          <input type="hidden" name="merchant" value="<%= query.merchant %>">
         <% } %>
         <label class="filter-field">
           <span class="filter-field-label">Category</span>
@@ -117,6 +128,9 @@
         </span>
       </label>
       <div class="transaction-filter__actions">
+        <% if (query.merchant) { %>
+          <span class="filter-chip">Merchant: <strong><%= query.merchant %></strong> <a href="<%= transactionQuery({ merchant: null }, ['cursor']) %>" aria-label="Clear merchant filter"><i class="ph ph-x" aria-hidden="true"></i></a></span>
+        <% } %>
         <button class="button button--dark" type="submit" data-transaction-filter-submit>Apply</button>
       </div>
     </form>
@@ -187,6 +201,12 @@
               `transaction-organize-${selectedTransaction.id}`;
             const canOrganizeTransaction =
               viewer?.is_admin && selectedTransaction.status !== "pending";
+            const selectedTransactionPostedOn =
+              selectedTransaction.dateIso ||
+              selectedTransaction.postedOn ||
+              selectedTransaction.date;
+            const selectedTransactionPostedMonth =
+              `${String(selectedTransactionPostedOn).slice(0, 7)}-01`;
           %>
           <dl class="entity-detail-grid entity-detail-grid--transaction">
             <div><dt>Original merchant</dt><dd><%= selectedTransaction.rawMerchant || "—" %></dd></div>
@@ -229,6 +249,7 @@
             <div><dt>Status</dt><dd><%= selectedTransaction.status %></dd></div>
             <div><dt>Authorized</dt><dd><%= selectedTransaction.authorizedAt || selectedTransaction.authorizedOn || "—" %></dd></div>
             <div><dt>Posted</dt><dd><%= selectedTransaction.postedAt || selectedTransaction.postedOn || selectedTransaction.dateIso || selectedTransaction.date %></dd></div>
+            <div><dt>Plan month</dt><dd><%= formatPlanMonth(selectedTransaction.effectiveBudgetMonthOn || selectedTransactionPostedMonth) %><%= selectedTransaction.budgetMonthOn ? " · Manually applied" : " · Posted month" %></dd></div>
             <div><dt>Payment channel</dt><dd><%= selectedTransaction.paymentChannel || "—" %></dd></div>
             <div><dt>Transaction type</dt><dd><%= selectedTransaction.sourceTransactionType || "—" %></dd></div>
             <div><dt>Cardholder</dt><dd><%= selectedTransaction.cardholderName || "—" %></dd></div>
@@ -239,6 +260,17 @@
             <div class="entity-detail-grid__wide"><dt>Provider transaction ID</dt><dd><code><%= selectedTransaction.providerTransactionId || "—" %></code></dd></div>
           </dl>
           <% if (canOrganizeTransaction) { %>
+            <%
+              const postedBudgetMonth = selectedTransactionPostedMonth;
+              const effectiveBudgetMonth =
+                selectedTransaction.effectiveBudgetMonthOn || postedBudgetMonth;
+              const selectedBudgetMonthOffset =
+                effectiveBudgetMonth === shiftMonth(postedBudgetMonth, -1)
+                  ? -1
+                  : effectiveBudgetMonth === shiftMonth(postedBudgetMonth, 1)
+                    ? 1
+                    : 0;
+            %>
             <section class="transaction-organize" aria-labelledby="transaction-organize-heading">
               <div>
                 <h3 id="transaction-organize-heading">Organize transaction</h3>
@@ -277,6 +309,18 @@
                     <option value="false" <%= !selectedTransaction.excludedFromSpending ? "selected" : "" %>>Include in spending</option>
                     <option value="true" <%= selectedTransaction.excludedFromSpending ? "selected" : "" %>>Exclude from spending</option>
                   </select>
+                </label>
+                <label>
+                  Apply to Plan month
+                  <select
+                    name="budget_month_offset"
+                    data-initial-value="<%= selectedBudgetMonthOffset %>"
+                  >
+                    <option value="-1" <%= selectedBudgetMonthOffset === -1 ? "selected" : "" %>><%= formatPlanMonth(shiftMonth(postedBudgetMonth, -1)) %> · Previous month</option>
+                    <option value="0" <%= selectedBudgetMonthOffset === 0 ? "selected" : "" %>><%= formatPlanMonth(postedBudgetMonth) %> · Posted month</option>
+                    <option value="1" <%= selectedBudgetMonthOffset === 1 ? "selected" : "" %>><%= formatPlanMonth(shiftMonth(postedBudgetMonth, 1)) %> · Next month</option>
+                  </select>
+                  <small>Only Plan actuals move. The posted date and every other report stay unchanged.</small>
                 </label>
                 <div class="transaction-organize__footer">
                   <span class="form-status" role="status" data-transaction-organize-status></span>
@@ -491,7 +535,15 @@
         activeSpendingGroup?.key === "category"
           ? "categories"
           : `${activeSpendingGroup?.label?.toLowerCase() ?? "group"}s`;
-      const selectedSpendingSegment = spendingDetails.selectedSegment ?? null;
+      const activeSpendingFilter =
+        activeSpendingGroup?.key === "merchant"
+          ? query.merchant
+          : query.category_id || query.category;
+      const activeSpendingFilterLabel =
+        activeSpendingFilter
+          ? activeSpendingSegments[0]?.label ?? activeSpendingFilter
+          : null;
+      const selectedSpendingSegment = null;
       const spendingSeriesInterval =
         spendingDetails.seriesInterval ??
         activeSpendingGroup?.seriesInterval ??
@@ -515,7 +567,6 @@
       aria-labelledby="transaction-spending-heading"
       data-spending-explorer
       data-active-group="<%= activeSpendingGroup?.key ?? 'category' %>"
-      data-active-segment="<%= selectedSpendingSegment?.key ?? '' %>"
       data-period-label="<%= spendingDetails.periodLabel %>"
     >
       <script type="application/json" data-spending-explorer-data><%- spendingExplorerJson %></script>
@@ -556,7 +607,7 @@
               <% Object.values(spendingGroupings).forEach((grouping) => { %>
                 <a
                   class="segmented-control__option"
-                  href="<%= transactionQuery({ analytics_group: grouping.key, analytics_segment: null }, ['cursor']) %>"
+                  href="<%= transactionQuery({ analytics_group: grouping.key }, ['cursor']) %>"
                   data-spending-group
                   data-group="<%= grouping.key %>"
                   aria-current="<%= grouping.key === activeSpendingGroup.key ? 'true' : 'false' %>"
@@ -565,7 +616,11 @@
             </div>
           </div>
           <p class="card-note" data-spending-selection-status aria-live="polite">
-            <%= selectedSpendingSegment ? `${selectedSpendingSegment.label} selected. The ledger is unchanged.` : `Showing all ${activeSpendingGroup.label.toLowerCase()} spending.` %>
+            <%= activeSpendingGroup.key === "category" && query.category
+              ? `Filtering transactions by ${categories.find((category) => (category.value ?? category.label) === (query.category_id || query.category))?.label ?? query.category} and its descendants.`
+              : activeSpendingGroup.key === "merchant" && query.merchant
+                ? `Filtering transactions by merchant ${query.merchant}.`
+                : `Showing all ${activeSpendingGroup.label.toLowerCase()} spending.` %>
           </p>
         </div>
 
@@ -605,37 +660,37 @@
           <div class="spending-detail-categories">
             <div class="subsection-heading spending-segment-heading">
               <div>
-                <h3 data-spending-segment-heading><%= selectedSpendingSegment ? selectedSpendingSegment.label : `All ${activeSpendingGroupPlural}` %></h3>
-                <p>Choose a group to explore the chart. This does not filter transactions.</p>
+                <h3 data-spending-segment-heading><%= activeSpendingFilterLabel ?? `All ${activeSpendingGroupPlural}` %></h3>
+                <p>Choose a group to filter the chart and transactions.</p>
               </div>
               <a
                 class="button button--ghost button--compact"
-                href="<%= transactionQuery({ analytics_segment: null }, ['cursor']) %>"
+                href="<%= transactionQuery({ [activeSpendingGroup.key === 'merchant' ? 'merchant' : 'category']: null }, ['cursor']) %>"
                 data-spending-segment-reset
-                <%= selectedSpendingSegment ? "" : "hidden" %>
-              >Show all</a>
+                <%= (activeSpendingGroup.key === "merchant" ? query.merchant : (query.category_id || query.category)) ? "" : "hidden" %>
+              >Clear <%= activeSpendingGroup.label.toLowerCase() %></a>
             </div>
             <div class="spending-detail-category-list" data-spending-segment-list>
               <% activeSpendingSegments.forEach((segment, index) => { %>
                 <%
-                  const isSelected = selectedSpendingSegment?.key === segment.key;
+                  const isAggregate = segment.key === `${activeSpendingGroup.key}-other`;
+                  const filterName = activeSpendingGroup.key === "merchant" ? "merchant" : "category";
                 %>
-                <article class="spending-detail-category <%= isSelected ? 'is-selected' : '' %>" data-spending-segment-item>
-                  <a
+                <article class="spending-detail-category" data-spending-segment-item>
+                  <% if (!isAggregate) { %><a
                     class="spending-detail-category__select"
-                    href="<%= transactionQuery({ analytics_group: activeSpendingGroup.key, analytics_segment: segment.key }, ['cursor']) %>"
+                    href="<%= transactionQuery({ analytics_group: activeSpendingGroup.key, [filterName]: segment.value }, ['cursor']) %>"
                     data-spending-segment
                     data-segment-key="<%= segment.key %>"
-                    aria-current="<%= isSelected ? 'true' : 'false' %>"
-                  >
+                  ><% } else { %><div class="spending-detail-category__select" aria-label="Other groups combined"><% } %>
                     <span class="category-dot" style="--category-color: <%= segment.color %>" aria-hidden="true"></span>
                     <span class="list-icon list-icon--compact" aria-hidden="true"><i class="ph <%= segment.icon %>"></i></span>
                     <span>
-                      <strong><%= segment.label %></strong>
+                      <strong><%= isAggregate ? "Other groups combined" : segment.label %></strong>
                       <small><%= segment.percent %>% · <%= segment.count %> transaction<%= segment.count === 1 ? "" : "s" %></small>
                     </span>
                     <strong><%= formatMoney(segment.amount) %></strong>
-                  </a>
+                  <% if (!isAggregate) { %></a><% } else { %></div><% } %>
                 </article>
               <% }) %>
             </div>
@@ -771,6 +826,19 @@
                   <option value="false">Include in spending</option>
                   <option value="true">Exclude from spending</option>
                 </select>
+              </label>
+
+              <label class="cleanup-edit-field">
+                <span class="cleanup-edit-field__toggle">
+                  <input type="checkbox" data-bulk-change="budget_month_offset">
+                  Apply to Plan month
+                </span>
+                <select disabled data-bulk-budget-month>
+                  <option value="-1">Previous month</option>
+                  <option value="0">Posted month</option>
+                  <option value="1">Next month</option>
+                </select>
+                <small>Relative to each selected transaction’s posted month.</small>
               </label>
 
             </fieldset>

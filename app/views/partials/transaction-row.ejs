@@ -1,6 +1,6 @@
 <%
   const transactionDetailQuery = new URLSearchParams();
-  for (const key of ["period", "start", "end", "q", "account", "category", "sort", "cursor", "analytics_group", "analytics_segment"]) {
+  for (const key of ["period", "start", "end", "q", "account", "category", "merchant", "sort", "cursor", "analytics_group"]) {
     if (query?.[key]) transactionDetailQuery.set(key, String(query[key]));
   }
   transactionDetailQuery.set("transaction", transaction.id);
@@ -53,6 +53,7 @@
   <span class="transaction-row__meta">
     <strong class="<%= transaction.amount.amount_minor > 0 ? 'money-positive' : '' %>"><%= formatMoney(transaction.amount) %></strong>
     <span><%- include("transaction-date", { transaction }) %><% if (transaction.status === "pending") { %> · Pending<% } %></span>
+    <% if (transaction.budgetMonthOn) { %><span class="transaction-row__plan-month">Plan: <%= new Intl.DateTimeFormat("en-US", { month: "short", year: "numeric", timeZone: "UTC" }).format(new Date(`${transaction.budgetMonthOn}T00:00:00.000Z`)) %></span><% } %>
   </span>
 </a>
 <% if (canBulkSelect) { %>

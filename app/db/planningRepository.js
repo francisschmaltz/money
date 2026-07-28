@@ -2193,8 +2193,14 @@ export class PgPlanningRepository {
 
   async listTransactionSplits(
     workspaceId = DEFAULT_WORKSPACE_ID,
-    { transactionIds = null, startOn = null, endOn = null } = {},
+    {
+      transactionIds = null,
+      startOn = null,
+      endOn = null,
+      dateMode = "posted",
+    } = {},
   ) {
+    const useBudgetMonth = dateMode === "budget";
     const result = await this.#client().query(
       `
         SELECT
@@ -2212,13 +2218,46 @@ export class PgPlanningRepository {
         JOIN transactions transaction
           ON transaction.workspace_id = split.workspace_id
          AND transaction.id = split.transaction_id
+        LEFT JOIN transaction_metadata metadata
+          ON metadata.workspace_id = transaction.workspace_id
+         AND metadata.transaction_id = transaction.id
         WHERE split.workspace_id = $1
           AND ($2::text[] IS NULL OR split.transaction_id = ANY($2))
-          AND ($3::date IS NULL OR transaction.posted_on >= $3)
-          AND ($4::date IS NULL OR transaction.posted_on < $4)
+          AND (
+            $3::date IS NULL
+            OR (
+              CASE
+                WHEN $5::boolean
+                  THEN COALESCE(
+                    metadata.budget_month_on,
+                    date_trunc('month', transaction.posted_on)::date
+                  )
+                ELSE transaction.posted_on
+              END
+            ) >= $3
+          )
+          AND (
+            $4::date IS NULL
+            OR (
+              CASE
+                WHEN $5::boolean
+                  THEN COALESCE(
+                    metadata.budget_month_on,
+                    date_trunc('month', transaction.posted_on)::date
+                  )
+                ELSE transaction.posted_on
+              END
+            ) < $4
+          )
         ORDER BY split.transaction_id, split.line_index
       `,
-      [workspaceId, transactionIds, startOn, endOn],
+      [
+        workspaceId,
+        transactionIds,
+        startOn,
+        endOn,
+        useBudgetMonth,
+      ],
     );
     return result.rows.map(mapSplit);
   }

@@ -239,7 +239,12 @@ test("derived queries can exclude deactivated and removed Item accounts", async 
     );
     assert.match(call.sql, /a\.active = true/);
     assert.match(call.sql, /i\.status <> 'removed'/);
-    assert.equal(call.params.at(-1), true);
+    assert.equal(
+      call.sql.includes("FROM transactions t")
+        ? call.params[14]
+        : call.params.at(-1),
+      true,
+    );
   }
 });
 
