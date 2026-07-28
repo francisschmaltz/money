@@ -1457,6 +1457,19 @@ export class FinanceService {
     };
   }
 
+  async rerunTransactionCleanupRules() {
+    const result =
+      await this.#repository.rerunTransactionCleanupRules(
+        this.#workspaceId,
+      );
+    await this.#enqueueRecompute();
+    return {
+      rerun: true,
+      transaction_count: Number(result?.transaction_count ?? 0),
+      rule_count: Number(result?.rule_count ?? 0),
+    };
+  }
+
   async recordLogin({ email, displayName, isAdmin = false }) {
     return this.#repository.upsertUser({
       email,
@@ -2020,6 +2033,11 @@ export class FinanceService {
         "A category cannot be nested under itself, a descendant, or a merged category.",
       );
     }
+    if (updated.protected) {
+      throw badRequest(
+        "Other is permanent and cannot be edited.",
+      );
+    }
     await this.#enqueueRecompute();
     return { updated: true, category: updated };
   }
@@ -2115,16 +2133,58 @@ export class FinanceService {
     if (merged.selfMerge) {
       throw badRequest("A category cannot be merged into itself");
     }
-    if (merged.hasChildren) {
-      throw badRequest(
-        "Move or merge a category's children before merging the parent.",
-      );
-    }
     if (merged.invalidParent) {
       throw badRequest("The destination parent category is invalid");
     }
+    if (merged.protected) {
+      throw badRequest(
+        "Other cannot be edited, merged, or used as a merge destination.",
+      );
+    }
     await this.#enqueueRecompute();
     return { merged: true, category: merged };
+  }
+
+  async deleteSpendingCategory(input = {}, actor = null) {
+    const categoryId = requiredId(
+      input.categoryId ?? input.category_id,
+      "category_id",
+    );
+    const expectedVersion = positiveVersion(
+      input.expectedVersion ?? input.expected_version,
+      "expected_version",
+    );
+    const deleted = await this.#repository.deleteSpendingCategory(
+      this.#workspaceId,
+      {
+        categoryId,
+        expectedVersion,
+        userId: actor?.id ?? input.userId ?? input.user_id ?? null,
+      },
+    );
+    if (!deleted) throw notFound("Category not found");
+    if (deleted.stale) {
+      throw categoryConflict(
+        "The category changed before deletion. Refresh and try again.",
+      );
+    }
+    if (deleted.protected) {
+      throw badRequest("Other is permanent and cannot be deleted.");
+    }
+    if (deleted.conflict) {
+      throw categoryConflict(
+        "A child category conflicts with its promoted top-level path.",
+      );
+    }
+    if (deleted.invalidParent) {
+      throw badRequest("The category tree could not be preserved.");
+    }
+    await this.#enqueueRecompute();
+    return {
+      deleted: true,
+      category_id: categoryId,
+      moved_to_category: deleted,
+    };
   }
 
   async splitSpendingCategory(input = {}, actor = null) {

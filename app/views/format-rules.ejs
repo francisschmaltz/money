@@ -13,6 +13,7 @@
     const classificationCategories = [...new Set([
       ...availableCategories,
       ...configuredFixed,
+      "Other",
     ])];
     const settingsCategories =
       typeof spendingCategories !== "undefined" &&
@@ -31,28 +32,47 @@
             transaction_count: 0,
             budget_line_count: 0,
             aliases: [],
+            is_system: label === "Other",
           }));
-    const activeSettingsCategories = settingsCategories.filter(
-      (category) => category.status !== "merged"
-    );
+    const activeSettingsCategories = settingsCategories
+      .filter((category) => !category.status || category.status === "active")
+      .sort((left, right) => {
+        const leftIsOther = left.is_system || left.path === "Other";
+        const rightIsOther = right.is_system || right.path === "Other";
+        if (leftIsOther !== rightIsOther) return leftIsOther ? 1 : -1;
+        return left.path.localeCompare(right.path);
+      });
     const mergedSettingsCategories = settingsCategories.filter(
       (category) => category.status === "merged"
     );
     const settingsCategoryById = new Map(
       settingsCategories.map((category) => [category.id, category])
     );
-    const cleanupCategories = activeSettingsCategories.map(
-      (category) => category.path
-    );
-    const cleanupTagOptions = [...new Set(
-      (
+    const cleanup =
+      typeof transactionCleanup !== "undefined" && transactionCleanup
+        ? transactionCleanup
+        : { query: "", anchor: null, matches: [], available_tags: [] };
+    const cleanupRows = [
+      ...(cleanup.anchor ? [cleanup.anchor] : []),
+      ...(cleanup.matches || []).filter(
+        (match) => !cleanup.anchor || match.id !== cleanup.anchor.id
+      ),
+    ];
+    const cleanupSource = cleanup.anchor || cleanupRows[0] || null;
+    const cleanupCategories = [...new Set([
+      cleanupSource?.category_primary,
+      ...activeSettingsCategories.map((category) => category.path),
+    ].filter(Boolean))];
+    const cleanupTagOptions = [...new Set([
+      ...(cleanup.available_tags || []),
+      ...(
         typeof transactionTags !== "undefined"
           ? transactionTags.map(
               (tag) => typeof tag === "string" ? tag : tag.name
             )
           : []
-      ).filter(Boolean)
-    )].sort((left, right) => left.localeCompare(right));
+      ),
+    ].filter(Boolean))].sort((left, right) => left.localeCompare(right));
     const settingsTransactionRules =
       typeof transactionRules !== "undefined" &&
       Array.isArray(transactionRules)
@@ -96,14 +116,37 @@
     </nav>
 
     <% if (selectedFormatRulesSection === "rules") { %>
-      <%- include("partials/format-rules-list", {
-        settingsTransactionRules,
-        cleanupRuleChanges,
-        cleanupRuleMatcherLabel,
-        cleanupRuleMatcherMode,
-        cleanupCategories,
-        cleanupTagOptions
-      }) %>
+      <div
+        data-transaction-cleanup
+        data-cleanup-source-merchant="<%= cleanupSource?.raw_merchant || '' %>"
+        data-cleanup-source-name="<%= cleanupSource?.raw_name || '' %>"
+      >
+        <%- include("partials/format-rules-list", {
+          settingsTransactionRules,
+          cleanupRuleChanges,
+          cleanupRuleMatcherLabel,
+          cleanupRuleMatcherMode,
+          cleanupCategories,
+          cleanupTagOptions
+        }) %>
+        <%- include("partials/format-rules-transaction-cleanup", {
+          cleanup,
+          cleanupRows,
+          cleanupSource,
+          cleanupCategories,
+          cleanupTagOptions
+        }) %>
+        <section class="card settings-card cleanup-rerun">
+          <div>
+            <h2>Re-run every rule</h2>
+            <p>Apply every enabled format rule to all posted transactions, then rebuild search and insights.</p>
+          </div>
+          <div class="cleanup-rerun__action">
+            <span class="save-status" role="status" data-cleanup-rerun-status></span>
+            <button class="button button--dark" type="button" data-cleanup-rerun>Re-Run All</button>
+          </div>
+        </section>
+      </div>
     <% } else { %>
       <%- include("partials/format-rules-categories", {
         activeSettingsCategories,

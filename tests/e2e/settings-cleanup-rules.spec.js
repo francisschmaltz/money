@@ -76,7 +76,7 @@ test("automatic cleanup can match contained normalized text", async ({
   );
 });
 
-test("one-time cleanup hands Save as rule to the Rules page", async ({
+test("one-time cleanup can hand an edit to a new rule", async ({
   page,
 }) => {
   await page.route(
@@ -91,7 +91,7 @@ test("one-time cleanup hands Save as rule to the Rules page", async ({
   );
 
   await page.goto(
-    "/settings?transaction=txn_whole_foods#transaction-cleanup",
+    "/format-rules?transaction=txn_whole_foods#transaction-cleanup",
   );
   await page
     .getByRole("button", { name: /Apply to \d+ selected/ })
@@ -103,7 +103,9 @@ test("one-time cleanup hands Save as rule to the Rules page", async ({
   await expect(saveAsRule).toBeVisible();
   await saveAsRule.click();
 
-  await expect(page).toHaveURL(/\/format-rules\?new_rule=1$/);
+  await expect(page).toHaveURL(
+    /\/format-rules\?transaction=txn_whole_foods#transaction-cleanup$/,
+  );
   const dialog = page.getByRole("dialog", { name: "New rule" });
   await expect(dialog).toBeVisible();
   await expect(
@@ -112,4 +114,39 @@ test("one-time cleanup hands Save as rule to the Rules page", async ({
   await expect(
     dialog.locator("[data-cleanup-rule-display-name]"),
   ).toHaveValue("Whole Foods Market");
+});
+
+test("Re-Run All checks every posted transaction", async ({ page }) => {
+  await page.route(
+    "**/api/v1/transaction-cleanup-rules/rerun",
+    async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          rerun: true,
+          transaction_count: 42,
+          rule_count: 3,
+        }),
+      });
+    },
+  );
+  await page.route(
+    "**/api/v1/transaction-cleanup-rules",
+    async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ rules: [] }),
+      });
+    },
+  );
+
+  await page.goto("/format-rules");
+  await page.getByRole("button", { name: "Re-Run All" }).click();
+  await expect(
+    page.locator("[data-cleanup-rerun-status]"),
+  ).toHaveText(
+    "42 posted transactions checked across 3 enabled rules",
+  );
 });

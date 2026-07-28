@@ -10,6 +10,10 @@ const splitMigrationUrl = new URL(
   "../migrations/022_spending_category_split.sql",
   import.meta.url,
 );
+const otherMigrationUrl = new URL(
+  "../migrations/023_category_other_and_deletion.sql",
+  import.meta.url,
+);
 const repositoryUrl = new URL(
   "../app/db/financeRepository.js",
   import.meta.url,
@@ -81,4 +85,31 @@ test("category event history records categories split out of a merge", async () 
   assert.match(repository, /async splitSpendingCategory/);
   assert.match(repository, /'split'/);
   assert.match(repository, /SET merged_into_category_id = NULL/);
+});
+
+test("Other is a permanent leaf and deletion preserves the category tree", async () => {
+  const [migration, repository] = await Promise.all([
+    readFile(otherMigrationUrl, "utf8"),
+    readFile(repositoryUrl, "utf8"),
+  ]);
+
+  assert.match(migration, /ADD COLUMN is_system boolean NOT NULL/);
+  assert.match(migration, /'Other'/);
+  assert.match(migration, /spending_categories_system_unique/);
+  assert.match(migration, /spending_categories_system_shape_check/);
+  assert.match(migration, /Other cannot contain child categories/);
+  assert.match(migration, /'delete'/);
+  assert.match(migration, /'split'/);
+  assert.match(repository, /#moveSpendingCategoryChildren/);
+  assert.match(repository, /operation === "delete"/);
+  assert.match(repository, /async deleteSpendingCategory/);
+  assert.match(
+    repository,
+    /FROM transaction_splits[\s\S]*active_spending_category_id/,
+  );
+  assert.doesNotMatch(repository, /return "has_children"/);
+  assert.doesNotMatch(
+    repository,
+    /Move or merge a category's children before merging the parent/,
+  );
 });

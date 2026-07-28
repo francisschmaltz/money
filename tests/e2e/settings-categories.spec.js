@@ -92,6 +92,31 @@ test("a category can be renamed and reclassified with its exact version", async 
   });
 });
 
+test("a category can be deleted into Other", async ({ page }) => {
+  const capturedWrite = await captureCategoryWrite(page);
+  page.on("dialog", (dialog) => dialog.accept());
+  await page.goto("/format-rules/categories");
+
+  const section = page.locator("#spending-categories");
+  await section
+    .getByRole("button", { name: "Edit categories" })
+    .click();
+  const row = section.locator("[data-category-row]").first();
+  const categoryId = await row.getAttribute("data-category-id");
+  await Promise.all([
+    page.waitForRequest(
+      (request) => request.method() === "DELETE",
+    ),
+    row.getByRole("button", { name: "Delete" }).click(),
+  ]);
+
+  expect(capturedWrite()).toEqual({
+    method: "DELETE",
+    path: `/api/v1/categories/${categoryId}`,
+    body: { expected_version: 1 },
+  });
+});
+
 test("merge preview counts affected records and submits a new destination", async ({
   page,
 }) => {
@@ -144,4 +169,24 @@ test("merge preview counts affected records and submits a new destination", asyn
       },
     },
   });
+});
+
+test("Other is last, protected, and has no category icon", async ({
+  page,
+}) => {
+  await page.goto("/format-rules/categories");
+  const section = page.locator("#spending-categories");
+  const rows = section.locator("[data-category-row]");
+  const other = rows.last();
+
+  await expect(other).toContainText("Other");
+  await expect(other).toContainText("Fallback");
+  await expect(other.locator("[data-category-select]")).toHaveCount(0);
+  await expect(section.locator(".list-icon")).toHaveCount(0);
+
+  await section
+    .getByRole("button", { name: "Edit categories" })
+    .click();
+  await expect(other.locator("[data-category-edit-form]")).toHaveCount(0);
+  await expect(other.getByRole("button", { name: "Delete" })).toHaveCount(0);
 });

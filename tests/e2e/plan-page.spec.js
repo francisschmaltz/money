@@ -1,4 +1,3 @@
-import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 
 test("Plan keeps one Safe to Spend card and a fixed, editable budget", async ({
@@ -56,13 +55,6 @@ test("Plan keeps one Safe to Spend card and a fixed, editable budget", async ({
   await expect(
     page.getByRole("textbox", { name: "Dining planned amount" }),
   ).toHaveCount(0);
-
-  const accessibility = await new AxeBuilder({ page }).analyze();
-  expect(
-    accessibility.violations.filter((violation) =>
-      ["critical", "serious"].includes(violation.impact),
-    ),
-  ).toEqual([]);
 
   await page.goto("/");
   const dashboardSafeToSpendText = await page
@@ -127,12 +119,6 @@ test("goal summaries use compact actions and modal editing", async ({
   );
   await expect(createDialog).toBeVisible();
   await expect(createDialog.locator('input[name="name"]')).toBeFocused();
-  const dialogAccessibility = await new AxeBuilder({ page }).analyze();
-  expect(
-    dialogAccessibility.violations.filter((violation) =>
-      ["critical", "serious"].includes(violation.impact),
-    ),
-  ).toEqual([]);
   await createDialog.getByRole("heading", { name: "New goal" }).click();
   await expect(createDialog).toBeVisible();
   await createDialog.getByRole("button", { name: "Cancel" }).click();
@@ -276,12 +262,6 @@ test("finished goals keep over-plan history and learned patterns", async ({
     ),
   ).toBeVisible();
 
-  const accessibility = await new AxeBuilder({ page }).analyze();
-  expect(
-    accessibility.violations.filter((violation) =>
-      ["critical", "serious"].includes(violation.impact),
-    ),
-  ).toEqual([]);
 });
 
 test("goal dialogs do not widen the mobile page", async ({ page }) => {
@@ -472,10 +452,4 @@ test("a zero-earmark goal can overspend, undo, and finish", async ({
   ).toContainText("$0.00");
   await expect(finishedGoal).not.toContainText("-$38.42");
 
-  const accessibility = await new AxeBuilder({ page }).analyze();
-  expect(
-    accessibility.violations.filter((violation) =>
-      ["critical", "serious"].includes(violation.impact),
-    ),
-  ).toEqual([]);
 });

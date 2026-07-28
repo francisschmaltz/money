@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { parse } from "csv-parse/sync";
 import { normalizeMerchant, normalizeTransactionName } from "./plaidNormalizer.js";
 import { stableId } from "../services/ids.js";
 
@@ -30,6 +29,96 @@ export class AppleCardCsvError extends Error {
     this.code = code;
     this.expose = true;
   }
+}
+
+function parseCsvRows(source) {
+  // Apple Card exports use a fixed RFC 4180-style schema. Keep this parser
+  // intentionally narrow: commas, escaped quotes, embedded newlines, and BOM.
+  const text = source.startsWith("\uFEFF") ? source.slice(1) : source;
+  const rows = [];
+  let row = [];
+  let field = "";
+  let inQuotes = false;
+  let closedQuote = false;
+  let rowStarted = false;
+
+  const finishField = () => {
+    row.push(field);
+    field = "";
+    closedQuote = false;
+  };
+  const finishRow = () => {
+    if (!rowStarted && row.length === 0 && field.length === 0) return;
+    finishField();
+    rows.push(row);
+    if (rows.length > APPLE_CARD_MAX_ROWS + 1) {
+      throw new AppleCardCsvError(
+        "The CSV exceeds the 20,000-row limit.",
+        { statusCode: 413, code: "too_many_rows" },
+      );
+    }
+    row = [];
+    rowStarted = false;
+  };
+
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    if (inQuotes) {
+      if (character !== '"') {
+        field += character;
+        continue;
+      }
+      if (text[index + 1] === '"') {
+        field += '"';
+        index += 1;
+        continue;
+      }
+      inQuotes = false;
+      closedQuote = true;
+      continue;
+    }
+
+    if (closedQuote) {
+      if (character === ",") {
+        finishField();
+        rowStarted = true;
+        continue;
+      }
+      if (character === "\n" || character === "\r") {
+        finishRow();
+        if (character === "\r" && text[index + 1] === "\n") index += 1;
+        continue;
+      }
+      throw new Error("unexpected content after a quoted CSV field");
+    }
+
+    if (character === '"') {
+      if (field.length > 0) {
+        throw new Error("unexpected quote in an unquoted CSV field");
+      }
+      inQuotes = true;
+      rowStarted = true;
+      continue;
+    }
+    if (character === ",") {
+      finishField();
+      rowStarted = true;
+      continue;
+    }
+    if (character === "\n" || character === "\r") {
+      finishRow();
+      if (character === "\r" && text[index + 1] === "\n") index += 1;
+      continue;
+    }
+    field += character;
+    rowStarted = true;
+  }
+
+  if (inQuotes) throw new Error("unterminated quoted CSV field");
+  if (closedQuote || rowStarted || row.length > 0 || field.length > 0) {
+    finishRow();
+  }
+  return rows;
 }
 
 function normalizedText(value) {
@@ -110,13 +199,9 @@ export function parseAppleCardCsv(buffer) {
 
   let rows;
   try {
-    rows = parse(text, {
-      bom: true,
-      columns: false,
-      relax_column_count: true,
-      skip_empty_lines: true,
-    });
-  } catch {
+    rows = parseCsvRows(text);
+  } catch (error) {
+    if (error instanceof AppleCardCsvError) throw error;
     throw new AppleCardCsvError("The file is not a valid Apple Card CSV.");
   }
 

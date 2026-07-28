@@ -7,7 +7,7 @@
   <div class="settings-card__heading">
     <div>
       <h2>Spending categories</h2>
-      <p>One category tree drives spending, budgets, filters, and insights. Fixed categories stay visible but are excluded from “spend less” findings.</p>
+      <p>One category tree drives spending, budgets, filters, and insights. Fixed categories stay visible but are excluded from “spend less” findings. Other is the permanent fallback for deleted categories.</p>
     </div>
     <div class="category-manager__actions">
       <span class="save-status" role="status" data-category-global-status></span>
@@ -28,7 +28,7 @@
       <span>Parent</span>
       <select name="parent_category_id">
         <option value="">Top level</option>
-        <% activeSettingsCategories.forEach((category) => { %>
+        <% activeSettingsCategories.filter((category) => !category.is_system).forEach((category) => { %>
           <option value="<%= category.id %>"><%= category.path %></option>
         <% }) %>
       </select>
@@ -49,7 +49,7 @@
   <div class="category-manager-list" data-category-manager-list>
     <% activeSettingsCategories.forEach((category) => { %>
       <article
-        class="category-manager-row"
+        class="category-manager-row <%= category.is_system ? 'category-manager-row--system' : '' %>"
         style="--category-depth: <%= category.depth || 0 %>"
         data-category-row
         data-category-id="<%= category.id %>"
@@ -57,15 +57,18 @@
         data-category-transaction-count="<%= category.transaction_count %>"
         data-category-budget-count="<%= category.budget_line_count %>"
       >
-        <label class="category-manager-row__select">
-          <input type="checkbox" data-category-select>
-          <span class="sr-only">Select <%= category.path %> for merging</span>
-        </label>
-        <span class="list-icon" aria-hidden="true"><i class="ph ph-tag"></i></span>
+        <% if (!category.is_system) { %>
+          <label class="category-manager-row__select">
+            <input type="checkbox" data-category-select>
+            <span class="sr-only">Select <%= category.path %> for merging</span>
+          </label>
+        <% } else { %>
+          <span class="category-manager-row__select" aria-hidden="true"></span>
+        <% } %>
         <div class="category-manager-row__view">
           <div class="category-manager-row__title">
             <strong><%= category.path %></strong>
-            <span class="category-classification category-classification--<%= category.classification %>"><%= category.classification === "fixed" ? "Fixed" : "Flexible" %></span>
+            <span class="category-classification category-classification--<%= category.is_system ? "system" : category.classification %>"><%= category.is_system ? "Fallback" : category.classification === "fixed" ? "Fixed" : "Flexible" %></span>
           </div>
           <small><%= category.transaction_count %> transaction<%= category.transaction_count === 1 ? "" : "s" %> · <%= category.budget_line_count %> budget line<%= category.budget_line_count === 1 ? "" : "s" %></small>
           <% const sourceLabels = (category.aliases || []).map((alias) => alias.label).filter((label) => label !== category.path && label !== category.name); %>
@@ -76,40 +79,48 @@
             </details>
           <% } %>
         </div>
-        <form
-          class="category-edit-form"
-          data-category-edit-form
-          data-endpoint="/api/v1/categories/<%= encodeURIComponent(category.id) %>"
-          data-original-name="<%= category.name %>"
-          data-original-parent-id="<%= category.parent_category_id || "" %>"
-          data-original-classification="<%= category.classification %>"
-          hidden
-        >
-          <div class="category-edit-form__path">
-            <small>Category</small>
-            <strong><%= category.path %></strong>
-          </div>
-          <label>
-            <span class="sr-only">Category name</span>
-            <input name="name" maxlength="100" value="<%= category.name %>" required>
-          </label>
-          <label>
-            <span class="sr-only">Parent category</span>
-            <select name="parent_category_id">
-              <option value="">Top level</option>
-              <% activeSettingsCategories.filter((candidate) => candidate.id !== category.id).forEach((candidate) => { %>
-                <option value="<%= candidate.id %>" <%= candidate.id === category.parent_category_id ? "selected" : "" %>><%= candidate.path %></option>
-              <% }) %>
-            </select>
-          </label>
-          <label>
-            <span class="sr-only">Spending classification</span>
-            <select name="classification">
-              <option value="flexible" <%= category.classification === "flexible" ? "selected" : "" %>>Flexible</option>
-              <option value="fixed" <%= category.classification === "fixed" ? "selected" : "" %>>Fixed</option>
-            </select>
-          </label>
-        </form>
+        <% if (!category.is_system) { %>
+          <form
+            class="category-edit-form"
+            data-category-edit-form
+            data-endpoint="/api/v1/categories/<%= encodeURIComponent(category.id) %>"
+            data-original-name="<%= category.name %>"
+            data-original-parent-id="<%= category.parent_category_id || "" %>"
+            data-original-classification="<%= category.classification %>"
+            hidden
+          >
+            <div class="category-edit-form__path">
+              <small>Category</small>
+              <strong><%= category.path %></strong>
+            </div>
+            <label>
+              <span class="sr-only">Category name</span>
+              <input name="name" maxlength="100" value="<%= category.name %>" required>
+            </label>
+            <label>
+              <span class="sr-only">Parent category</span>
+              <select name="parent_category_id">
+                <option value="">Top level</option>
+                <% activeSettingsCategories.filter((candidate) => candidate.id !== category.id && !candidate.is_system).forEach((candidate) => { %>
+                  <option value="<%= candidate.id %>" <%= candidate.id === category.parent_category_id ? "selected" : "" %>><%= candidate.path %></option>
+                <% }) %>
+              </select>
+            </label>
+            <label>
+              <span class="sr-only">Spending classification</span>
+              <select name="classification">
+                <option value="flexible" <%= category.classification === "flexible" ? "selected" : "" %>>Flexible</option>
+                <option value="fixed" <%= category.classification === "fixed" ? "selected" : "" %>>Fixed</option>
+              </select>
+            </label>
+            <button
+              class="button button--quiet danger-action"
+              type="button"
+              data-category-delete
+              data-endpoint="/api/v1/categories/<%= encodeURIComponent(category.id) %>"
+            >Delete</button>
+          </form>
+        <% } %>
       </article>
     <% }) %>
   </div>
@@ -163,7 +174,7 @@
         <span>Destination</span>
         <select name="destination_category_id" data-category-merge-destination>
           <option value="__new__">Create a new destination</option>
-          <% activeSettingsCategories.forEach((category) => { %>
+          <% activeSettingsCategories.filter((category) => !category.is_system).forEach((category) => { %>
             <option value="<%= category.id %>"><%= category.path %></option>
           <% }) %>
         </select>
@@ -177,7 +188,7 @@
           <span>Parent</span>
           <select name="parent_category_id">
             <option value="">Top level</option>
-            <% activeSettingsCategories.forEach((category) => { %>
+            <% activeSettingsCategories.filter((category) => !category.is_system).forEach((category) => { %>
               <option value="<%= category.id %>"><%= category.path %></option>
             <% }) %>
           </select>

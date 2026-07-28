@@ -2179,6 +2179,19 @@ export class DemoFinanceService {
     };
   }
 
+  async rerunTransactionCleanupRules() {
+    this.#refreshTransactionCleanupRuleApplications();
+    return {
+      rerun: true,
+      transaction_count: this.#transactions.filter(
+        (transaction) => !transaction.pending,
+      ).length,
+      rule_count: [...this.#transactionCleanupRules.values()].filter(
+        (rule) => rule.enabled,
+      ).length,
+    };
+  }
+
   async batchEditTransactions(input = {}) {
     const transactionIds =
       input.transactionIds ?? input.transaction_ids;

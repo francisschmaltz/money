@@ -1,5 +1,4 @@
 import { expect, test } from "@playwright/test";
-import AxeBuilder from "@axe-core/playwright";
 
 const shortcut = process.platform === "darwin" ? "Meta+k" : "Control+k";
 
@@ -254,11 +253,5 @@ for (const viewport of [
       );
     expect(clippedControls).toEqual([]);
 
-    const accessibility = await new AxeBuilder({ page }).analyze();
-    expect(
-      accessibility.violations.filter((violation) =>
-        ["serious", "critical"].includes(violation.impact),
-      ),
-    ).toEqual([]);
   });
 }

@@ -1229,6 +1229,46 @@
       }
     });
 
+    categoryManager
+      ?.querySelectorAll("[data-category-delete]")
+      .forEach((button) => {
+        button.addEventListener("click", async () => {
+          const row = button.closest("[data-category-row]");
+          const form = button.closest("[data-category-edit-form]");
+          const name =
+            form?.dataset.originalName || "this category";
+          const confirmed = window.confirm(
+            `Delete “${name}”? Its transactions and budgets will move to Other. ` +
+              "Child categories will move up one level.",
+          );
+          if (!confirmed) return;
+          button.setAttribute("disabled", "");
+          if (categoryGlobalStatus) {
+            categoryGlobalStatus.textContent = `Deleting ${name}…`;
+          }
+          try {
+            await requestJson(button.dataset.endpoint, {
+              method: "DELETE",
+              body: {
+                expected_version: Number(
+                  row?.dataset.categoryVersion,
+                ),
+              },
+            });
+            if (categoryGlobalStatus) {
+              categoryGlobalStatus.textContent =
+                `${name} deleted; spending moved to Other`;
+            }
+            window.location.reload();
+          } catch (error) {
+            if (categoryGlobalStatus) {
+              categoryGlobalStatus.textContent = error.message;
+            }
+            button.removeAttribute("disabled");
+          }
+        });
+      });
+
     document
       .querySelectorAll("[data-category-split]")
       .forEach((button) => {
@@ -1903,6 +1943,8 @@
     const csrfToken =
       document.querySelector('meta[name="csrf-token"]')?.content || "";
     let previewDigest = null;
+    const appleCardUploadType =
+      "application/vnd.money.apple-card-import";
 
     const money = (amountMinor) =>
       new Intl.NumberFormat("en-US", {
@@ -1924,6 +1966,32 @@
         throw new Error(payload.message || `Request failed with ${response.status}`);
       }
       return payload;
+    };
+
+    const appleCardUploadPayload = async (form, digest = null) => {
+      const values = new FormData(form);
+      const file = values.get("file");
+      if (!(file instanceof File) || file.size === 0) {
+        throw new Error("Choose an Apple Card CSV to upload.");
+      }
+      if (file.size > 2 * 1024 * 1024) {
+        throw new Error("The CSV exceeds the 2 MiB limit.");
+      }
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const chunks = [];
+      for (let offset = 0; offset < bytes.length; offset += 32_768) {
+        chunks.push(
+          String.fromCharCode(...bytes.subarray(offset, offset + 32_768)),
+        );
+      }
+      return {
+        file_base64: window.btoa(chunks.join("")),
+        balance: String(values.get("balance") || ""),
+        credit_limit: String(values.get("credit_limit") || ""),
+        balance_as_of: String(values.get("balance_as_of") || ""),
+        last_four: String(values.get("last_four") || ""),
+        ...(digest ? { preview_digest: digest } : {}),
+      };
     };
 
     const resetPreview = () => {
@@ -1989,7 +2057,10 @@
           "/api/v1/apple-card/imports/preview",
           {
             method: "POST",
-            body: new FormData(importForm),
+            headers: { "Content-Type": appleCardUploadType },
+            body: JSON.stringify(
+              await appleCardUploadPayload(importForm),
+            ),
           },
         );
         previewDigest = payload.preview_digest;
@@ -2045,11 +2116,12 @@
       submit.disabled = true;
       if (importStatus) importStatus.textContent = "Importing transactions…";
       try {
-        const body = new FormData(importForm);
-        body.set("preview_digest", previewDigest);
         const payload = await fetchJson("/api/v1/apple-card/imports", {
           method: "POST",
-          body,
+          headers: { "Content-Type": appleCardUploadType },
+          body: JSON.stringify(
+            await appleCardUploadPayload(importForm, previewDigest),
+          ),
         });
         if (importStatus) {
           importStatus.textContent =
@@ -3051,6 +3123,38 @@
       "cleanup-rule-prefill",
       (event) => openRuleDialog({ prefill: event.detail }),
     );
+
+    const rerun = cleanupRoot.querySelector("[data-cleanup-rerun]");
+    const rerunStatus = cleanupRoot.querySelector(
+      "[data-cleanup-rerun-status]",
+    );
+    rerun?.addEventListener("click", async () => {
+      rerun.setAttribute("disabled", "");
+      if (rerunStatus) rerunStatus.textContent = "Re-running all rules…";
+      try {
+        const result = await request(`${endpoint}/rerun`, {
+          method: "POST",
+          body: "{}",
+        });
+        await loadRules();
+        if (rerunStatus) {
+          const transactionCount = Number(
+            result.transaction_count ?? 0,
+          );
+          const ruleCount = Number(result.rule_count ?? 0);
+          rerunStatus.textContent =
+            `${transactionCount} posted transaction${
+              transactionCount === 1 ? "" : "s"
+            } checked across ${ruleCount} enabled rule${
+              ruleCount === 1 ? "" : "s"
+            }`;
+        }
+      } catch (error) {
+        if (rerunStatus) rerunStatus.textContent = error.message;
+      } finally {
+        rerun.removeAttribute("disabled");
+      }
+    });
 
     renderRules();
     try {

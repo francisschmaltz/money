@@ -3032,7 +3032,7 @@ h3 {
 
 .category-manager-row {
   display: grid;
-  grid-template-columns: 22px 38px minmax(0, 1fr);
+  grid-template-columns: 22px minmax(0, 1fr);
   gap: 10px;
   align-items: center;
   padding: 13px 2px;
@@ -3082,6 +3082,15 @@ h3 {
   color: #6b5223;
 }
 
+.category-classification--system {
+  background: var(--ink);
+  color: var(--surface);
+}
+
+.category-manager-row--system {
+  background: var(--surface-muted);
+}
+
 .category-manager-row__view details {
   margin-top: 3px;
 }
@@ -3094,7 +3103,11 @@ h3 {
 
 .category-edit-form {
   display: grid;
-  grid-template-columns: minmax(150px, 1.2fr) minmax(180px, 1fr) minmax(130px, 0.45fr);
+  grid-template-columns:
+    minmax(150px, 1.2fr)
+    minmax(180px, 1fr)
+    minmax(130px, 0.45fr)
+    auto;
   align-items: center;
   gap: 8px;
 }
@@ -3126,13 +3139,34 @@ h3 {
   grid-template-columns: 22px minmax(0, 1fr);
 }
 
-.category-manager[data-category-editing="true"] .category-manager-row > .list-icon,
-.category-manager[data-category-editing="true"] .category-manager-row__view {
+.category-manager[data-category-editing="true"]
+  .category-manager-row:not(.category-manager-row--system)
+  .category-manager-row__view {
   display: none;
 }
 
 .category-manager[data-category-editing="true"] .category-edit-form {
   grid-column: 2;
+}
+
+.category-manager[data-category-editing="true"]
+  .category-manager-row--system
+  .category-manager-row__view {
+  grid-column: 2;
+}
+
+.cleanup-rerun {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.cleanup-rerun__action {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
 }
 
 .category-merge-form {
@@ -5547,12 +5581,22 @@ kbd {
   }
 
   .category-manager-row {
-    grid-template-columns: 22px 34px minmax(0, 1fr);
+    grid-template-columns: 22px minmax(0, 1fr);
     align-items: start;
   }
 
   .category-edit-form {
-    grid-column: 3;
+    grid-column: 2;
+  }
+
+  .cleanup-rerun,
+  .cleanup-rerun__action {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .cleanup-rerun .button {
+    width: 100%;
   }
 
   .connection-actions,

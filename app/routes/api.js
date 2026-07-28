@@ -1,5 +1,8 @@
 import { Router } from "express";
-import { readAppleCardMultipart } from "./appleCardMultipart.js";
+import {
+  parseAppleCardUploadBody,
+  readAppleCardUpload,
+} from "./appleCardUpload.js";
 
 const TOOL_ROUTES = Object.freeze([
   ["overview", "getFinanceOverview"],
@@ -863,13 +866,14 @@ export function createApiRouter({
     "/api/v1/apple-card/imports/preview",
     requireAdmin,
     requireCsrf,
+    parseAppleCardUploadBody,
     async (request, response, next) => {
       if (!appleCardImportService?.preview) {
         unavailable(response, "Apple Card CSV import");
         return;
       }
       try {
-        const upload = await readAppleCardMultipart(request);
+        const upload = readAppleCardUpload(request);
         const result = await appleCardImportService.preview(upload);
         response.json(result);
       } catch (error) {
@@ -886,23 +890,16 @@ export function createApiRouter({
     "/api/v1/apple-card/imports",
     requireAdmin,
     requireCsrf,
+    parseAppleCardUploadBody,
     async (request, response, next) => {
       if (!appleCardImportService?.import) {
         unavailable(response, "Apple Card CSV import");
         return;
       }
       try {
-        const { fileBuffer, fields } =
-          await readAppleCardMultipart(request);
+        const upload = readAppleCardUpload(request);
         const result = await appleCardImportService.import(
-          {
-            fileBuffer,
-            previewDigest: fields.preview_digest,
-            balance: fields.balance,
-            creditLimit: fields.credit_limit,
-            balanceAsOf: fields.balance_as_of,
-            lastFour: fields.last_four,
-          },
+          upload,
           request.user,
         );
         response.status(201).json(result);
@@ -1004,6 +1001,22 @@ export function createApiRouter({
         input,
         request.user,
         201,
+        response,
+        next,
+      );
+    },
+  );
+
+  router.post(
+    "/api/v1/transaction-cleanup-rules/rerun",
+    requireAdmin,
+    requireCsrf,
+    (request, response, next) => {
+      invokeWithActor(
+        financeService,
+        "rerunTransactionCleanupRules",
+        request.body ?? {},
+        request.user,
         response,
         next,
       );
@@ -1367,6 +1380,25 @@ export function createApiRouter({
       invokeWithActor(
         financeService,
         "updateSpendingCategory",
+        {
+          ...(request.body ?? {}),
+          category_id: request.params.categoryId,
+        },
+        request.user,
+        response,
+        next,
+      );
+    },
+  );
+
+  router.delete(
+    "/api/v1/categories/:categoryId",
+    requireAdmin,
+    requireCsrf,
+    (request, response, next) => {
+      invokeWithActor(
+        financeService,
+        "deleteSpendingCategory",
         {
           ...(request.body ?? {}),
           category_id: request.params.categoryId,

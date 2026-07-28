@@ -1,0 +1,159 @@
+    <section
+      id="transaction-cleanup"
+      class="card settings-card transaction-cleanup"
+    >
+      <div class="settings-card__heading">
+        <div>
+          <h2>Transaction cleanup</h2>
+          <p>Find similar transactions and correct only the rows you select.</p>
+        </div>
+      </div>
+
+      <div class="cleanup-one-time-heading">
+        <h3>One-time cleanup</h3>
+        <p>Fuzzy matching helps find candidates. Only checked rows change.</p>
+      </div>
+
+      <form class="cleanup-search" action="/format-rules#transaction-cleanup" method="get" data-cleanup-search>
+        <label for="cleanup-query">Merchant or transaction name</label>
+        <div>
+          <i class="ph ph-magnifying-glass" aria-hidden="true"></i>
+          <input
+            id="cleanup-query"
+            name="cleanup_q"
+            type="search"
+            minlength="2"
+            maxlength="120"
+            value="<%= cleanup.query || '' %>"
+            placeholder="Try Whole Foods, Apple Services…"
+            autocomplete="off"
+            data-cleanup-query
+          >
+          <button class="button button--secondary" type="submit">Find matches</button>
+        </div>
+        <span class="save-status" role="status" data-cleanup-search-status></span>
+      </form>
+
+      <div class="cleanup-empty" data-cleanup-empty <%= cleanupRows.length ? "hidden" : "" %>>
+        <span class="empty-icon"><i class="ph ph-receipt"></i></span>
+        <div>
+          <strong>Start with one merchant</strong>
+          <p>Fuzzy matching suggests candidates. Nothing changes until you check rows and apply an edit.</p>
+        </div>
+      </div>
+
+      <div class="cleanup-layout" data-cleanup-workspace <%= cleanupRows.length ? "" : "hidden" %>>
+        <form class="cleanup-editor" data-cleanup-editor>
+          <fieldset>
+            <legend>Edits to apply</legend>
+
+            <label class="cleanup-edit-field">
+              <span class="cleanup-edit-field__toggle">
+                <input type="checkbox" name="apply_display_name" checked data-cleanup-change="display_name">
+                Apply corrected name
+              </span>
+              <input
+                type="text"
+                name="display_name"
+                maxlength="160"
+                value="<%= cleanupSource?.display_name || cleanupSource?.raw_merchant || cleanup.query || '' %>"
+                placeholder="Clean merchant name"
+                data-cleanup-display-name
+              >
+            </label>
+
+            <label class="cleanup-edit-field">
+              <span class="cleanup-edit-field__toggle">
+                <input type="checkbox" name="apply_category" data-cleanup-change="category_primary">
+                Apply category
+              </span>
+              <select name="category_primary" disabled data-cleanup-category>
+                <% cleanupCategories.forEach((label) => { %>
+                  <option value="<%= label %>" <%= label === cleanupSource?.category_primary ? "selected" : "" %>><%= label %></option>
+                <% }) %>
+              </select>
+            </label>
+
+            <label class="cleanup-edit-field">
+              <span class="cleanup-edit-field__toggle">
+                <input type="checkbox" name="apply_tags" data-cleanup-change="tags">
+                Replace tags
+              </span>
+              <input
+                type="text"
+                name="tags"
+                maxlength="400"
+                value="<%= (cleanupSource?.tags || []).join(', ') %>"
+                placeholder="household, reimbursable"
+                disabled
+                data-cleanup-tags
+              >
+              <small>Comma-separated. Leave empty to clear tags.</small>
+            </label>
+          </fieldset>
+
+          <% if (cleanupTagOptions.length) { %>
+            <div class="cleanup-known-tags" aria-label="Existing tags">
+              <span>Existing tags</span>
+              <% cleanupTagOptions.forEach((tag) => { %>
+                <button type="button" data-cleanup-tag="<%= tag %>"><%= tag %></button>
+              <% }) %>
+            </div>
+          <% } %>
+
+          <div class="form-actions">
+            <span class="save-status" role="status" data-cleanup-save-status></span>
+            <button class="button button--secondary" type="button" data-cleanup-save-rule hidden>Save as rule</button>
+            <button class="button button--dark" type="submit" data-cleanup-submit disabled>Apply to selected</button>
+          </div>
+        </form>
+
+        <section class="cleanup-matches" aria-labelledby="cleanup-matches-heading">
+          <div class="cleanup-matches__heading">
+            <div>
+              <h3 id="cleanup-matches-heading">Matching transactions</h3>
+              <p data-cleanup-selected-count>0 selected</p>
+            </div>
+            <div>
+              <button type="button" class="button button--ghost" data-cleanup-select-exact>Select exact</button>
+              <button type="button" class="button button--ghost" data-cleanup-clear>Clear</button>
+            </div>
+          </div>
+          <div class="cleanup-match-list" data-cleanup-match-list>
+            <% cleanupRows.forEach((match) => { const isSource = cleanup.anchor?.id === match.id; %>
+              <label class="cleanup-match-row" data-cleanup-match data-match-reason="<%= isSource ? 'source' : match.match_reason %>">
+                <input
+                  type="checkbox"
+                  value="<%= match.id %>"
+                  data-cleanup-select
+                  <%= isSource || match.preselected ? "checked" : "" %>
+                >
+                <span class="cleanup-match-row__identity">
+                  <strong><%= match.display_name || match.raw_merchant || match.raw_name %></strong>
+                  <small
+                    <% if (match.account_id) { %>
+                      data-account-display-name="<%= match.account_id %>"
+                      data-account-provider-name="<%= match.account_name %>"
+                      data-account-prefix="<%= `${match.posted_on} · ` %>"
+                      data-account-suffix="<%= ` · ${match.category_primary || "Uncategorized"}` %>"
+                    <% } %>
+                  ><%= match.posted_on %> · <%= match.account_name %> · <%= match.category_primary || "Uncategorized" %></small>
+                  <% if (match.raw_merchant && match.raw_merchant !== match.display_name) { %>
+                    <small>Provider: <%= match.raw_merchant %></small>
+                  <% } %>
+                  <% if (match.tags?.length) { %>
+                    <span class="cleanup-match-row__tags"><%= match.tags.join(" · ") %></span>
+                  <% } %>
+                </span>
+                <span class="cleanup-match-row__match">
+                  <strong><%= formatMoney(match.amount) %></strong>
+                  <small>
+                    <%= isSource ? "Selected transaction" : match.match_reason === "exact_merchant" ? "Exact name" : `${Math.round((match.similarity_basis_points || 0) / 100)}% match` %>
+                  </small>
+                </span>
+              </label>
+            <% }) %>
+          </div>
+        </section>
+      </div>
+    </section>

@@ -81,6 +81,47 @@ test("Apple Card CSV parsing handles quoted commas, CRLF, signs, and date-only a
   assert.equal(parsed.transactions[1].excluded_from_spending, true);
 });
 
+test("Apple Card CSV parsing handles BOMs, escaped quotes, embedded newlines, and blank rows", () => {
+  const source = csv([
+    row({
+      description: 'Synthetic "weekly"\nmarket purchase',
+      merchant: 'Example "Market"',
+    }),
+  ])
+    .toString("utf8")
+    .replace("\n", "\n\n");
+  const parsed = parseAppleCardCsv(
+    Buffer.concat([
+      Buffer.from([0xef, 0xbb, 0xbf]),
+      Buffer.from(source),
+    ]),
+  );
+
+  assert.equal(parsed.total_row_count, 1);
+  assert.equal(parsed.accepted_row_count, 1);
+  assert.equal(
+    parsed.transactions[0].name,
+    'Synthetic "weekly" market purchase',
+  );
+  assert.equal(parsed.transactions[0].merchant_name, 'Example "Market"');
+});
+
+test("Apple Card CSV parsing rejects broken quote boundaries", () => {
+  const headers = APPLE_CARD_CSV_HEADERS.join(",");
+  for (const body of [
+    `${headers}\n"unterminated`,
+    `${headers}\n"closed"trailing`,
+    `${headers}\nunquoted"quote`,
+  ]) {
+    assert.throws(
+      () => parseAppleCardCsv(Buffer.from(body)),
+      (error) =>
+        error instanceof AppleCardCsvError &&
+        error.code === "invalid_csv",
+    );
+  }
+});
+
 test("exact decimal conversion never routes cents through floating point", () => {
   assert.equal(exactDecimalToMinor("0.29"), 29);
   assert.equal(exactDecimalToMinor("-0.29"), -29);

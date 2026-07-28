@@ -260,3 +260,61 @@ test("merged categories split out with their exact version", async () => {
     userId: "user-admin",
   });
 });
+
+test("category deletion moves spending to Other with an exact version", async () => {
+  let captured;
+  const service = createFinanceService({
+    repository: {
+      async deleteSpendingCategory(workspaceId, input) {
+        captured = { workspaceId, ...input };
+        return {
+          id: "category-other",
+          name: "Other",
+          path: "Other",
+          is_system: true,
+          version: 1,
+        };
+      },
+    },
+  });
+
+  const result = await service.deleteSpendingCategory(
+    {
+      category_id: "category-car",
+      expected_version: 3,
+    },
+    { id: "user-admin" },
+  );
+
+  assert.equal(result.deleted, true);
+  assert.equal(result.moved_to_category.path, "Other");
+  assert.deepEqual(captured, {
+    workspaceId: "shared",
+    categoryId: "category-car",
+    expectedVersion: 3,
+    userId: "user-admin",
+  });
+});
+
+test("re-running cleanup refreshes every posted transaction", async () => {
+  const service = createFinanceService({
+    repository: {
+      async rerunTransactionCleanupRules(workspaceId) {
+        assert.equal(workspaceId, "shared");
+        return {
+          transaction_count: 42,
+          rule_count: 3,
+        };
+      },
+    },
+  });
+
+  assert.deepEqual(
+    await service.rerunTransactionCleanupRules(),
+    {
+      rerun: true,
+      transaction_count: 42,
+      rule_count: 3,
+    },
+  );
+});

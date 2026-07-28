@@ -683,6 +683,243 @@ export class PgFinanceRepository {
     return result.rows.map((row) => row.id);
   }
 
+  async #moveSpendingCategoryChildren(
+    client,
+    workspaceId,
+    {
+      sourceCategoryIds,
+      parentCategoryId,
+      userId = null,
+    },
+  ) {
+    const roots = await client.query(
+      `
+        SELECT
+          child.id,
+          child.parent_category_id,
+          spending_category_name_for_id(
+            child.workspace_id,
+            child.id
+          ) AS path
+        FROM spending_categories child
+        WHERE child.workspace_id = $1
+          AND child.parent_category_id = ANY($2::text[])
+          AND child.merged_into_category_id IS NULL
+          AND NOT child.id = ANY($2::text[])
+        ORDER BY child.id
+        FOR UPDATE
+      `,
+      [workspaceId, sourceCategoryIds],
+    );
+    if (!roots.rows.length) return [];
+
+    const rootIds = roots.rows.map((row) => row.id);
+    const descendantsBefore = await client.query(
+      `
+        SELECT DISTINCT
+          descendant.category_id,
+          spending_category_name_for_id(
+            $1,
+            descendant.category_id
+          ) AS path
+        FROM unnest($2::text[]) root(category_id)
+        CROSS JOIN LATERAL spending_category_descendant_ids(
+          $1,
+          root.category_id
+        ) descendant
+        ORDER BY descendant.category_id
+      `,
+      [workspaceId, rootIds],
+    );
+
+    for (const entry of descendantsBefore.rows) {
+      await client.query(
+        `
+          INSERT INTO spending_category_aliases (
+            workspace_id,
+            normalized_alias,
+            alias,
+            category_id,
+            alias_type
+          )
+          VALUES (
+            $1,
+            normalize_spending_category_name($2),
+            $2,
+            $3,
+            'former_name'
+          )
+          ON CONFLICT (workspace_id, normalized_alias) DO UPDATE SET
+            alias_type = 'former_name'
+          WHERE spending_category_aliases.category_id =
+            EXCLUDED.category_id
+        `,
+        [workspaceId, entry.path, entry.category_id],
+      );
+    }
+
+    await client.query(
+      `
+        UPDATE spending_categories
+        SET parent_category_id = $3,
+            version = version + 1,
+            updated_by = $4,
+            updated_at = now()
+        WHERE workspace_id = $1
+          AND id = ANY($2::text[])
+      `,
+      [workspaceId, rootIds, parentCategoryId, userId],
+    );
+
+    const movedCategoryIds = descendantsBefore.rows.map(
+      (row) => row.category_id,
+    );
+    const descendantsAfter = await client.query(
+      `
+        SELECT
+          category.id AS category_id,
+          spending_category_name_for_id(
+            category.workspace_id,
+            category.id
+          ) AS path
+        FROM spending_categories category
+        WHERE category.workspace_id = $1
+          AND category.id = ANY($2::text[])
+        ORDER BY category.id
+      `,
+      [workspaceId, movedCategoryIds],
+    );
+
+    for (const entry of descendantsAfter.rows) {
+      const conflict = await client.query(
+        `
+          SELECT active_spending_category_id(
+            workspace_id,
+            category_id
+          ) AS category_id
+          FROM spending_category_aliases
+          WHERE workspace_id = $1
+            AND normalized_alias =
+              normalize_spending_category_name($2)
+        `,
+        [workspaceId, entry.path],
+      );
+      if (
+        conflict.rows[0] &&
+        conflict.rows[0].category_id !== entry.category_id
+      ) {
+        const error = new Error("Category alias already exists");
+        error.code = "CATEGORY_NAME_CONFLICT";
+        throw error;
+      }
+      await client.query(
+        `
+          INSERT INTO spending_category_aliases (
+            workspace_id,
+            normalized_alias,
+            alias,
+            category_id,
+            alias_type
+          )
+          VALUES (
+            $1,
+            normalize_spending_category_name($2),
+            $2,
+            $3,
+            'name'
+          )
+          ON CONFLICT (workspace_id, normalized_alias) DO UPDATE SET
+            alias = EXCLUDED.alias,
+            alias_type = 'name'
+          WHERE spending_category_aliases.category_id =
+            EXCLUDED.category_id
+        `,
+        [workspaceId, entry.path, entry.category_id],
+      );
+    }
+
+    for (const table of [
+      "categorization_overrides",
+      "transaction_cleanup_rules",
+    ]) {
+      await client.query(
+        `
+          UPDATE ${table}
+          SET category_primary =
+                spending_category_name_for_id(workspace_id, category_id),
+              updated_at = now()
+          WHERE workspace_id = $1
+            AND category_id = ANY($2::text[])
+        `,
+        [workspaceId, movedCategoryIds],
+      );
+    }
+    for (const table of [
+      "transaction_splits",
+      "budget_lines",
+      "budget_default_revisions",
+      "budget_category_versions",
+    ]) {
+      await client.query(
+        `
+          UPDATE ${table}
+          SET category =
+                spending_category_name_for_id(workspace_id, category_id),
+              updated_at = now()
+          WHERE workspace_id = $1
+            AND category_id = ANY($2::text[])
+        `,
+        [workspaceId, movedCategoryIds],
+      );
+    }
+
+    const pathsAfter = new Map(
+      descendantsAfter.rows.map((row) => [row.category_id, row.path]),
+    );
+    for (const root of roots.rows) {
+      await client.query(
+        `
+          INSERT INTO spending_category_events (
+            id,
+            workspace_id,
+            category_id,
+            event_type,
+            actor_id,
+            before_value,
+            after_value
+          )
+          VALUES (
+            $1,
+            $2,
+            $3,
+            'rename',
+            $4,
+            jsonb_build_object(
+              'path', $5::text,
+              'parent_category_id', $6::text
+            ),
+            jsonb_build_object(
+              'path', $7::text,
+              'parent_category_id', $8::text,
+              'moved_with_parent_merge', true
+            )
+          )
+        `,
+        [
+          stableId("category-event", randomUUID()),
+          workspaceId,
+          root.id,
+          userId,
+          root.path,
+          root.parent_category_id,
+          pathsAfter.get(root.id),
+          parentCategoryId,
+        ],
+      );
+    }
+    return movedCategoryIds;
+  }
+
   async #transactionIdsUsingCleanupRule(
     client,
     workspaceId,
@@ -3567,6 +3804,41 @@ export class PgFinanceRepository {
     });
   }
 
+  async rerunTransactionCleanupRules(
+    workspaceId = DEFAULT_WORKSPACE_ID,
+  ) {
+    return withTransaction(this.#pool, async (client) => {
+      const transactions = await client.query(
+        `
+          SELECT id
+          FROM transactions
+          WHERE workspace_id = $1
+            AND pending = false
+          ORDER BY id
+        `,
+        [workspaceId],
+      );
+      const rules = await client.query(
+        `
+          SELECT count(*)::integer AS count
+          FROM transaction_cleanup_rules
+          WHERE workspace_id = $1
+            AND enabled = true
+        `,
+        [workspaceId],
+      );
+      await this.#refreshTransactionSearchDocuments(
+        client,
+        workspaceId,
+        transactions.rows.map((row) => row.id),
+      );
+      return {
+        transaction_count: transactions.rows.length,
+        rule_count: Number(rules.rows[0]?.count ?? 0),
+      };
+    });
+  }
+
   async listTransactionTags(
     workspaceId = DEFAULT_WORKSPACE_ID,
     { limit = 200 } = {},
@@ -4188,6 +4460,8 @@ export class PgFinanceRepository {
                 category.merged_into_category_id
               )
           END AS merged_into_path,
+          COALESCE(merge_destination.is_system, false)
+            AS merged_into_is_system,
           COALESCE(transaction_counts.count, 0) AS transaction_count,
           COALESCE(budget_counts.count, 0) AS budget_line_count,
           COALESCE(alias_data.aliases, '[]'::jsonb) AS aliases
@@ -4196,6 +4470,9 @@ export class PgFinanceRepository {
           ON transaction_counts.category_id = category.id
         LEFT JOIN budget_counts
           ON budget_counts.category_id = category.id
+        LEFT JOIN spending_categories merge_destination
+          ON merge_destination.workspace_id = category.workspace_id
+         AND merge_destination.id = category.merged_into_category_id
         LEFT JOIN LATERAL (
           SELECT jsonb_agg(
             jsonb_build_object(
@@ -4224,6 +4501,7 @@ export class PgFinanceRepository {
           AND ($2::boolean OR category.merged_into_category_id IS NULL)
         ORDER BY
           category.merged_into_category_id IS NOT NULL,
+          category.is_system,
           path,
           category.id
       `,
@@ -4280,6 +4558,7 @@ export class PgFinanceRepository {
               WHERE workspace_id = $1
                 AND id = $2
                 AND merged_into_category_id IS NULL
+                AND is_system = false
               FOR UPDATE
             `,
             [workspaceId, parentCategoryId],
@@ -4443,6 +4722,7 @@ export class PgFinanceRepository {
         );
         const current = currentResult.rows[0];
         if (!current || current.merged_into_category_id) return null;
+        if (current.is_system) return "protected";
         if (Number(current.version) !== Number(expectedVersion)) {
           return "stale";
         }
@@ -4463,6 +4743,7 @@ export class PgFinanceRepository {
                 WHERE parent.workspace_id = $1
                   AND parent.id = $3
                   AND parent.merged_into_category_id IS NULL
+                  AND parent.is_system = false
               )
               OR EXISTS (
                 SELECT 1
@@ -4735,12 +5016,18 @@ export class PgFinanceRepository {
         return true;
       });
     } catch (error) {
-      if (error?.code === "23505") return { conflict: true };
+      if (
+        error?.code === "23505" ||
+        error?.code === "CATEGORY_NAME_CONFLICT"
+      ) {
+        return { conflict: true };
+      }
       throw error;
     }
     if (changed === "stale") return { stale: true };
     if (changed === "conflict") return { conflict: true };
     if (changed === "invalid_parent") return { invalidParent: true };
+    if (changed === "protected") return { protected: true };
     if (!changed) return null;
     const categories = await this.listSpendingCategories(workspaceId);
     return categories.find((category) => category.id === categoryId);
@@ -4754,6 +5041,7 @@ export class PgFinanceRepository {
       destination = null,
       expectedVersions,
       userId = null,
+      operation = "merge",
     },
   ) {
     let result;
@@ -4787,24 +5075,21 @@ export class PgFinanceRepository {
         ) {
           return "not_found";
         }
+        if (
+          sourceCategoryIds.some((id) => byId.get(id).is_system) ||
+          (
+            operation !== "delete" &&
+            destinationCategoryId &&
+            byId.get(destinationCategoryId).is_system
+          )
+        ) {
+          return "protected";
+        }
         for (const [id, version] of Object.entries(expectedVersions)) {
           if (!byId.has(id) || Number(byId.get(id).version) !== Number(version)) {
             return "stale";
           }
         }
-        const childCheck = await client.query(
-          `
-            SELECT parent_category_id
-            FROM spending_categories
-            WHERE workspace_id = $1
-              AND parent_category_id = ANY($2::text[])
-              AND merged_into_category_id IS NULL
-            LIMIT 1
-          `,
-          [workspaceId, sourceCategoryIds],
-        );
-        if (childCheck.rows[0]) return "has_children";
-
         let targetId = destinationCategoryId;
         let mergeSourceIds = [...sourceCategoryIds];
         if (!targetId) {
@@ -4825,10 +5110,25 @@ export class PgFinanceRepository {
                 WHERE workspace_id = $1
                   AND id = $2
                   AND merged_into_category_id IS NULL
+                  AND is_system = false
               `,
               [workspaceId, parentCategoryId],
             );
             if (!parent.rows[0]) return "invalid_parent";
+            const descendantParent = await client.query(
+              `
+                SELECT 1
+                FROM unnest($2::text[]) source(category_id)
+                CROSS JOIN LATERAL spending_category_descendant_ids(
+                  $1,
+                  source.category_id
+                ) descendant
+                WHERE descendant.category_id = $3
+                LIMIT 1
+              `,
+              [workspaceId, sourceCategoryIds, parentCategoryId],
+            );
+            if (descendantParent.rows[0]) return "invalid_parent";
           }
           const conflict = await client.query(
             `
@@ -5008,6 +5308,21 @@ export class PgFinanceRepository {
           return "self_merge";
         }
 
+        const descendantTarget = await client.query(
+          `
+            SELECT 1
+            FROM unnest($2::text[]) source(category_id)
+            CROSS JOIN LATERAL spending_category_descendant_ids(
+              $1,
+              source.category_id
+            ) descendant
+            WHERE descendant.category_id = $3
+            LIMIT 1
+          `,
+          [workspaceId, sourceCategoryIds, targetId],
+        );
+        if (descendantTarget.rows[0]) return "invalid_parent";
+
         const target = await client.query(
           `
             SELECT
@@ -5022,6 +5337,20 @@ export class PgFinanceRepository {
           [workspaceId, targetId],
         );
         const targetRow = target.rows[0];
+        const childParentId =
+          operation === "delete"
+            ? byId.get(sourceCategoryIds[0]).parent_category_id
+            : targetId;
+        const movedCategoryIds =
+          await this.#moveSpendingCategoryChildren(
+            client,
+            workspaceId,
+            {
+              sourceCategoryIds: mergeSourceIds,
+              parentCategoryId: childParentId,
+              userId,
+            },
+          );
         const allCategoryIds = [...mergeSourceIds, targetId];
 
         const defaults = await client.query(
@@ -5139,7 +5468,7 @@ export class PgFinanceRepository {
                 before_value, after_value
               )
               VALUES (
-                $1, $2, $3, 'merge', $4,
+                $1, $2, $3, $9, $4,
                 jsonb_build_object(
                   'name', $5::text,
                   'classification', $6::text
@@ -5159,6 +5488,7 @@ export class PgFinanceRepository {
               byId.get(sourceCategoryId).classification,
               targetId,
               targetRow.path,
+              operation === "delete" ? "delete" : "merge",
             ],
           );
         }
@@ -5166,9 +5496,18 @@ export class PgFinanceRepository {
           `
             SELECT transaction_id
             FROM transaction_effective_spending_categories
-            WHERE workspace_id = $1 AND category_id = $2
+            WHERE workspace_id = $1
+              AND category_id = ANY($2::text[])
+            UNION
+            SELECT transaction_id
+            FROM transaction_splits
+            WHERE workspace_id = $1
+              AND active_spending_category_id(
+                    workspace_id,
+                    category_id
+                  ) = ANY($2::text[])
           `,
-          [workspaceId, targetId],
+          [workspaceId, [targetId, ...movedCategoryIds]],
         );
         await this.#refreshTransactionSearchDocuments(
           client,
@@ -5178,17 +5517,61 @@ export class PgFinanceRepository {
         return targetId;
       });
     } catch (error) {
-      if (error?.code === "23505") return { conflict: true };
+      if (
+        error?.code === "23505" ||
+        error?.code === "CATEGORY_NAME_CONFLICT"
+      ) {
+        return { conflict: true };
+      }
       throw error;
     }
     if (result === "not_found") return null;
     if (result === "stale") return { stale: true };
-    if (result === "has_children") return { hasChildren: true };
     if (result === "invalid_parent") return { invalidParent: true };
     if (result === "conflict") return { conflict: true };
     if (result === "self_merge") return { selfMerge: true };
+    if (result === "protected") return { protected: true };
     const categories = await this.listSpendingCategories(workspaceId);
     return categories.find((category) => category.id === result);
+  }
+
+  async deleteSpendingCategory(
+    workspaceId = DEFAULT_WORKSPACE_ID,
+    {
+      categoryId,
+      expectedVersion,
+      userId = null,
+    },
+  ) {
+    const other = await this.#pool.query(
+      `
+        SELECT id, version
+        FROM spending_categories
+        WHERE workspace_id = $1
+          AND is_system = true
+          AND merged_into_category_id IS NULL
+        LIMIT 1
+      `,
+      [workspaceId],
+    );
+    if (!other.rows[0]) {
+      const error = new Error("System category not found");
+      error.code = "CATEGORY_SYSTEM_MISSING";
+      throw error;
+    }
+    return this.mergeSpendingCategories(
+      workspaceId,
+      {
+        sourceCategoryIds: [categoryId],
+        destinationCategoryId: other.rows[0].id,
+        expectedVersions: {
+          [categoryId]: expectedVersion,
+          [other.rows[0].id]: Number(other.rows[0].version),
+        },
+        userId,
+        operation: "delete",
+      },
+    );
   }
 
   async splitSpendingCategory(
@@ -7181,7 +7564,13 @@ function mapSpendingCategory(row) {
     parent_category_id: row.parent_category_id ?? null,
     merged_into_category_id: row.merged_into_category_id ?? null,
     merged_into_path: row.merged_into_path ?? null,
-    status: row.merged_into_category_id ? "merged" : "active",
+    merged_into_is_system: Boolean(row.merged_into_is_system),
+    is_system: Boolean(row.is_system),
+    status: row.merged_into_category_id
+      ? row.merged_into_is_system
+        ? "deleted"
+        : "merged"
+      : "active",
     version: Number(row.version),
     transaction_count: Number(row.transaction_count ?? 0),
     budget_line_count: Number(row.budget_line_count ?? 0),

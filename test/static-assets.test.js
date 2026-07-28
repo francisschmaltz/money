@@ -21,9 +21,9 @@ test("first-party asset revisions change with the current deployment", async () 
     path.resolve("app/views/partials/head.ejs"),
     "utf8",
   );
-  assert.match(head, /\/css\/money\.css\?v=26/);
+  assert.match(head, /\/css\/money\.css\?v=27/);
   assert.match(head, /\/js\/charts\.js\?v=5/);
-  assert.match(head, /\/js\/money\.js\?v=22/);
+  assert.match(head, /\/js\/money\.js\?v=23/);
 });
 
 test("dismissible notifications persist for the browser session", async () => {

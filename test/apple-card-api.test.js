@@ -5,6 +5,7 @@ import express from "express";
 import request from "supertest";
 
 import { createApiRouter } from "../app/routes/api.js";
+import { APPLE_CARD_UPLOAD_MEDIA_TYPE } from "../app/routes/appleCardUpload.js";
 
 function appWith(service, events) {
   const app = express();
@@ -47,6 +48,13 @@ const headers = {
   "x-csrf-token": "test",
 };
 
+function uploadBody(file, fields = {}) {
+  return JSON.stringify({
+    file_base64: file.toString("base64"),
+    ...fields,
+  });
+}
+
 test("Apple Card endpoints are admin-only, CSRF-protected, and pass no filename", async () => {
   const events = [];
   const service = {
@@ -73,16 +81,21 @@ test("Apple Card endpoints are admin-only, CSRF-protected, and pass no filename"
   await request(app)
     .post("/api/v1/apple-card/imports/preview")
     .set(headers)
-    .attach("file", file, "synthetic.csv")
+    .set("Content-Type", APPLE_CARD_UPLOAD_MEDIA_TYPE)
+    .send(uploadBody(file))
     .expect(200);
   await request(app)
     .post("/api/v1/apple-card/imports")
     .set(headers)
-    .field("preview_digest", "a".repeat(64))
-    .field("balance", "12.34")
-    .field("credit_limit", "1000.00")
-    .field("balance_as_of", "2026-07-27")
-    .attach("file", file, "synthetic.csv")
+    .set("Content-Type", APPLE_CARD_UPLOAD_MEDIA_TYPE)
+    .send(
+      uploadBody(file, {
+        preview_digest: "a".repeat(64),
+        balance: "12.34",
+        credit_limit: "1000.00",
+        balance_as_of: "2026-07-27",
+      }),
+    )
     .expect(201);
   await request(app)
     .patch("/api/v1/apple-card/account")
@@ -109,7 +122,7 @@ test("Apple Card endpoints are admin-only, CSRF-protected, and pass no filename"
   );
   const previewInput = events.find(([event]) => event === "preview")[1];
   assert.ok(Buffer.isBuffer(previewInput.fileBuffer));
-  assert.deepEqual(Object.keys(previewInput), ["fileBuffer", "fields"]);
+  assert.deepEqual(Object.keys(previewInput), ["fileBuffer"]);
   const importInput = events.find(([event]) => event === "import")[1];
   assert.equal(importInput.previewDigest, "a".repeat(64));
   assert.equal(importInput.balance, "12.34");
@@ -117,7 +130,7 @@ test("Apple Card endpoints are admin-only, CSRF-protected, and pass no filename"
   assert.equal(importInput.balanceAsOf, "2026-07-27");
 });
 
-test("Apple Card multipart routes reject missing admin, CSRF, extra files, and oversized bytes", async () => {
+test("Apple Card upload routes reject missing access, malformed bodies, and oversized bytes", async () => {
   const events = [];
   const app = appWith(
     {
@@ -131,22 +144,31 @@ test("Apple Card multipart routes reject missing admin, CSRF, extra files, and o
   await request(app)
     .post("/api/v1/apple-card/imports/preview")
     .set("x-csrf-token", "test")
-    .attach("file", Buffer.from("x"), "synthetic.csv")
+    .set("Content-Type", APPLE_CARD_UPLOAD_MEDIA_TYPE)
+    .send(uploadBody(Buffer.from("x")))
     .expect(403);
   await request(app)
     .post("/api/v1/apple-card/imports/preview")
     .set("x-test-admin", "yes")
-    .attach("file", Buffer.from("x"), "synthetic.csv")
+    .set("Content-Type", APPLE_CARD_UPLOAD_MEDIA_TYPE)
+    .send(uploadBody(Buffer.from("x")))
     .expect(403);
   await request(app)
     .post("/api/v1/apple-card/imports/preview")
     .set(headers)
-    .attach("file", Buffer.from("x"), "one.csv")
-    .attach("file", Buffer.from("y"), "two.csv")
+    .set("Content-Type", APPLE_CARD_UPLOAD_MEDIA_TYPE)
+    .send(uploadBody(Buffer.from("x"), { unexpected: "field" }))
     .expect(400);
   await request(app)
     .post("/api/v1/apple-card/imports/preview")
     .set(headers)
-    .attach("file", Buffer.alloc(2 * 1024 * 1024 + 1), "large.csv")
+    .set("Content-Type", APPLE_CARD_UPLOAD_MEDIA_TYPE)
+    .send(JSON.stringify({ file_base64: "not base64" }))
+    .expect(400);
+  await request(app)
+    .post("/api/v1/apple-card/imports/preview")
+    .set(headers)
+    .set("Content-Type", APPLE_CARD_UPLOAD_MEDIA_TYPE)
+    .send(uploadBody(Buffer.alloc(2 * 1024 * 1024 + 1)))
     .expect(413);
 });

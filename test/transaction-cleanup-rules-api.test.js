@@ -51,6 +51,14 @@ test("cleanup rule API exposes admin CRUD with CSRF on mutations", async () => {
         calls.push(["delete", input, actor]);
         return { deleted: true, rule_id: input.rule_id };
       },
+      rerunTransactionCleanupRules(input, actor) {
+        calls.push(["rerun", input, actor]);
+        return {
+          rerun: true,
+          transaction_count: 42,
+          rule_count: 3,
+        };
+      },
     },
   });
   const body = {
@@ -80,6 +88,10 @@ test("cleanup rule API exposes admin CRUD with CSRF on mutations", async () => {
     .expect(200);
   await request(app)
     .delete("/api/v1/transaction-cleanup-rules/rule_1")
+    .expect(200);
+  await request(app)
+    .post("/api/v1/transaction-cleanup-rules/rerun")
+    .send({})
     .expect(200);
 
   const cleanedBody = {
@@ -112,6 +124,11 @@ test("cleanup rule API exposes admin CRUD with CSRF on mutations", async () => {
       { rule_id: "rule_1" },
       { id: "user_admin", is_admin: true },
     ],
+    [
+      "rerun",
+      {},
+      { id: "user_admin", is_admin: true },
+    ],
   ]);
   assert.deepEqual(middlewareCalls, [
     "admin:GET",
@@ -121,6 +138,8 @@ test("cleanup rule API exposes admin CRUD with CSRF on mutations", async () => {
     "csrf:PUT",
     "admin:DELETE",
     "csrf:DELETE",
+    "admin:POST",
+    "csrf:POST",
   ]);
 });
 

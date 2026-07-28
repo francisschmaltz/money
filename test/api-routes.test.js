@@ -765,6 +765,10 @@ test("spending category routes are admin-only, CSRF-protected, and preserve merg
           calls.push(["merge", input, routeActor]);
           return { merged: true };
         },
+        deleteSpendingCategory(input, routeActor) {
+          calls.push(["delete", input, routeActor]);
+          return { deleted: true };
+        },
         splitSpendingCategory(input, routeActor) {
           calls.push(["split", input, routeActor]);
           return { split: true };
@@ -799,6 +803,10 @@ test("spending category routes are admin-only, CSRF-protected, and preserve merg
     .send(mergeBody)
     .expect(200);
   await request(app)
+    .delete("/api/v1/categories/category-gas")
+    .send({ expected_version: 3 })
+    .expect(200);
+  await request(app)
     .post("/api/v1/categories/category-tolls/split")
     .send({ expected_version: 2 })
     .expect(200);
@@ -825,6 +833,14 @@ test("spending category routes are admin-only, CSRF-protected, and preserve merg
     ],
     ["merge", mergeBody, actor],
     [
+      "delete",
+      {
+        expected_version: 3,
+        category_id: "category-gas",
+      },
+      actor,
+    ],
+    [
       "split",
       {
         expected_version: 2,
@@ -841,6 +857,8 @@ test("spending category routes are admin-only, CSRF-protected, and preserve merg
     "csrf:PATCH",
     "admin:POST",
     "csrf:POST",
+    "admin:DELETE",
+    "csrf:DELETE",
     "admin:POST",
     "csrf:POST",
   ]);

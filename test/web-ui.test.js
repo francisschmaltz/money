@@ -106,7 +106,7 @@ test("Plaid OAuth callback renders a resumable authenticated return page", async
   assert.match(response.text, /data-page="plaid-oauth"/);
   assert.match(response.text, /data-plaid-oauth-return/);
   assert.match(response.text, /Returning to Plaid/);
-  assert.match(response.text, /\/js\/money\.js\?v=22/);
+  assert.match(response.text, /\/js\/money\.js\?v=23/);
   assert.doesNotMatch(response.text, /data-search-dialog/);
 });
 
@@ -385,7 +385,7 @@ test("selected transactions can change one category without creating a rule", as
 
   assert.match(
     html,
-    /href="\/settings\?transaction=txn_whole_foods#transaction-cleanup"/,
+    /href="\/format-rules\?transaction=txn_whole_foods#transaction-cleanup"/,
   );
   assert.match(html, /Edit similar transactions or create a rule/);
   assert.match(html, /data-transaction-category-form/);
@@ -746,11 +746,9 @@ test("settings exposes account grouping and manual asset CRUD controls", async (
   assert.match(html, /data-manual-asset-archive="asset_001"/);
   assert.match(html, /value="34714\.61"/);
   assert.match(html, />Home \/ real estate</);
-  assert.match(html, /href="#transaction-cleanup"/);
-  assert.match(html, /data-transaction-cleanup/);
-  assert.match(html, /data-cleanup-search/);
-  assert.match(html, /Fuzzy matching suggests candidates/);
-  assert.match(html, /href="\/format-rules">Manage format rules</);
+  assert.doesNotMatch(html, /href="#transaction-cleanup"/);
+  assert.doesNotMatch(html, /data-transaction-cleanup/);
+  assert.doesNotMatch(html, /data-cleanup-search/);
   assert.doesNotMatch(html, /data-cleanup-rules/);
   assert.doesNotMatch(html, /data-category-manager/);
 });
@@ -812,6 +810,20 @@ test("Format Rules manages nested spending categories without visibility switche
         budget_line_count: 0,
         aliases: [{ label: "TOLLS", type: "observed" }],
       },
+      {
+        id: "category-other",
+        name: "Other",
+        path: "Other",
+        depth: 0,
+        classification: "flexible",
+        parent_category_id: null,
+        status: "active",
+        is_system: true,
+        version: 1,
+        transaction_count: 2,
+        budget_line_count: 0,
+        aliases: [],
+      },
     ],
   });
 
@@ -832,6 +844,20 @@ test("Format Rules manages nested spending categories without visibility switche
   assert.match(html, />Split out</);
   assert.match(html, /TRANSPORTATION/);
   assert.match(html, /value="fixed" selected>Fixed/);
+  assert.match(html, />Fallback</);
+  assert.match(html, /data-category-delete/);
+  assert.doesNotMatch(html, /list-icon/);
+  const otherRow = html.match(
+    /<article[^>]*category-manager-row--system[\s\S]*?<\/article>/,
+  )?.[0];
+  assert.ok(otherRow);
+  assert.doesNotMatch(otherRow, /data-category-select/);
+  assert.doesNotMatch(otherRow, /data-category-edit-form/);
+  assert.doesNotMatch(otherRow, /data-category-delete/);
+  assert.ok(
+    html.lastIndexOf("category-manager-row--system") >
+      html.lastIndexOf('data-category-id="category-loan"'),
+  );
   const categoryEditForms = [
     ...html.matchAll(
       /<form[^>]*data-category-edit-form[\s\S]*?<\/form>/g,
@@ -884,10 +910,11 @@ test("settings exposes Apple Card CSV preview, manual freshness, and card values
   assert.doesNotMatch(html, /synced through/i);
 });
 
-test("transaction cleanup preloads raw values and leaves fuzzy rows unchecked", async () => {
-  const html = await render("settings", {
-    pageTitle: "Settings",
-    activePath: "/settings",
+test("Format Rules cleanup preloads raw values and leaves fuzzy rows unchecked", async () => {
+  const html = await render("format-rules", {
+    pageTitle: "Format Rules",
+    activePath: "/format-rules",
+    formatRulesSection: "rules",
     transactionTags: ["Household", "Reimbursable"],
     transactionCleanup: {
       query: "WHOLE FOODS MKT #1024",
@@ -949,6 +976,8 @@ test("transaction cleanup preloads raw values and leaves fuzzy rows unchecked", 
   assert.match(html, /data-cleanup-change="display_name"/);
   assert.match(html, /data-cleanup-change="category_primary"/);
   assert.match(html, /data-cleanup-change="tags"/);
+  assert.match(html, /data-cleanup-rerun/);
+  assert.match(html, />Re-Run All</);
 });
 
 test("Format Rules exposes exact and contains automatic cleanup rules", async () => {
@@ -997,8 +1026,9 @@ test("Format Rules exposes exact and contains automatic cleanup rules", async ()
     html,
     /href="\/format-rules" aria-current="page">Rules</,
   );
-  assert.doesNotMatch(html, /data-cleanup-search/);
-  assert.doesNotMatch(html, /One-time cleanup/);
+  assert.match(html, /data-cleanup-search/);
+  assert.match(html, /One-time cleanup/);
+  assert.match(html, /data-cleanup-rerun/);
 
   const matcherSelect = html.match(
     /<select[^>]*data-cleanup-rule-matcher-field[\s\S]*?<\/select>/,
@@ -1053,7 +1083,7 @@ test("demo transaction pages follow cleanup-rule create, disable, and delete", a
   assert.match(rendered.text, /Shopping · Sapphire Preferred/);
 
   rendered = await request(app)
-    .get("/settings?transaction=txn_apple_services")
+    .get("/format-rules?transaction=txn_apple_services")
     .expect(200);
   assert.match(
     rendered.text,

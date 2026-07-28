@@ -107,8 +107,8 @@ institution. Plaid documents its test institutions and credentials in the
 the [Quickstart](https://plaid.com/docs/quickstart/).
 
 Apple Card imports live under Settings → Connections. Preview and confirm use
-separate multipart requests; confirm must include the digest returned by the
-preview. The supported routes are:
+separate bounded structured requests containing the CSV bytes; confirm must
+include the digest returned by the preview. The supported routes are:
 
 - `POST /api/v1/apple-card/imports/preview`
 - `POST /api/v1/apple-card/imports`
