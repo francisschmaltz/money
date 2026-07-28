@@ -1,5 +1,5 @@
 const forbiddenKeys =
-  /token|secret|authorization|cookie|assertion|amount|balance|merchant|description|evidence|payload/i;
+  /token|secret|authorization|cookie|assertion|amount|balance|merchant|description|evidence|payload|prompt|messages|message_content|model_output|raw_response|request_body|response_body/i;
 const oidcArtifactKeys =
   /^(?:code_verifier|code_challenge|nonce|state|oauth_state|oidc_state|session_state)$/i;
 const sensitiveAssignmentKeys = [

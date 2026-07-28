@@ -226,10 +226,44 @@
       "[data-account-alias-provider]",
     );
     const status = form?.querySelector("[data-account-alias-status]");
+    const actionMenus = [
+      ...document.querySelectorAll("[data-account-actions]"),
+    ];
     let aliases = storedAccountAliases();
     let activeAccountId = null;
     let activeProviderName = "";
     let activeButton = null;
+
+    const closeActionMenus = (except = null) => {
+      actionMenus.forEach((menu) => {
+        if (menu !== except && menu.open) menu.open = false;
+      });
+    };
+
+    actionMenus.forEach((menu) => {
+      menu.addEventListener("toggle", () => {
+        if (menu.open) closeActionMenus(menu);
+      });
+    });
+
+    document.addEventListener("click", (event) => {
+      if (
+        !actionMenus.some((menu) => menu.contains(event.target))
+      ) {
+        closeActionMenus();
+      }
+    });
+
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      const openMenu = actionMenus.find((menu) => menu.open);
+      if (!openMenu) return;
+      event.preventDefault();
+      openMenu.open = false;
+      openMenu
+        .querySelector("[data-account-actions-trigger]")
+        ?.focus();
+    });
 
     const updateCreditChart = () => {
       const canvas = document.querySelector(
@@ -265,6 +299,18 @@
             `Rename ${displayedName} in this browser`,
           );
         });
+      document
+        .querySelectorAll("[data-account-actions-trigger]")
+        .forEach((trigger) => {
+          const accountId = trigger.dataset.accountActionsTrigger;
+          const providerName =
+            trigger.dataset.accountProviderName || "account";
+          const displayedName = aliases[accountId] || providerName;
+          trigger.setAttribute(
+            "aria-label",
+            `Actions for ${displayedName}`,
+          );
+        });
       updateCreditChart();
     };
 
@@ -296,7 +342,12 @@
           activeAccountId = button.dataset.accountAliasEdit || null;
           activeProviderName =
             button.dataset.accountProviderName || "Account";
-          activeButton = button;
+          const actionMenu = button.closest("[data-account-actions]");
+          activeButton =
+            actionMenu?.querySelector(
+              "[data-account-actions-trigger]",
+            ) || button;
+          if (actionMenu) actionMenu.open = false;
           if (input) {
             input.value =
               aliases[activeAccountId] || activeProviderName;
@@ -1066,7 +1117,10 @@
       excluded: "Excluded",
     };
 
-    const requestJson = async (url, { method = "POST", body } = {}) => {
+    const requestJson = async (
+      url,
+      { method = "POST", body, signal } = {},
+    ) => {
       const response = await fetch(url, {
         method,
         headers: {
@@ -1075,10 +1129,16 @@
           "X-CSRF-Token": csrfToken,
         },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        ...(signal ? { signal } : {}),
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
-        throw new Error(payload.message || `Save failed with ${response.status}`);
+        const error = new Error(
+          payload.message || `Save failed with ${response.status}`,
+        );
+        error.status = response.status;
+        error.payload = payload;
+        throw error;
       }
       return payload;
     };
@@ -1144,6 +1204,7 @@
     });
 
     runInsights?.addEventListener("click", async () => {
+      if (runInsights.dataset.insightsCanRun === "false") return;
       runInsights.disabled = true;
       if (insightAdminStatus) {
         insightAdminStatus.textContent = "Queueing insight run…";
@@ -1160,7 +1221,8 @@
         }
         window.setTimeout(() => window.location.reload(), 600);
       } catch (error) {
-        runInsights.disabled = false;
+        runInsights.disabled =
+          runInsights.dataset.insightsCanRun === "false";
         if (insightAdminStatus) {
           insightAdminStatus.textContent =
             error.message || "Couldn’t start insights.";
@@ -1210,6 +1272,792 @@
         window.setTimeout(() => clearInsights.focus(), 0);
       }
     });
+
+    const llmRanking = document.querySelector(
+      "[data-insight-llm-ranking]",
+    );
+    if (llmRanking) {
+      const llmForm = llmRanking.querySelector("[data-llm-form]");
+      const familySelect = llmRanking.querySelector("[data-llm-family]");
+      const baseGuidance = llmRanking.querySelector(
+        "[data-llm-base-guidance]",
+      );
+      const familyGuidance = Object.fromEntries(
+        [...llmRanking.querySelectorAll("[data-llm-family-guidance]")]
+          .map((field) => [field.dataset.llmFamilyGuidance, field]),
+      );
+      const candidateLimit = llmRanking.querySelector(
+        "[data-llm-candidate-limit]",
+      );
+      const resultLimit = llmRanking.querySelector(
+        "[data-llm-result-limit]",
+      );
+      const feedbackMode = llmRanking.querySelector(
+        "[data-llm-feedback-mode]",
+      );
+      const feedbackLimit = llmRanking.querySelector(
+        "[data-llm-feedback-limit]",
+      );
+      const contextLimit = llmRanking.querySelector(
+        "[data-llm-context-limit]",
+      );
+      const preview = llmRanking.querySelector("[data-llm-preview]");
+      const previewStatus = llmRanking.querySelector(
+        "[data-llm-preview-status]",
+      );
+      const requestJsonOutput = llmRanking.querySelector(
+        "[data-llm-request-json]",
+      );
+      const actionStatus = llmRanking.querySelector(
+        "[data-llm-action-status]",
+      );
+      const restoreDefault = llmRanking.querySelector(
+        "[data-llm-restore-default]",
+      );
+      const testDraft = llmRanking.querySelector("[data-llm-test]");
+      const saveGuidance = llmRanking.querySelector("[data-llm-save]");
+      const llmActionButtons = [
+        restoreDefault,
+        testDraft,
+        saveGuidance,
+      ].filter(Boolean);
+      const testResult = llmRanking.querySelector(
+        "[data-llm-test-result]",
+      );
+      const testSummary = llmRanking.querySelector(
+        "[data-llm-test-summary]",
+      );
+      const testOutput = llmRanking.querySelector(
+        "[data-llm-test-output]",
+      );
+      const savedRevision = llmRanking.querySelector(
+        "[data-llm-saved-revision]",
+      );
+      const revisionNote = llmRanking.querySelector(
+        "[data-llm-revision-note]",
+      );
+      const revisionNoteCopy = llmRanking.querySelector(
+        "[data-llm-revision-note-copy]",
+      );
+      const families = ["weekly", "investments", "subscriptions"];
+      let llmActionBusy = false;
+      let previewTimer = null;
+      let previewController = null;
+      let previewSequence = 0;
+      let previewPending = false;
+
+      const setNodeText = (selector, value) => {
+        const node = llmRanking.querySelector(selector);
+        if (node) node.textContent = value;
+      };
+
+      const integerOrNull = (value) => {
+        if (value === null || value === undefined || value === "") {
+          return null;
+        }
+        const number = Number(value);
+        return Number.isFinite(number) ? Math.round(number) : null;
+      };
+
+      const formattedInteger = (value) => {
+        const number = integerOrNull(value);
+        return number === null
+          ? "Unavailable"
+          : number.toLocaleString("en-US");
+      };
+
+      const formattedTimestamp = (value) => {
+        if (!value) return "Unavailable";
+        const date = new Date(value);
+        return Number.isFinite(date.getTime())
+          ? date.toLocaleString(undefined, {
+              dateStyle: "medium",
+              timeStyle: "short",
+            })
+          : String(value);
+      };
+
+      const formattedUsage = (usage) => {
+        if (!usage || typeof usage !== "object") return "Unavailable";
+        const promptTokens = integerOrNull(
+          usage.prompt_tokens ?? usage.input_tokens,
+        );
+        const completionTokens = integerOrNull(
+          usage.completion_tokens ?? usage.output_tokens,
+        );
+        const totalTokens = integerOrNull(usage.total_tokens);
+        if (
+          promptTokens === null &&
+          completionTokens === null &&
+          totalTokens === null
+        ) {
+          return "Unavailable";
+        }
+        const pieces = [];
+        if (totalTokens !== null) {
+          pieces.push(`${formattedInteger(totalTokens)} total`);
+        }
+        if (promptTokens !== null) {
+          pieces.push(`${formattedInteger(promptTokens)} in`);
+        }
+        if (completionTokens !== null) {
+          pieces.push(`${formattedInteger(completionTokens)} out`);
+        }
+        return `${pieces.join(" · ")} tokens`;
+      };
+
+      const draftSettings = () => ({
+        base_guidance: baseGuidance?.value ?? "",
+        family_guidance: Object.fromEntries(
+          families.map((family) => [
+            family,
+            familyGuidance[family]?.value ?? "",
+          ]),
+        ),
+        candidate_limit: Number(candidateLimit?.value),
+        result_limit: Number(resultLimit?.value),
+        feedback_mode:
+          feedbackMode?.value || "bad_and_archived",
+        feedback_limit: Number(feedbackLimit?.value),
+        context_length:
+          contextLimit?.value === ""
+            ? null
+            : Number(contextLimit?.value),
+      });
+
+      const updateCharacterCounts = () => {
+        const fields = {
+          base: [baseGuidance, 4000],
+          ...Object.fromEntries(
+            families.map((family) => [
+              family,
+              [familyGuidance[family], 2000],
+            ]),
+          ),
+        };
+        Object.entries(fields).forEach(([name, [field, maximum]]) => {
+          const counter = llmRanking.querySelector(
+            `[data-llm-character-count="${name}"]`,
+          );
+          if (counter && field) {
+            counter.textContent =
+              `${field.value.length.toLocaleString("en-US")} / ` +
+              maximum.toLocaleString("en-US");
+          }
+        });
+      };
+
+      const showSelectedFamily = () => {
+        const selected = familySelect?.value || "weekly";
+        llmRanking
+          .querySelectorAll("[data-llm-family-panel]")
+          .forEach((panel) => {
+            panel.hidden =
+              panel.dataset.llmFamilyPanel !== selected;
+          });
+      };
+
+      const updateRevisionNote = () => {
+        if (!revisionNote) return;
+        const current = Number(llmRanking.dataset.llmRevision);
+        const provenance = families
+          .map((family) => {
+            const node = llmRanking.querySelector(
+              `[data-llm-family-provenance="${family}"]`,
+            );
+            const revision = integerOrNull(
+              node?.dataset.guidanceRevision,
+            );
+            return { family, revision };
+          })
+          .filter(({ revision }) => revision !== null);
+        const outdated = Number.isFinite(current)
+          ? provenance.filter(
+              ({ revision }) => revision !== current,
+            )
+          : [];
+        if (!outdated.length && provenance.length === 0) {
+          const applied = integerOrNull(
+            llmRanking.dataset.llmLastAppliedRevision,
+          );
+          if (
+            applied !== null &&
+            Number.isFinite(current) &&
+            applied !== current
+          ) {
+            outdated.push({ family: null, revision: applied });
+          }
+        }
+        revisionNote.hidden = outdated.length === 0;
+        if (!revisionNote.hidden && revisionNoteCopy) {
+          const descriptions = outdated.map(
+            ({ family, revision }) =>
+              family
+                ? `${
+                    family[0].toUpperCase() + family.slice(1)
+                  } uses revision ${revision}`
+                : `The last good ranking uses revision ${revision}`,
+          );
+          revisionNoteCopy.textContent =
+            `${descriptions.join("; ")}. ` +
+            `Saved revision ${current} applies to each family on its next successful run.`;
+        }
+      };
+
+      const renderThroughput = (throughput) => {
+        if (!throughput || typeof throughput !== "object") return;
+        const totalTokens = integerOrNull(
+          throughput.total_tokens ?? throughput.tokens,
+        );
+        if (totalTokens !== null) {
+          const callsWithUsage = integerOrNull(
+            throughput.calls_with_usage,
+          );
+          const familyCount = integerOrNull(
+            throughput.call_count ?? throughput.family_count,
+          );
+          const reported =
+            callsWithUsage !== null && familyCount !== null
+              ? ` · ${callsWithUsage}/${familyCount} calls reported`
+              : "";
+          setNodeText(
+            "[data-llm-throughput]",
+            `${formattedInteger(totalTokens)} tokens${reported}`,
+          );
+        }
+      };
+
+      const renderPreview = (payload) => {
+        const result = payload?.preview ?? payload ?? {};
+        const counts = result.counts ?? {};
+        const feedbackCount =
+          integerOrNull(
+            counts.feedback_count ??
+              counts.feedback_pattern_count,
+          ) ??
+          (() => {
+            const bad = integerOrNull(counts.bad_feedback_count);
+            const archived = integerOrNull(
+              counts.archived_feedback_count,
+            );
+            return bad === null && archived === null
+              ? null
+              : (bad ?? 0) + (archived ?? 0);
+          })();
+        const candidateCount =
+          counts.candidate_count ??
+          counts.candidates ??
+          result.candidate_count;
+        const estimatedInput = integerOrNull(
+          result.estimated_input_tokens ??
+            result.estimate?.input_tokens,
+        );
+        const contextLength = integerOrNull(
+          result.context_length ??
+            result.model_state?.context_length,
+        );
+        const contextLengthSource =
+          result.context_length_source ??
+          result.model_state?.context_length_source;
+        const estimatedTotal = integerOrNull(
+          result.estimated_total_tokens,
+        );
+        const utilizationValue =
+          result.utilization?.percent ??
+          result.utilization_percent ??
+          (contextLength && (estimatedTotal ?? estimatedInput) !== null
+            ? (
+                ((estimatedTotal ??
+                  estimatedInput +
+                    integerOrNull(result.output_token_reserve ?? 256)) /
+                  contextLength) *
+                100
+              )
+            : null);
+        const utilization =
+          utilizationValue === null ||
+          utilizationValue === undefined
+            ? null
+            : Number(utilizationValue);
+        const utilizationMetric = llmRanking.querySelector(
+          "[data-llm-utilization-metric]",
+        );
+        const utilizationState =
+          result.utilization?.state ||
+          (!Number.isFinite(utilization)
+            ? null
+            : utilization > 100
+              ? "over"
+              : utilization >= 95
+                ? "critical"
+                : utilization >= 80
+                  ? "warning"
+                  : "normal");
+
+        setNodeText(
+          "[data-llm-candidate-count]",
+          formattedInteger(candidateCount),
+        );
+        setNodeText(
+          "[data-llm-feedback-count]",
+          formattedInteger(feedbackCount),
+        );
+        const dataAsOf = llmRanking.querySelector(
+          "[data-llm-data-as-of]",
+        );
+        const dataTimestamp =
+          result.data_as_of ??
+          result.data_timestamp ??
+          result.freshness?.data_as_of;
+        if (dataAsOf) {
+          dataAsOf.textContent = formattedTimestamp(dataTimestamp);
+          if (dataTimestamp) {
+            dataAsOf.setAttribute("datetime", dataTimestamp);
+          } else {
+            dataAsOf.removeAttribute("datetime");
+          }
+        }
+        setNodeText(
+          "[data-llm-estimated-input]",
+          estimatedInput === null
+            ? "Unavailable"
+            : `≈${formattedInteger(estimatedInput)} tokens`,
+        );
+        setNodeText(
+          "[data-llm-context-length]",
+          contextLength === null
+            ? "Unknown"
+            : `${formattedInteger(contextLength)} tokens${
+                contextLengthSource === "settings"
+                  ? " · Settings override"
+                  : contextLengthSource === "model"
+                    ? " · Loaded model"
+                    : ""
+              }`,
+        );
+
+        let utilizationCopy = "Unavailable";
+        if (Number.isFinite(utilization)) {
+          const percent = `${utilization.toFixed(
+            utilization >= 100 ? 0 : 1,
+          )}%`;
+          utilizationCopy =
+            utilizationState === "over"
+              ? `${percent} · Likely over context`
+              : utilizationState === "critical"
+                ? `${percent} · Critical`
+                : utilizationState === "warning"
+                  ? `${percent} · Warning`
+                  : percent;
+        }
+        setNodeText("[data-llm-utilization]", utilizationCopy);
+        if (utilizationMetric) {
+          utilizationMetric.classList.remove(
+            "llm-ranking__metric--warning",
+            "llm-ranking__metric--critical",
+            "llm-ranking__metric--over",
+          );
+          if (
+            ["warning", "critical", "over"].includes(
+              utilizationState,
+            )
+          ) {
+            utilizationMetric.classList.add(
+              `llm-ranking__metric--${utilizationState}`,
+            );
+          }
+        }
+
+        const lastUsage =
+          result.last_actual_usage ??
+          result.last_call?.usage ??
+          result.call_status?.usage ??
+          payload?.last_actual_usage;
+        setNodeText(
+          "[data-llm-last-actual]",
+          formattedUsage(lastUsage),
+        );
+        renderThroughput(
+          result.throughput ??
+            payload?.throughput ??
+            result.full_run_throughput,
+        );
+
+        const stale =
+          result.data_stale === true ||
+          result.stale === true ||
+          result.data_is_stale === true ||
+          result.freshness?.stale === true;
+        const staleNotice = llmRanking.querySelector(
+          "[data-llm-stale-notice]",
+        );
+        if (staleNotice) {
+          staleNotice.hidden = !stale;
+          if (stale) {
+            setNodeText(
+              "[data-llm-stale-message]",
+              (Array.isArray(result.stale_reasons)
+                ? result.stale_reasons.join(" ")
+                : null) ||
+                result.stale_reason ||
+                result.freshness?.message ||
+                "Using the last good stored findings because connected data is stale.",
+            );
+          }
+        }
+
+        const body =
+          result.request_body ??
+          result.outbound_body ??
+          result.request ??
+          result.body;
+        if (requestJsonOutput) {
+          requestJsonOutput.textContent =
+            body === undefined
+              ? "The server did not return a request preview."
+              : typeof body === "string"
+                ? body
+                : JSON.stringify(body, null, 2);
+        }
+        if (previewStatus) {
+          previewStatus.textContent = "Preview updated.";
+        }
+        preview?.setAttribute("aria-busy", "false");
+      };
+
+      const runPreview = async () => {
+        if (llmActionBusy) {
+          previewPending = true;
+          return;
+        }
+        if (!llmForm?.checkValidity()) {
+          previewController?.abort();
+          preview?.setAttribute("aria-busy", "false");
+          if (previewStatus) {
+            previewStatus.textContent =
+              "Fix the invalid request limits to refresh.";
+          }
+          return;
+        }
+        previewPending = false;
+        const sequence = ++previewSequence;
+        previewController?.abort();
+        previewController = new AbortController();
+        preview?.setAttribute("aria-busy", "true");
+        if (previewStatus) {
+          previewStatus.textContent = "Refreshing preview…";
+        }
+        try {
+          const result = await requestJson(
+            "/api/v1/settings/insights/llm/preview",
+            {
+              body: {
+                family: familySelect?.value || "weekly",
+                settings: draftSettings(),
+              },
+              signal: previewController.signal,
+            },
+          );
+          if (sequence !== previewSequence) return;
+          renderPreview(result);
+        } catch (error) {
+          if (
+            error?.name === "AbortError" ||
+            sequence !== previewSequence
+          ) {
+            return;
+          }
+          preview?.setAttribute("aria-busy", "false");
+          if (previewStatus) {
+            previewStatus.textContent =
+              error.message || "Couldn’t build the preview.";
+          }
+          if (requestJsonOutput) {
+            requestJsonOutput.textContent =
+              "Request preview unavailable.";
+          }
+        }
+      };
+
+      const schedulePreview = ({ immediate = false } = {}) => {
+        if (previewTimer) window.clearTimeout(previewTimer);
+        previewController?.abort();
+        previewController = null;
+        previewSequence += 1;
+        if (immediate) {
+          runPreview();
+          return;
+        }
+        previewTimer = window.setTimeout(runPreview, 350);
+      };
+
+      const setLlmActionBusy = (busy) => {
+        llmActionBusy = busy;
+        llmForm?.setAttribute("aria-busy", String(busy));
+        llmActionButtons.forEach((button) => {
+          button.disabled = busy;
+        });
+        if (!busy && previewPending) {
+          schedulePreview({ immediate: true });
+        }
+      };
+
+      const applySettings = (settings) => {
+        if (!settings || typeof settings !== "object") return;
+        if (typeof settings.base_guidance === "string") {
+          baseGuidance.value = settings.base_guidance;
+        }
+        families.forEach((family) => {
+          const value = settings.family_guidance?.[family];
+          if (
+            familyGuidance[family] &&
+            typeof value === "string"
+          ) {
+            familyGuidance[family].value = value;
+          }
+        });
+        if (settings.candidate_limit != null) {
+          candidateLimit.value = String(settings.candidate_limit);
+        }
+        if (settings.result_limit != null) {
+          resultLimit.value = String(settings.result_limit);
+        }
+        if (settings.feedback_mode) {
+          feedbackMode.value = settings.feedback_mode;
+        }
+        if (settings.feedback_limit != null) {
+          feedbackLimit.value = String(settings.feedback_limit);
+        }
+        if (Object.hasOwn(settings, "context_length")) {
+          contextLimit.value =
+            settings.context_length == null
+              ? ""
+              : String(settings.context_length);
+        }
+        updateCharacterCounts();
+      };
+
+      const restoreDefaultSettings = () => {
+        const defaultBase = llmRanking.querySelector(
+          "[data-llm-default-base]",
+        );
+        baseGuidance.value = defaultBase?.value ?? "";
+        families.forEach((family) => {
+          const defaultFamily = llmRanking.querySelector(
+            `[data-llm-default-family="${family}"]`,
+          );
+          familyGuidance[family].value =
+            defaultFamily?.value ?? "";
+        });
+        candidateLimit.value =
+          llmRanking.dataset.llmDefaultCandidateLimit || "5";
+        resultLimit.value =
+          llmRanking.dataset.llmDefaultResultLimit || "3";
+        feedbackMode.value =
+          llmRanking.dataset.llmDefaultFeedbackMode ||
+          "bad_and_archived";
+        feedbackLimit.value =
+          llmRanking.dataset.llmDefaultFeedbackLimit || "12";
+        contextLimit.value =
+          llmRanking.dataset.llmDefaultContextLength || "";
+        updateCharacterCounts();
+        if (actionStatus) {
+          actionStatus.textContent =
+            "Default loaded. Save to activate it.";
+        }
+        schedulePreview({ immediate: true });
+      };
+
+      restoreDefault?.addEventListener(
+        "click",
+        restoreDefaultSettings,
+      );
+
+      testDraft?.addEventListener("click", async () => {
+        if (llmActionBusy || !llmForm?.reportValidity()) return;
+        setLlmActionBusy(true);
+        previewController?.abort();
+        if (actionStatus) {
+          actionStatus.textContent = "Testing draft…";
+        }
+        try {
+          const result = await requestJson(
+            "/api/v1/settings/insights/llm/test",
+            {
+              body: {
+                family: familySelect?.value || "weekly",
+                settings: draftSettings(),
+              },
+            },
+          );
+          const test = result?.test ?? result;
+          const selection =
+            test.selection?.finding_ids ??
+            test.selection?.findingIds ??
+            test.selected_ids ??
+            [];
+          const telemetry = test.telemetry ?? {};
+          const summaryParts = [
+            test.status
+              ? String(test.status).replaceAll("_", " ")
+              : "Test completed",
+          ];
+          if (selection.length) {
+            summaryParts.push(
+              `${selection.length} validated ID${
+                selection.length === 1 ? "" : "s"
+              }`,
+            );
+          }
+          const usage =
+            test.actual_usage ??
+            telemetry.actual_usage ??
+            telemetry.usage ??
+            test.usage;
+          if (formattedUsage(usage) !== "Unavailable") {
+            summaryParts.push(formattedUsage(usage));
+          }
+          if (telemetry.latency_ms ?? test.latency_ms) {
+            summaryParts.push(
+              `${formattedInteger(
+                telemetry.latency_ms ?? test.latency_ms,
+              )} ms`,
+            );
+          }
+          if (telemetry.finish_reason ?? test.finish_reason) {
+            summaryParts.push(
+              `finish: ${
+                telemetry.finish_reason ?? test.finish_reason
+              }`,
+            );
+          }
+          if (testSummary) {
+            testSummary.textContent = summaryParts.join(" · ");
+          }
+          const rawResponse =
+            test.raw_response ??
+            result.raw_response ??
+            test.response ??
+            null;
+          if (testOutput) {
+            testOutput.textContent =
+              rawResponse == null
+                ? "The provider returned no response body."
+                : typeof rawResponse === "string"
+                  ? rawResponse
+                  : JSON.stringify(rawResponse, null, 2);
+          }
+          if (testResult) testResult.hidden = false;
+          if (actionStatus) {
+            const testStatusMessages = {
+              succeeded: "Draft tested. Nothing was saved.",
+              no_candidates:
+                "Draft test did not run: no active candidates. Nothing was saved.",
+              not_configured:
+                "Draft test failed: LM Studio is not configured. Nothing was saved.",
+              timeout:
+                "Draft test failed: LM Studio timed out. Nothing was saved.",
+              provider_error:
+                "Draft test failed: LM Studio returned an error. Nothing was saved.",
+              context_error:
+                "Draft test failed: the request exceeded the model context. Nothing was saved.",
+              length:
+                "Draft test failed: the model response hit its output limit. Nothing was saved.",
+              invalid_response:
+                "Draft test failed: the model returned an invalid selection. Nothing was saved.",
+            };
+            actionStatus.textContent =
+              testStatusMessages[test.status] ||
+              `Draft test failed: ${String(
+                test.status || "unknown error",
+              ).replaceAll("_", " ")}. Nothing was saved.`;
+          }
+          if (
+            test.request_body ||
+            test.preview ||
+            result.request_body ||
+            result.preview
+          ) {
+            renderPreview(result);
+          }
+        } catch (error) {
+          if (actionStatus) {
+            actionStatus.textContent =
+              error.message || "Couldn’t test the draft.";
+          }
+          if (testResult) testResult.hidden = true;
+        } finally {
+          setLlmActionBusy(false);
+        }
+      });
+
+      llmForm?.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        if (llmActionBusy || !llmForm.reportValidity()) return;
+        setLlmActionBusy(true);
+        previewController?.abort();
+        if (actionStatus) {
+          actionStatus.textContent = "Saving guidance…";
+        }
+        try {
+          const result = await requestJson(
+            "/api/v1/settings/insights/llm",
+            {
+              method: "PUT",
+              body: {
+                expected_revision: Number(
+                  llmRanking.dataset.llmRevision || 0,
+                ),
+                settings: draftSettings(),
+              },
+            },
+          );
+          const settings = result.settings ?? result;
+          applySettings(settings);
+          const revision = Number(
+            settings.revision ?? result.revision,
+          );
+          if (Number.isFinite(revision)) {
+            llmRanking.dataset.llmRevision = String(revision);
+            if (savedRevision) {
+              savedRevision.textContent = String(revision);
+            }
+          }
+          updateRevisionNote();
+          if (actionStatus) {
+            actionStatus.textContent = Number.isFinite(revision)
+              ? `Guidance saved as revision ${revision}. It will apply on the next run.`
+              : "Guidance saved. It will apply on the next run.";
+          }
+          schedulePreview({ immediate: true });
+        } catch (error) {
+          if (actionStatus) {
+            actionStatus.textContent =
+              error.status === 409
+                ? "These settings changed elsewhere. Refresh before saving."
+                : error.message || "Couldn’t save guidance.";
+          }
+        } finally {
+          setLlmActionBusy(false);
+        }
+      });
+
+      llmForm?.addEventListener("input", () => {
+        updateCharacterCounts();
+        schedulePreview();
+      });
+      llmForm?.addEventListener("change", (event) => {
+        if (event.target === familySelect) {
+          showSelectedFamily();
+        }
+        schedulePreview();
+      });
+
+      showSelectedFamily();
+      updateCharacterCounts();
+      updateRevisionNote();
+      schedulePreview({ immediate: true });
+    }
 
     const saveRule = async (ruleId, settings) => {
       const response = await fetch(`/api/v1/settings/insight-rules/${encodeURIComponent(ruleId)}`, {

@@ -27,6 +27,7 @@ export async function startFinanceWorker(
     jobQueue: queue,
     plaidSyncService,
     planningService,
+    narrativeService: runtimeNarrativeService,
   } = applicationRuntime ?? {};
   const missing = [
     ["repository", repository],
@@ -43,11 +44,13 @@ export async function startFinanceWorker(
   }
 
   const recurringService = new RecurringService({ repository });
-  const narrativeService = new LmStudioNarrativeService({
-    endpoint: config.lmStudio.baseUrl,
-    model: config.lmStudio.model,
-    apiKey: config.lmStudio.apiKey,
-  });
+  const narrativeService =
+    runtimeNarrativeService ??
+    new LmStudioNarrativeService({
+      endpoint: config.lmStudio.baseUrl,
+      model: config.lmStudio.model,
+      apiKey: config.lmStudio.apiKey,
+    });
   const insightService = createInsightService({
     repository,
     narrativeService,

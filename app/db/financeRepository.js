@@ -6601,8 +6601,10 @@ export class PgFinanceRepository {
               )
             ORDER BY
               (rule.match_mode = 'exact') DESC,
+              (rule.match_field = 'normalized_merchant') DESC,
+              length(rule.normalized_match_value) DESC,
               rule.updated_at DESC,
-              rule.id DESC
+              rule.id
             LIMIT 1
           ) cleanup_rule ON true
           WHERE rst.stream_id = r.id
@@ -6873,6 +6875,251 @@ export class PgFinanceRepository {
         row.last_findings_generated_at,
       ),
     };
+  }
+
+  async getInsightLlmSettings(
+    workspaceId = DEFAULT_WORKSPACE_ID,
+  ) {
+    const result = await this.#pool.query(
+      `
+        SELECT *
+        FROM insight_llm_settings
+        WHERE workspace_id = $1
+      `,
+      [workspaceId],
+    );
+    return result.rows[0]
+      ? mapInsightLlmSettings(result.rows[0])
+      : null;
+  }
+
+  async upsertInsightLlmSettings(
+    workspaceId = DEFAULT_WORKSPACE_ID,
+    {
+      expectedRevision,
+      baseGuidance,
+      familyGuidance,
+      candidateLimit,
+      resultLimit,
+      feedbackMode,
+      feedbackLimit,
+      contextLength,
+      updatedBy = null,
+    },
+  ) {
+    return withTransaction(this.#pool, async (client) => {
+      const currentResult = await client.query(
+        `
+          SELECT *
+          FROM insight_llm_settings
+          WHERE workspace_id = $1
+        `,
+        [workspaceId],
+      );
+      const currentRow = currentResult.rows[0] ?? null;
+      const currentRevision = currentRow
+        ? Number(currentRow.revision)
+        : 0;
+      if (currentRevision !== Number(expectedRevision)) {
+        return {
+          conflict: true,
+          current: currentRow
+            ? mapInsightLlmSettings(currentRow)
+            : null,
+        };
+      }
+      const params = [
+        workspaceId,
+        baseGuidance,
+        JSON.stringify(familyGuidance),
+        candidateLimit,
+        resultLimit,
+        feedbackMode,
+        feedbackLimit,
+        contextLength,
+        updatedBy,
+      ];
+      const result = currentRow
+        ? await client.query(
+            `
+              UPDATE insight_llm_settings
+              SET revision = revision + 1,
+                  base_guidance = $2,
+                  family_guidance = $3::jsonb,
+                  candidate_limit = $4,
+                  result_limit = $5,
+                  feedback_mode = $6,
+                  feedback_limit = $7,
+                  context_length = $8,
+                  updated_by = $9,
+                  updated_at = now()
+              WHERE workspace_id = $1
+                AND revision = $10
+              RETURNING *
+            `,
+            [...params, expectedRevision],
+          )
+        : await client.query(
+            `
+              INSERT INTO insight_llm_settings (
+                workspace_id,
+                revision,
+                base_guidance,
+                family_guidance,
+                candidate_limit,
+                result_limit,
+                feedback_mode,
+                feedback_limit,
+                context_length,
+                updated_by
+              )
+              VALUES (
+                $1, 1, $2, $3::jsonb, $4, $5, $6, $7,
+                $8, $9
+              )
+              ON CONFLICT (workspace_id) DO NOTHING
+              RETURNING *
+            `,
+            params,
+          );
+      if (!result.rows[0]) {
+        const latest = await client.query(
+          `
+            SELECT *
+            FROM insight_llm_settings
+            WHERE workspace_id = $1
+          `,
+          [workspaceId],
+        );
+        return {
+          conflict: true,
+          current: latest.rows[0]
+            ? mapInsightLlmSettings(latest.rows[0])
+            : null,
+        };
+      }
+      return {
+        conflict: false,
+        settings: mapInsightLlmSettings(result.rows[0]),
+      };
+    });
+  }
+
+  async listInsightLlmCallStatuses(
+    workspaceId = DEFAULT_WORKSPACE_ID,
+  ) {
+    const result = await this.#pool.query(
+      `
+        SELECT *
+        FROM insight_llm_call_status
+        WHERE workspace_id = $1
+        ORDER BY
+          CASE family
+            WHEN 'weekly' THEN 0
+            WHEN 'investments' THEN 1
+            WHEN 'subscriptions' THEN 2
+            ELSE 3
+          END
+      `,
+      [workspaceId],
+    );
+    return result.rows.map(mapInsightLlmCallStatus);
+  }
+
+  async getInsightLlmCallStatuses(
+    workspaceId = DEFAULT_WORKSPACE_ID,
+  ) {
+    return this.listInsightLlmCallStatuses(workspaceId);
+  }
+
+  async getInsightLlmCallStatus(
+    workspaceId = DEFAULT_WORKSPACE_ID,
+    family,
+  ) {
+    const result = await this.#pool.query(
+      `
+        SELECT *
+        FROM insight_llm_call_status
+        WHERE workspace_id = $1 AND family = $2
+      `,
+      [workspaceId, family],
+    );
+    return result.rows[0]
+      ? mapInsightLlmCallStatus(result.rows[0])
+      : null;
+  }
+
+  async upsertInsightLlmCallStatus(
+    workspaceId = DEFAULT_WORKSPACE_ID,
+    telemetry,
+  ) {
+    const result = await this.#pool.query(
+      `
+        INSERT INTO insight_llm_call_status (
+          workspace_id,
+          family,
+          run_id,
+          guidance_revision,
+          model,
+          status,
+          estimated_input_tokens,
+          prompt_tokens,
+          completion_tokens,
+          total_tokens,
+          context_length,
+          finish_reason,
+          latency_ms,
+          called_at
+        )
+        VALUES (
+          $1, $2, $3, $4, $5, $6, $7,
+          $8, $9, $10, $11, $12, $13,
+          COALESCE($14::timestamptz, now())
+        )
+        ON CONFLICT (workspace_id, family) DO UPDATE SET
+          run_id = EXCLUDED.run_id,
+          guidance_revision = EXCLUDED.guidance_revision,
+          model = EXCLUDED.model,
+          status = EXCLUDED.status,
+          estimated_input_tokens = EXCLUDED.estimated_input_tokens,
+          prompt_tokens = EXCLUDED.prompt_tokens,
+          completion_tokens = EXCLUDED.completion_tokens,
+          total_tokens = EXCLUDED.total_tokens,
+          context_length = EXCLUDED.context_length,
+          finish_reason = EXCLUDED.finish_reason,
+          latency_ms = EXCLUDED.latency_ms,
+          called_at = EXCLUDED.called_at
+        WHERE insight_llm_call_status.called_at <= EXCLUDED.called_at
+        RETURNING *
+      `,
+      [
+        workspaceId,
+        telemetry.family,
+        telemetry.run_id ?? telemetry.runId,
+        telemetry.guidance_revision ??
+          telemetry.guidanceRevision ??
+          0,
+        telemetry.model,
+        telemetry.status,
+        telemetry.estimated_input_tokens ??
+          telemetry.estimatedInputTokens ??
+          0,
+        telemetry.prompt_tokens ?? telemetry.promptTokens ?? null,
+        telemetry.completion_tokens ??
+          telemetry.completionTokens ??
+          null,
+        telemetry.total_tokens ?? telemetry.totalTokens ?? null,
+        telemetry.context_length ??
+          telemetry.contextLength ??
+          null,
+        telemetry.finish_reason ?? telemetry.finishReason ?? null,
+        telemetry.latency_ms ?? telemetry.latencyMs ?? null,
+        telemetry.called_at ?? telemetry.calledAt ?? null,
+      ],
+    );
+    return result.rows[0]
+      ? mapInsightLlmCallStatus(result.rows[0])
+      : this.getInsightLlmCallStatus(workspaceId, telemetry.family);
   }
 
   async clearInsightOutput(
@@ -7557,19 +7804,34 @@ export class PgFinanceRepository {
       id = randomUUID(),
       family,
       findingsHash,
-      headline,
-      bullets,
-      findingIds,
+      guidanceRevision = 0,
+      promptHash = "legacy",
+      model = "legacy",
+      presentation = null,
+      headline = presentation?.headline,
+      bullets = presentation?.bullets,
+      findingIds = presentation?.findingIds,
     },
   ) {
     await this.#pool.query(
       `
         INSERT INTO insight_narratives (
           id, workspace_id, family, findings_hash,
+          guidance_revision, prompt_hash, model,
           headline, bullets, finding_ids
         )
-        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb)
-        ON CONFLICT (workspace_id, family, findings_hash) DO UPDATE SET
+        VALUES (
+          $1, $2, $3, $4, $5, $6, $7,
+          $8, $9::jsonb, $10::jsonb
+        )
+        ON CONFLICT (
+          workspace_id,
+          family,
+          findings_hash,
+          guidance_revision,
+          prompt_hash,
+          model
+        ) DO UPDATE SET
           headline = EXCLUDED.headline,
           bullets = EXCLUDED.bullets,
           finding_ids = EXCLUDED.finding_ids,
@@ -7580,6 +7842,9 @@ export class PgFinanceRepository {
         workspaceId,
         family,
         findingsHash,
+        guidanceRevision,
+        promptHash,
+        model,
         headline,
         JSON.stringify(bullets),
         JSON.stringify(findingIds),
@@ -7609,6 +7874,9 @@ export class PgFinanceRepository {
           bullets: row.bullets,
           finding_ids: row.finding_ids,
           generated_at: dateValue(row.generated_at),
+          guidance_revision: Number(row.guidance_revision ?? 0),
+          prompt_hash: row.prompt_hash ?? "legacy",
+          model: row.model ?? "legacy",
         }
       : null;
   }
@@ -8434,6 +8702,47 @@ function mapInsightFinding(row) {
     state_changed_by: row.state_changed_by ?? null,
     generated_at: dateValue(row.generated_at),
     data_as_of: dateValue(row.data_as_of),
+  };
+}
+
+function mapInsightLlmSettings(row) {
+  const familyGuidance =
+    typeof row.family_guidance === "string"
+      ? JSON.parse(row.family_guidance)
+      : row.family_guidance;
+  return {
+    revision: Number(row.revision),
+    base_guidance: row.base_guidance,
+    family_guidance: {
+      weekly: familyGuidance?.weekly ?? "",
+      investments: familyGuidance?.investments ?? "",
+      subscriptions: familyGuidance?.subscriptions ?? "",
+    },
+    candidate_limit: Number(row.candidate_limit),
+    result_limit: Number(row.result_limit),
+    feedback_mode: row.feedback_mode,
+    feedback_limit: Number(row.feedback_limit),
+    context_length: integer(row.context_length),
+    updated_by: row.updated_by ?? null,
+    updated_at: dateValue(row.updated_at),
+  };
+}
+
+function mapInsightLlmCallStatus(row) {
+  return {
+    family: row.family,
+    run_id: row.run_id,
+    guidance_revision: Number(row.guidance_revision),
+    model: row.model,
+    status: row.status,
+    estimated_input_tokens: Number(row.estimated_input_tokens),
+    prompt_tokens: integer(row.prompt_tokens),
+    completion_tokens: integer(row.completion_tokens),
+    total_tokens: integer(row.total_tokens),
+    context_length: integer(row.context_length),
+    finish_reason: row.finish_reason ?? null,
+    latency_ms: integer(row.latency_ms),
+    called_at: dateValue(row.called_at),
   };
 }
 

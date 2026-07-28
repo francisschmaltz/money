@@ -21,10 +21,27 @@ test("first-party asset revisions change with the current deployment", async () 
     path.resolve("app/views/partials/head.ejs"),
     "utf8",
   );
-  assert.match(head, /\/css\/money\.css\?v=30/);
+  assert.match(head, /\/css\/money\.css\?v=31/);
   assert.match(head, /\/js\/charts\.js\?v=6/);
-  assert.match(head, /\/js\/money\.js\?v=26/);
-  assert.match(head, /\/js\/transactions\.js\?v=1/);
+  assert.match(head, /\/js\/money\.js\?v=27/);
+  assert.match(head, /\/js\/transactions\.js\?v=2/);
+});
+
+test("transaction explorer keeps chart selection without secondary ledger shortcuts", async () => {
+  const [view, script, styles] = await Promise.all([
+    readFile(path.resolve("app/views/transactions.ejs"), "utf8"),
+    readFile(path.resolve("app/public/js/transactions.js"), "utf8"),
+    readFile(path.resolve("app/public/css/money.css"), "utf8"),
+  ]);
+
+  for (const source of [view, script]) {
+    assert.doesNotMatch(source, /Show matching transactions/);
+    assert.doesNotMatch(source, /Remaining groups combined/);
+  }
+  assert.match(
+    styles,
+    /\.spending-detail-category__select\s*\{[\s\S]*?min-height:\s*56px;/,
+  );
 });
 
 test("dismissible notifications persist for the browser session", async () => {

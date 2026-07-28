@@ -8,6 +8,7 @@ import {
 } from "./analytics.js";
 import { stableFindingId, stableFindingKey } from "./ids.js";
 import { isCashSecurity } from "./investmentSecurities.js";
+import { effectiveTransactionName } from "./transactionNames.js";
 
 export function detectWeeklyInsights(
   transactions,
@@ -1409,12 +1410,11 @@ function categoryKey(transaction) {
 }
 
 function merchantKey(transaction) {
-  return (
-    transaction.normalized_merchant ??
-    transaction.merchant_name ??
-    transaction.name ??
-    "unknown"
-  ).toLowerCase();
+  return effectiveTransactionName(transaction, "unknown")
+    .normalize("NFKC")
+    .trim()
+    .toLocaleLowerCase("en-US")
+    .replace(/\s+/g, " ");
 }
 
 function isConvenienceTransaction(transaction) {
@@ -1431,7 +1431,7 @@ function similarPurchaseKey(transaction) {
 }
 
 function displayMerchant(transaction) {
-  return transaction.merchant_name ?? transaction.name ?? "Transaction";
+  return effectiveTransactionName(transaction);
 }
 
 function humanize(value) {

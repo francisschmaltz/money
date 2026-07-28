@@ -204,7 +204,7 @@ test("transaction notes trim input and reject stale writes", async () => {
   );
 });
 
-test("one batch service call preserves omitted fields and recomputes only for category edits", async () => {
+test("one batch service call preserves omitted fields and recomputes canonical-name changes", async () => {
   const calls = [];
   const jobs = [];
   const repository = {
@@ -241,7 +241,13 @@ test("one batch service call preserves omitted fields and recomputes only for ca
     changes: { displayName: "Whole Foods", tags: [] },
     userId: "user-1",
   });
-  assert.equal(jobs.length, 0);
+  assert.deepEqual(jobs, [
+    [
+      "finance.detect_recurring",
+      { workspaceId: "shared" },
+      { dedupeKey: "shared" },
+    ],
+  ]);
 
   await service.batchEditTransactions({
     transaction_ids: ["transaction-1"],
@@ -255,7 +261,7 @@ test("one batch service call preserves omitted fields and recomputes only for ca
     "Fees & Interest",
   );
   assert.equal(calls[1].input.changes.excludedFromSpending, true);
-  assert.equal(jobs.length, 1);
+  assert.equal(jobs.length, 2);
 
   await assert.rejects(
     service.batchEditTransactions({

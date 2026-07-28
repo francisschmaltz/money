@@ -299,6 +299,38 @@ function invokeWithActorAndStatus(
     .catch(next);
 }
 
+function noStore(_request, response, next) {
+  response.set("Cache-Control", "no-store");
+  next();
+}
+
+function invokeInsightLlmSave(
+  service,
+  input,
+  actor,
+  response,
+  next,
+) {
+  if (typeof service?.saveInsightLlmSettings !== "function") {
+    unavailable(response, "LLM ranking settings");
+    return;
+  }
+  Promise.resolve()
+    .then(() => service.saveInsightLlmSettings(input, actor))
+    .then((result) => response.json(result))
+    .catch((error) => {
+      if (error?.code !== "INSIGHT_LLM_REVISION_CONFLICT") {
+        next(error);
+        return;
+      }
+      response.status(409).json({
+        error: "insight_llm_revision_conflict",
+        message: error.message,
+        current_settings: error.currentSettings,
+      });
+    });
+}
+
 function invokePlanWrite(
   service,
   operation,
@@ -1570,6 +1602,54 @@ export function createApiRouter({
               : booleanValue(request.body.enabled),
           settings: request.body?.settings,
         },
+        response,
+        next,
+      );
+    },
+  );
+
+  router.post(
+    "/api/v1/settings/insights/llm/preview",
+    noStore,
+    requireAdmin,
+    requireCsrf,
+    (request, response, next) => {
+      invoke(
+        financeService,
+        "previewInsightLlm",
+        request.body ?? {},
+        response,
+        next,
+      );
+    },
+  );
+
+  router.post(
+    "/api/v1/settings/insights/llm/test",
+    noStore,
+    requireAdmin,
+    requireCsrf,
+    (request, response, next) => {
+      invoke(
+        financeService,
+        "testInsightLlmDraft",
+        request.body ?? {},
+        response,
+        next,
+      );
+    },
+  );
+
+  router.put(
+    "/api/v1/settings/insights/llm",
+    noStore,
+    requireAdmin,
+    requireCsrf,
+    (request, response, next) => {
+      invokeInsightLlmSave(
+        financeService,
+        request.body ?? {},
+        request.user,
         response,
         next,
       );

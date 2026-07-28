@@ -9,14 +9,21 @@ import { createPlaidProvider } from "./providers/index.js";
 import { createDemoFinanceService } from "./services/demoFinanceService.js";
 import { createDemoPlanningService } from "./services/demoPlanningService.js";
 import { createFinanceService } from "./services/financeService.js";
+import { LmStudioNarrativeService } from "./services/narrativeService.js";
 import { createPlanningService } from "./services/planningService.js";
 import { createPlaidSyncService } from "./services/plaidSyncService.js";
 import { createAppleCardImportService } from "./services/appleCardImportService.js";
 
 export function createRuntime(config) {
+  const narrativeService = new LmStudioNarrativeService({
+    endpoint: config.lmStudio.baseUrl,
+    model: config.lmStudio.model,
+    apiKey: config.lmStudio.apiKey,
+  });
   if (config.demoMode) {
     return {
       pool: null,
+      narrativeService,
       financeService: createDemoFinanceService({
         scenario: config.demoScenario,
       }),
@@ -49,6 +56,7 @@ export function createRuntime(config) {
   const financeService = createFinanceService({
     repository,
     jobQueue,
+    narrativeService,
     baseUrl: config.mcp.cardBaseUrl,
   });
   const planningService = createPlanningService({
@@ -72,6 +80,7 @@ export function createRuntime(config) {
     repository,
     secretRepository,
     jobQueue,
+    narrativeService,
     financeService,
     planningService,
     plaidSyncService,

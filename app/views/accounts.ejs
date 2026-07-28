@@ -103,18 +103,25 @@
                 <em class="balance-group-label"><%= accountGroupLabels[account.balanceGroup] || "Unclassified" %></em>
               </span>
               <span class="account-row__balance"><strong><%= formatMoney(account.balance) %></strong><small><%= account.available ? `${formatMoney(account.available)} available` : "Current value" %></small></span>
-              <span class="account-row__actions">
-                <button
-                  class="button button--secondary account-row__edit"
-                  type="button"
-                  data-account-alias-edit="<%= account.id %>"
+              <details class="account-row__actions" name="account-actions" data-account-actions>
+                <summary
+                  class="account-row__actions-trigger"
+                  data-account-actions-trigger="<%= account.id %>"
                   data-account-provider-name="<%= account.name %>"
-                  aria-label="Rename <%= account.name %> in this browser"
-                >Rename</button>
-                <% if (viewer?.is_admin) { %>
-                  <a class="button button--ghost account-row__edit" href="/settings#account-<%= encodeURIComponent(account.id) %>">Settings</a>
-                <% } %>
-              </span>
+                  aria-label="Actions for <%= account.name %>"
+                ><i class="ph ph-dots-three-vertical" aria-hidden="true"></i></summary>
+                <div class="account-row__actions-panel">
+                  <button
+                    type="button"
+                    data-account-alias-edit="<%= account.id %>"
+                    data-account-provider-name="<%= account.name %>"
+                    aria-label="Rename <%= account.name %> in this browser"
+                  ><i class="ph ph-pencil-simple" aria-hidden="true"></i> Rename</button>
+                  <% if (viewer?.is_admin) { %>
+                    <a href="/settings#account-<%= encodeURIComponent(account.id) %>"><i class="ph ph-gear" aria-hidden="true"></i> Settings</a>
+                  <% } %>
+                </div>
+              </details>
             </div>
           <% }) %>
         </div>

@@ -1,10 +1,16 @@
+import { randomUUID } from "node:crypto";
 import { dateOnly, shiftDateOnly } from "./analytics.js";
 import {
   detectInvestmentInsights,
   detectSubscriptionInsights,
   detectWeeklyInsights,
 } from "./insightDetectors.js";
-import { narrativeContextHash } from "./narrativeService.js";
+import {
+  DEFAULT_INSIGHT_LLM_SETTINGS,
+  insightLlmPromptHash,
+  narrativeContextHash,
+  validateInsightLlmSettings,
+} from "./narrativeService.js";
 
 export class InsightService {
   #repository;
@@ -170,25 +176,76 @@ export class InsightService {
         family,
         findings,
       );
-      if (this.#narrativeService) {
+    }
+
+    if (this.#narrativeService) {
+      const storedSettings =
+        (await this.#repository.getInsightLlmSettings?.(
+          workspaceId,
+        )) ?? DEFAULT_INSIGHT_LLM_SETTINGS;
+      // One immutable settings snapshot governs all three family calls. A
+      // concurrent save therefore activates on the next insight run.
+      const settings = validateInsightLlmSettings(storedSettings);
+      const runId = randomUUID();
+      for (const family of Object.keys(families)) {
+        const findings = await this.#repository.listInsightFindings(
+          workspaceId,
+          {
+            family,
+            scope: "active",
+            limit: 200,
+          },
+        );
         const feedback =
-          (await this.#repository.getInsightFeedbackSummary?.(
-            workspaceId,
-            {
-              family,
-              limit: 12,
-            },
-          )) ?? { bad: [], archived: [] };
-        const narrative = await this.#narrativeService.generate(
+          settings.feedback_mode === "none" ||
+          settings.feedback_limit === 0
+            ? { bad: [], archived: [] }
+            : (await this.#repository.getInsightFeedbackSummary?.(
+                workspaceId,
+                {
+                  family,
+                  limit: settings.feedback_limit,
+                },
+              )) ?? { bad: [], archived: [] };
+        const execution = await executeNarrativeProduction(
+          this.#narrativeService,
           family,
           findings,
           feedback,
+          settings,
         );
-        if (narrative) {
+        await this.#repository.upsertInsightLlmCallStatus?.(
+          workspaceId,
+          {
+            ...execution.telemetry,
+            family,
+            run_id: runId,
+            guidance_revision: settings.revision,
+            status: execution.status,
+          },
+        );
+        if (
+          execution.status === "succeeded" &&
+          execution.narrative
+        ) {
           await this.#repository.saveNarrative(workspaceId, {
             family,
-            findingsHash: narrativeContextHash(findings, feedback),
-            ...narrative,
+            findingsHash:
+              execution.context_hash ??
+              narrativeContextHash(findings, feedback, {
+                family,
+                settings,
+                model: execution.model ?? null,
+              }),
+            guidanceRevision: settings.revision,
+            promptHash:
+              execution.prompt_hash ??
+              insightLlmPromptHash(family, settings),
+            model:
+              execution.model ??
+              execution.telemetry?.model ??
+              "",
+            presentation: execution.narrative,
           });
         }
       }
@@ -234,4 +291,48 @@ export function selectHighQualityFindings(findings, limit = 5) {
 
 export function createInsightService(options) {
   return new InsightService(options);
+}
+
+async function executeNarrativeProduction(
+  service,
+  family,
+  findings,
+  feedback,
+  settings,
+) {
+  if (typeof service.executeProduction === "function") {
+    return service.executeProduction({
+      family,
+      findings,
+      feedback,
+      settings,
+    });
+  }
+  const narrative = await service.generate(
+    family,
+    findings,
+    feedback,
+    settings,
+  );
+  return {
+    status: narrative ? "succeeded" : "provider_error",
+    narrative,
+    model: "",
+    prompt_hash: insightLlmPromptHash(family, settings),
+    context_hash: narrativeContextHash(findings, feedback, {
+      family,
+      settings,
+    }),
+    telemetry: {
+      model: "",
+      estimated_input_tokens: 0,
+      prompt_tokens: null,
+      completion_tokens: null,
+      total_tokens: null,
+      context_length: null,
+      finish_reason: null,
+      latency_ms: null,
+      called_at: new Date().toISOString(),
+    },
+  };
 }

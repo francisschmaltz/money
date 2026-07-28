@@ -106,7 +106,7 @@ test("Plaid OAuth callback renders a resumable authenticated return page", async
   assert.match(response.text, /data-page="plaid-oauth"/);
   assert.match(response.text, /data-plaid-oauth-return/);
   assert.match(response.text, /Returning to Plaid/);
-  assert.match(response.text, /\/js\/money\.js\?v=26/);
+  assert.match(response.text, /\/js\/money\.js\?v=27/);
   assert.doesNotMatch(response.text, /data-search-dialog/);
 });
 
@@ -328,10 +328,9 @@ test("transactions puts detailed spending analysis before the ledger", async () 
   assert.match(html, /data-chart="line"/);
   assert.match(html, /Daily spending for Jul 1, 2026–Jul 26, 2026/);
   assert.match(html, /35% · 2 transactions/);
-  assert.match(
-    html,
-    /href="\/transactions\?q=coffee&amp;period=30&amp;account=account_checking&amp;category=Housing"/,
-  );
+  assert.doesNotMatch(html, /Show matching transactions/);
+  assert.doesNotMatch(html, /Remaining groups combined/);
+  assert.doesNotMatch(html, />Clear<\/a>/);
   assert.match(html, />Posted spending</);
   assert.match(html, /<h3 data-spending-segment-heading>All categories<\/h3>/);
   assert.doesNotMatch(html, /<h3>Top categories<\/h3>/);
@@ -392,10 +391,7 @@ test("transactions exposes every timeline and preserves sorting in links", async
     html,
     /<option value="merchant" selected>Merchant \(A–Z\)<\/option>/,
   );
-  assert.match(
-    html,
-    /href="\/transactions\?period=365&amp;sort=merchant&amp;category=Housing"/,
-  );
+  assert.doesNotMatch(html, /Show matching transactions/);
   assert.match(
     html,
     /href="\/transactions\?period=365&amp;sort=merchant&amp;transaction=txn_whole_foods"/,
@@ -609,7 +605,7 @@ test("category-filtered transaction HTTP keeps the split projection in rows and 
   assert.doesNotMatch(result.text, /Shopping · Checking/);
 });
 
-test("accounts show inventory with local rename and direct Settings controls", async () => {
+test("accounts show inventory with local rename and disclosed Settings controls", async () => {
   const html = await render("accounts", {
     pageTitle: "Accounts",
     activePath: "/accounts",
@@ -625,6 +621,15 @@ test("accounts show inventory with local rename and direct Settings controls", a
   assert.match(html, /2024 vehicle/);
   assert.match(html, /\$34,714\.61/);
   assert.match(html, /id="account-account_checking"/);
+  assert.match(
+    html,
+    /<details class="account-row__actions" name="account-actions" data-account-actions>/,
+  );
+  assert.match(
+    html,
+    /data-account-actions-trigger="account_checking"[\s\S]*?aria-label="Actions for Everyday checking"/,
+  );
+  assert.match(html, /ph-dots-three-vertical/);
   assert.match(html, /data-account-alias-edit="account_checking"/);
   assert.match(html, /data-account-display-name="account_checking"/);
   assert.match(html, /data-account-alias-dialog/);
@@ -702,6 +707,7 @@ test("backend account controls stay admin-only while local aliases stay availabl
   });
   assert.match(html, /href="\/accounts" aria-current="page"/);
   assert.match(html, /account-row--readonly/);
+  assert.match(html, /data-account-actions-trigger="account_checking"/);
   assert.match(html, /data-account-alias-edit="account_checking"/);
   assert.doesNotMatch(html, /href="\/settings#account-/);
   assert.doesNotMatch(html, /Connect account/);
@@ -902,6 +908,14 @@ test("settings shows insight status, timestamps, and admin run and clear control
   assert.match(html, /<dt>Next scheduled run<\/dt>/);
   assert.match(html, /4 active · 2 archived/);
   assert.match(html, /data-insights-run/);
+  assert.match(
+    html,
+    /<button[^>]*data-insights-run[^>]*data-insights-can-run="false"[^>]*disabled[^>]*>/,
+  );
+  assert.match(
+    html,
+    /aria-describedby="insight-run-disabled-reason"/,
+  );
   assert.match(html, />\s*Run insights now\s*</);
   assert.match(html, /class="insight-admin__danger"/);
   assert.match(html, /data-insights-clear-dialog-open/);
@@ -1015,6 +1029,10 @@ test("Format Rules manages nested spending categories without visibility switche
   )?.[0];
   assert.ok(otherRow);
   assert.doesNotMatch(otherRow, /data-category-select/);
+  assert.match(
+    otherRow,
+    /data-category-merge-control hidden aria-hidden="true"/,
+  );
   assert.doesNotMatch(otherRow, /data-category-edit-form/);
   assert.doesNotMatch(otherRow, /data-category-delete/);
   assert.ok(

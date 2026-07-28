@@ -239,6 +239,12 @@ test.describe("@ux-stress Money UX repair", () => {
         const actions = element.querySelector(
           ".transaction-filter__actions",
         );
+        const searchControl = element.querySelector(
+          ".transaction-filter__search-control",
+        );
+        const apply = actions?.querySelector(
+          "[data-transaction-filter-submit]",
+        );
         const controls = [
           ...element.querySelectorAll(
             'input:not([type="hidden"]), select, button, a.button',
@@ -251,12 +257,31 @@ test.describe("@ux-stress Money UX repair", () => {
           .gridTemplateColumns.trim()
           .split(/\s+/)
           .filter(Boolean).length;
+        const fieldsBounds = fieldsElement.getBoundingClientRect();
+        const searchBounds = searchControl.getBoundingClientRect();
+        const applyBounds = apply.getBoundingClientRect();
+        const tabOrder = [
+          ...element.querySelectorAll(
+            'select, input:not([type="hidden"]), button[type="submit"]',
+          ),
+        ].map(
+          (control) =>
+            control.getAttribute("name") ||
+            control.textContent.trim(),
+        );
         return {
           left: bounds.left,
           right: bounds.right,
           viewport: document.documentElement.clientWidth,
           actionChildren: actions?.children.length ?? 0,
           columns,
+          fieldsBottom: fieldsBounds.bottom,
+          searchTop: searchBounds.top,
+          searchBottom: searchBounds.bottom,
+          searchRight: searchBounds.right,
+          applyBottom: applyBounds.bottom,
+          applyLeft: applyBounds.left,
+          tabOrder,
           controls: controls.map((control) => {
             const controlBounds = control.getBoundingClientRect();
             return {
@@ -274,7 +299,20 @@ test.describe("@ux-stress Money UX repair", () => {
 
       expect(metrics.left).toBeGreaterThanOrEqual(-1);
       expect(metrics.right).toBeLessThanOrEqual(metrics.viewport + 1);
-      expect(metrics.actionChildren).toBe(2);
+      expect(metrics.actionChildren).toBe(1);
+      expect(metrics.tabOrder).toEqual([
+        "period",
+        "category",
+        "account",
+        "sort",
+        "q",
+        "Apply",
+      ]);
+      expect(metrics.searchTop).toBeGreaterThan(metrics.fieldsBottom);
+      expect(
+        Math.abs(metrics.searchBottom - metrics.applyBottom),
+      ).toBeLessThanOrEqual(1);
+      expect(metrics.searchRight).toBeLessThanOrEqual(metrics.applyLeft);
       for (const control of metrics.controls) {
         expect(
           control.left,
@@ -290,14 +328,75 @@ test.describe("@ux-stress Money UX repair", () => {
         ).toBeGreaterThanOrEqual(43);
       }
 
-      if (width >= 641 && width <= 1100) {
-        expect(metrics.columns).toBe(3);
+      if (width >= 641) {
+        expect(metrics.columns).toBe(4);
       } else if (width <= 640) {
         expect(metrics.columns).toBe(1);
       }
 
       const layout = await horizontalLayout(page);
       expect(layout.root).toBeLessThanOrEqual(layout.viewport + 1);
+    }
+  });
+
+  test("header search keeps its shortcut on desktop and becomes a 44px mobile target", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1024, height: 800 });
+    await gotoSettled(page, "/");
+
+    const search = page.locator(".search-trigger");
+    const geometry = () => search.evaluate((control) => {
+      const bounds = control.getBoundingClientRect();
+      const shortcut = control.querySelector(".keyboard-hint");
+      const visibleChildren = [...control.children].filter(
+        (child) => getComputedStyle(child).display !== "none",
+      );
+      return {
+        width: bounds.width,
+        height: bounds.height,
+        shortcutDisplay: getComputedStyle(shortcut).display,
+        childrenContained: visibleChildren.every((child) => {
+          const childBounds = child.getBoundingClientRect();
+          return (
+            childBounds.left >= bounds.left - 1 &&
+            childBounds.right <= bounds.right + 1 &&
+            childBounds.top >= bounds.top - 1 &&
+            childBounds.bottom <= bounds.bottom + 1
+          );
+        }),
+      };
+    });
+    const desktopGeometry = await geometry();
+    expect(desktopGeometry.width).toBeGreaterThan(44);
+    expect(desktopGeometry.height).toBe(44);
+    expect(desktopGeometry.shortcutDisplay).not.toBe("none");
+    expect(desktopGeometry.childrenContained).toBe(true);
+    await search.hover();
+    expect((await geometry()).childrenContained).toBe(true);
+    await search.focus();
+    expect((await geometry()).childrenContained).toBe(true);
+
+    await page.setViewportSize({ width: 390, height: 800 });
+    const mobileGeometry = await geometry();
+    expect(mobileGeometry.width).toBe(44);
+    expect(mobileGeometry.height).toBe(44);
+    expect(mobileGeometry.shortcutDisplay).toBe("none");
+    expect(mobileGeometry.childrenContained).toBe(true);
+  });
+
+  test("budget total row stays square in view and edit modes", async ({
+    page,
+  }) => {
+    for (const width of [1024, 390]) {
+      await page.setViewportSize({ width, height: 900 });
+      for (const path of ["/plan", "/plan?edit_budget=1"]) {
+        await gotoSettled(page, path);
+        await expect(page.locator(".budget-row--total")).toHaveCSS(
+          "border-radius",
+          "0px",
+        );
+      }
     }
   });
 
@@ -353,17 +452,23 @@ test.describe("@ux-stress Money UX repair", () => {
       }));
     expect(afterChart).not.toEqual(beforeChart);
 
-    const matchingLink = explorer
+    const selectedSegmentControl = explorer
       .locator("[data-spending-segment-item].is-selected")
-      .getByRole("link", {
-        name: /Show matching transactions/i,
-      });
-    await expect(matchingLink).toBeVisible();
+      .locator("[data-spending-segment]");
     expect(
-      await matchingLink.evaluate(
+      await selectedSegmentControl.evaluate(
         (element) => element.getBoundingClientRect().height,
       ),
-    ).toBeGreaterThanOrEqual(43);
+    ).toBeGreaterThanOrEqual(55);
+    await expect(
+      explorer.locator(".spending-detail-category__filter"),
+    ).toHaveCount(0);
+    await expect(
+      explorer.getByText("Show matching transactions", { exact: true }),
+    ).toHaveCount(0);
+    await expect(
+      explorer.getByText("Remaining groups combined", { exact: true }),
+    ).toHaveCount(0);
     const resetControl = explorer.locator(
       "[data-spending-segment-reset]",
     );
@@ -373,11 +478,6 @@ test.describe("@ux-stress Money UX repair", () => {
         (element) => element.getBoundingClientRect().height,
       ),
     ).toBeGreaterThanOrEqual(43);
-    const matchingUrl = new URL(
-      await matchingLink.getAttribute("href"),
-      "http://money.test",
-    );
-    expect(matchingUrl.searchParams.has("q")).toBe(true);
     expect(new URL(page.url()).searchParams.has("q")).toBe(false);
 
     await page.goBack();
@@ -420,6 +520,7 @@ test.describe("@ux-stress Money UX repair", () => {
     const explorer = page.locator("[data-spending-explorer]");
     const canvas = explorer.locator("[data-spending-breakdown-chart]");
     await expect(canvas).toHaveAttribute("data-chart-ready", "true");
+    await canvas.scrollIntoViewIfNeeded();
     const ledgerCount = await page.locator(".transaction-row").count();
     const point = await canvas.evaluate((element) => {
       const chart = element.moneyChart;
@@ -502,9 +603,32 @@ test.describe("@ux-stress Money UX repair", () => {
     }
   });
 
-  test("portfolio timeframe remains visible, scrollable, and URL-backed on mobile", async ({
+  test("portfolio timeframe is compact on desktop and scrollable with 44px targets on mobile", async ({
     page,
   }) => {
+    await page.setViewportSize({ width: 1024, height: 900 });
+    await gotoSettled(page, "/portfolio?period=all");
+
+    const desktopTimeframe = page.getByRole("navigation", {
+      name: "Portfolio timeframe",
+    });
+    const desktopGeometry = await desktopTimeframe.evaluate((control) => {
+      const heading = control.closest(".card-heading");
+      const controlBounds = control.getBoundingClientRect();
+      const optionBounds = control
+        .querySelector("a")
+        .getBoundingClientRect();
+      return {
+        headingTop: heading.getBoundingClientRect().top,
+        controlTop: controlBounds.top,
+        optionHeight: optionBounds.height,
+      };
+    });
+    expect(
+      Math.abs(desktopGeometry.controlTop - desktopGeometry.headingTop),
+    ).toBeLessThanOrEqual(1);
+    expect(desktopGeometry.optionHeight).toBeLessThan(44);
+
     await page.setViewportSize({ width: 320, height: 700 });
     await gotoSettled(page, "/portfolio?period=all");
 
@@ -521,12 +645,16 @@ test.describe("@ux-stress Money UX repair", () => {
       const activeBounds = activeOption.getBoundingClientRect();
       return {
         overflowX: getComputedStyle(control).overflowX,
+        optionHeights: [...control.querySelectorAll("a")].map(
+          (option) => option.getBoundingClientRect().height,
+        ),
         activeVisible:
           activeBounds.left >= controlBounds.left - 1 &&
           activeBounds.right <= controlBounds.right + 1,
       };
     });
     expect(["auto", "scroll"]).toContain(geometry.overflowX);
+    expect(geometry.optionHeights.every((height) => height >= 44)).toBe(true);
     expect(geometry.activeVisible).toBe(true);
 
     await timeframe.getByRole("link", { name: "1M" }).click();
@@ -581,6 +709,76 @@ test.describe("@ux-stress Money UX repair", () => {
     }
     const layout = await horizontalLayout(page);
     expect(layout.root).toBeLessThanOrEqual(layout.viewport + 1);
+  });
+
+  test("connected account actions use one contained disclosure and keep alias focus", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 320, height: 700 });
+    await gotoSettled(page, "/accounts");
+
+    const menus = page.locator("[data-account-actions]");
+    const first = menus.nth(0);
+    const second = menus.nth(1);
+    const firstTrigger = first.locator(
+      "[data-account-actions-trigger]",
+    );
+    const secondTrigger = second.locator(
+      "[data-account-actions-trigger]",
+    );
+
+    await expect(firstTrigger).toHaveAttribute(
+      "aria-label",
+      "Actions for Everyday checking",
+    );
+    await firstTrigger.click();
+    await expect(first).toHaveAttribute("open", "");
+    const panelGeometry = await first
+      .locator(".account-row__actions-panel")
+      .evaluate((panel) => {
+        const bounds = panel.getBoundingClientRect();
+        return {
+          left: bounds.left,
+          right: bounds.right,
+          viewport: document.documentElement.clientWidth,
+        };
+      });
+    expect(panelGeometry.left).toBeGreaterThanOrEqual(0);
+    expect(panelGeometry.right).toBeLessThanOrEqual(
+      panelGeometry.viewport,
+    );
+    await expect(
+      first.getByRole("link", { name: "Settings" }),
+    ).toHaveAttribute("href", "/settings#account-account_checking");
+
+    await secondTrigger.click();
+    await expect(first).not.toHaveAttribute("open", "");
+    await expect(second).toHaveAttribute("open", "");
+    await page.locator(".institution-heading h2").first().click();
+    await expect(second).not.toHaveAttribute("open", "");
+
+    await secondTrigger.click();
+    await page.keyboard.press("Escape");
+    await expect(second).not.toHaveAttribute("open", "");
+    await expect(secondTrigger).toBeFocused();
+
+    await firstTrigger.click();
+    await first.getByRole("button", { name: /Rename Everyday checking/ }).click();
+    const dialog = page.locator("[data-account-alias-dialog]");
+    await expect(dialog).toBeVisible();
+    await dialog.getByLabel("Display name").fill("Shared spending");
+    await dialog.getByRole("button", { name: "Save name" }).click();
+
+    await expect(firstTrigger).toHaveAttribute(
+      "aria-label",
+      "Actions for Shared spending",
+    );
+    await expect(firstTrigger).toBeFocused();
+    await expect(
+      page.locator(
+        '[data-account-display-name="account_checking"]',
+      ),
+    ).toHaveText("Shared spending");
   });
 
   test("seven-digit transaction values remain intact at narrow widths", async ({

@@ -1,6 +1,7 @@
 import { stableId } from "./ids.js";
 import { normalizeMerchant } from "../providers/plaidNormalizer.js";
 import { shiftDateOnly } from "./analytics.js";
+import { effectiveTransactionName } from "./transactionNames.js";
 
 const CADENCES = [
   { name: "weekly", target: 7, tolerance: 2, monthlyFactor: 52 / 12 },
@@ -347,7 +348,7 @@ function addCalendar(value, count, unit) {
 function preferredDisplayName(transactions) {
   const counts = new Map();
   for (const transaction of transactions) {
-    const name = transaction.merchant_name ?? transaction.name;
+    const name = effectiveTransactionName(transaction, "");
     if (name) counts.set(name, (counts.get(name) ?? 0) + 1);
   }
   return [...counts.entries()].sort(

@@ -3,6 +3,7 @@ import {
   isCashSecurity,
 } from "./investmentSecurities.js";
 import { createHash } from "node:crypto";
+import { effectiveTransactionName } from "./transactionNames.js";
 
 const DAY_MS = 86_400_000;
 
@@ -724,7 +725,7 @@ function spendingGroupLabel(transaction, groupBy) {
     groupBy === "category"
       ? topLevelCategory(transaction.category_primary ?? fallback)
       : groupBy === "merchant"
-        ? transaction.merchant_name ?? transaction.name
+        ? effectiveTransactionName(transaction, fallback)
         : transaction.account_name;
   return String(value ?? "").trim() || fallback;
 }

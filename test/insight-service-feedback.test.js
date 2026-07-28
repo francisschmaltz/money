@@ -4,9 +4,12 @@ import {
   InsightService,
   selectHighQualityFindings,
 } from "../app/services/insightService.js";
-import { narrativeContextHash } from "../app/services/narrativeService.js";
+import {
+  DEFAULT_INSIGHT_LLM_SETTINGS,
+  narrativeContextHash,
+} from "../app/services/narrativeService.js";
 
-test("nightly insight generation scopes feedback and hashes it with each narrative", async () => {
+test("nightly insight generation re-reads active findings and uses one settings revision and run ID", async () => {
   const feedbackByFamily = {
     weekly: {
       bad: [
@@ -33,6 +36,29 @@ test("nightly insight generation scopes feedback and hashes it with each narrati
   const feedbackRequests = [];
   const narrativeCalls = [];
   const savedNarratives = [];
+  const activeFindingRequests = [];
+  const telemetryRows = [];
+  let settingsReads = 0;
+  const settings = {
+    ...DEFAULT_INSIGHT_LLM_SETTINGS,
+    revision: 7,
+  };
+  const activeFindings = Object.fromEntries(
+    ["weekly", "investments", "subscriptions"].map((family) => [
+      family,
+      [
+        {
+          id: `active-${family}`,
+          family,
+          type: "needs_review",
+          severity: "important",
+          title: `Review ${family}`,
+          explanation: "Stored active corrected finding.",
+          actions: [],
+        },
+      ],
+    ]),
+  );
   const repository = {
     async takeDailySnapshots() {},
     async getDataFreshness() {
@@ -60,6 +86,14 @@ test("nightly insight generation scopes feedback and hashes it with each narrati
       return [];
     },
     async replaceInsightFindings() {},
+    async listInsightFindings(workspaceId, options) {
+      activeFindingRequests.push({ workspaceId, ...options });
+      return structuredClone(activeFindings[options.family]);
+    },
+    async getInsightLlmSettings() {
+      settingsReads += 1;
+      return structuredClone(settings);
+    },
     async getInsightFeedbackSummary(workspaceId, options) {
       feedbackRequests.push({ workspaceId, ...options });
       return structuredClone(feedbackByFamily[options.family]);
@@ -67,19 +101,44 @@ test("nightly insight generation scopes feedback and hashes it with each narrati
     async saveNarrative(workspaceId, narrative) {
       savedNarratives.push({ workspaceId, ...narrative });
     },
+    async upsertInsightLlmCallStatus(workspaceId, telemetry) {
+      telemetryRows.push({ workspaceId, ...telemetry });
+    },
     async rebuildSearchDocuments() {},
   };
   const narrativeService = {
-    async generate(family, findings, feedback) {
+    async executeProduction({
+      family,
+      findings,
+      feedback,
+      settings: callSettings,
+    }) {
       narrativeCalls.push({
         family,
         findings: structuredClone(findings),
         feedback: structuredClone(feedback),
+        settings: structuredClone(callSettings),
       });
       return {
-        headline: `${family} action`,
-        bullets: [`Review ${family}`],
-        findingIds: [],
+        status: "succeeded",
+        model: "local-model",
+        prompt_hash: `prompt-${family}`,
+        narrative: {
+          headline: `${family} action`,
+          bullets: [`Review ${family}`],
+          findingIds: findings.map((finding) => finding.id),
+        },
+        telemetry: {
+          model: "local-model",
+          estimated_input_tokens: 123,
+          prompt_tokens: 100,
+          completion_tokens: 10,
+          total_tokens: 110,
+          context_length: 4_096,
+          finish_reason: "stop",
+          latency_ms: 5,
+          called_at: "2026-07-26T12:00:00.000Z",
+        },
       };
     },
   };
@@ -115,6 +174,18 @@ test("nightly insight generation scopes feedback and hashes it with each narrati
   );
   assert.equal(narrativeCalls.length, 6);
   assert.equal(savedNarratives.length, 6);
+  assert.equal(settingsReads, 2);
+  assert.deepEqual(
+    activeFindingRequests,
+    [0, 1].flatMap(() =>
+      ["weekly", "investments", "subscriptions"].map((family) => ({
+        workspaceId: "shared",
+        family,
+        scope: "active",
+        limit: 200,
+      })),
+    ),
+  );
   assert.deepEqual(
     Object.fromEntries(
       narrativeCalls
@@ -123,17 +194,62 @@ test("nightly insight generation scopes feedback and hashes it with each narrati
     ),
     initialFeedback,
   );
+  assert.ok(
+    narrativeCalls.every(
+      ({ family, findings, settings: callSettings }) =>
+        findings.length === 1 &&
+        findings[0].id === `active-${family}` &&
+        callSettings.revision === 7,
+    ),
+  );
 
   for (let index = 0; index < narrativeCalls.length; index += 1) {
     const generated = narrativeCalls[index];
     const saved = savedNarratives[index];
     assert.equal(saved.workspaceId, "shared");
     assert.equal(saved.family, generated.family);
+    assert.equal(saved.guidanceRevision, 7);
+    assert.equal(saved.promptHash, `prompt-${generated.family}`);
+    assert.equal(saved.model, "local-model");
+    assert.deepEqual(saved.presentation, {
+      headline: `${generated.family} action`,
+      bullets: [`Review ${generated.family}`],
+      findingIds: [`active-${generated.family}`],
+    });
     assert.equal(
       saved.findingsHash,
-      narrativeContextHash(generated.findings, generated.feedback),
+      narrativeContextHash(
+        generated.findings,
+        generated.feedback,
+        {
+          family: generated.family,
+          settings,
+          model: "local-model",
+        },
+      ),
     );
   }
+  assert.equal(telemetryRows.length, 6);
+  assert.deepEqual(
+    new Set(telemetryRows.slice(0, 3).map((row) => row.run_id))
+      .size,
+    1,
+  );
+  assert.deepEqual(
+    new Set(telemetryRows.slice(3).map((row) => row.run_id)).size,
+    1,
+  );
+  assert.notEqual(
+    telemetryRows[0].run_id,
+    telemetryRows[3].run_id,
+  );
+  assert.ok(
+    telemetryRows.every(
+      (row) =>
+        row.guidance_revision === 7 &&
+        row.status === "succeeded",
+    ),
+  );
 
   const firstRunHashes = Object.fromEntries(
     savedNarratives

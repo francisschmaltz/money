@@ -27,6 +27,7 @@ function transaction({
   amountMinor = -1_000,
   category = "Dining",
   merchant = "Merchant",
+  displayName,
   currency = "USD",
   pending = false,
   excludedFromSpending = false,
@@ -37,6 +38,9 @@ function transaction({
     authorized_at: null,
     merchant_name: merchant,
     name: merchant,
+    ...(displayName === undefined
+      ? {}
+      : { display_name: displayName }),
     category_primary: category,
     category_detailed: category,
     account_id: "account-checking",
@@ -147,6 +151,45 @@ test("spending summaries group by merchant with stable top-eight segments and su
   for (const segment of first.segments) {
     assert.equal(seriesTotal(segment.series), segment.amount.amount_minor);
   }
+});
+
+test("merchant analytics group and label by the verbatim effective name", () => {
+  const summary = buildSpendingSummary({
+    transactions: [
+      transaction({
+        id: "raw-one",
+        postedOn: "2026-07-10",
+        amountMinor: -1_000,
+        merchant: "ACME #0042",
+        displayName: "acme & Sons™",
+      }),
+      transaction({
+        id: "raw-two",
+        postedOn: "2026-07-11",
+        amountMinor: -2_000,
+        merchant: "ACME ONLINE 991",
+        displayName: "acme & Sons™",
+      }),
+    ],
+    currentPeriod: {
+      start_on: "2026-07-01",
+      end_on: "2026-08-01",
+    },
+    previousPeriod: {
+      start_on: "2026-06-01",
+      end_on: "2026-07-01",
+    },
+    groupBy: "merchant",
+  });
+
+  assert.deepEqual(
+    summary.segments.map((segment) => [
+      segment.label,
+      segment.amount.amount_minor,
+      segment.count,
+    ]),
+    [["acme & Sons™", 3_000, 2]],
+  );
 });
 
 test("refund-only groups remain in the breakdown so every plotted value reconciles", () => {

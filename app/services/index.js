@@ -31,7 +31,19 @@ export {
   findingsHash,
 } from "./insightDetectors.js";
 export {
+  DEFAULT_INSIGHT_LLM_SETTINGS,
+  INSIGHT_LLM_FAMILIES,
+  INSIGHT_LLM_OUTPUT_TOKEN_RESERVE,
+  INSIGHT_LLM_RAW_RESPONSE_LIMIT,
+  LOCKED_RANKING_CONTRACT,
   LmStudioNarrativeService,
+  NARRATIVE_PROMPT_VERSION,
+  buildInsightLlmRequest,
+  estimateInputTokens,
+  insightLlmPromptHash,
+  narrativeContextHash,
+  validateInsightLlmSettings,
   validateNarrative,
+  validateNarrativeSelection,
 } from "./narrativeService.js";
 export * from "./analytics.js";

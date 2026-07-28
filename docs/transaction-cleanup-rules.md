@@ -4,7 +4,8 @@ Transaction cleanup has two separate jobs:
 
 - Fuzzy search finds similar existing transactions for a one-time batch edit.
 - Persistent rules update existing and future transactions when the normalized
-  merchant or normalized transaction name matches exactly.
+  merchant or normalized transaction name matches exactly or contains the
+  configured text.
 
 The distinction is intentional. Similarity is useful while a person is
 reviewing candidates; it is not safe enough to run forever without review.
@@ -19,12 +20,10 @@ A rule stores:
 - Enabled state and create/update audit fields.
 
 Capitalization, punctuation, diacritics, and repeated spaces are normalized
-before comparison. The remaining value must match exactly. A workspace can
-have only one rule for a given matcher field and normalized value.
-
-If both a merchant rule and a transaction-name rule match, the merchant rule
-wins. Rules of the same type are ordered by the most recent update and then by
-ID for a deterministic result.
+before comparison. Exact rules beat contains rules. The remaining winner order
+is merchant before transaction name, longest normalized matcher, newest
+update, then ascending ID. A workspace can have only one rule for a given
+matcher field, match mode, and normalized value.
 
 ## Precedence and reversibility
 
@@ -34,6 +33,11 @@ Effective transaction values use this order:
 2. The winning enabled cleanup rule.
 3. Existing merchant/original-transaction overrides.
 4. Plaid's stored provider values.
+
+The winning display name is rendered verbatim. Analytics, insights, recurring
+payments, transaction cards, and search all use that same effective name while
+keeping provider merchant/name fields available for matching and “Original
+Merchant” details.
 
 Rule output is applied dynamically. Plaid data is never rewritten, and future
 synced transactions inherit a rule as soon as their normalized source field

@@ -176,10 +176,6 @@
         analytics_group: groupKey,
         analytics_segment: segmentKey,
       });
-    const ledgerUrl = (groupKey, segment) =>
-      groupKey === "merchant"
-        ? urlFor({ q: segment.value || segment.label })
-        : urlFor({ category: segment.value || segment.label });
 
     const renderSegmentList = (
       groupKey,
@@ -237,23 +233,6 @@
           formatMoney(segment.amount),
         );
         item.append(select);
-
-        if (!segment.key.endsWith("-other")) {
-          const filter = appendText(
-            item,
-            "a",
-            "Show matching transactions",
-            "spending-detail-category__filter",
-          );
-          filter.href = ledgerUrl(groupKey, segment);
-        } else {
-          appendText(
-            item,
-            "span",
-            "Remaining groups combined",
-            "spending-detail-category__filter spending-detail-category__filter--note",
-          );
-        }
         segmentList.append(item);
       }
       if (focusSelection && selectedSegment) {

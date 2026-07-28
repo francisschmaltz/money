@@ -187,6 +187,30 @@ test("creating a rule stores match mode and refreshes contained matches", async 
         call.params[1]?.includes("transaction-1"),
     ),
   );
+  const searchRefresh = db.calls.find(
+    (call) =>
+      call.sql.includes("INSERT INTO search_documents") &&
+      call.params[1]?.includes("transaction-1"),
+  );
+  assert.match(
+    searchRefresh.sql,
+    /metadata\.display_name, metadata\.note, cleanup_rule\.display_name, t\.merchant_name, t\.name/,
+  );
+});
+
+test("recurring presentation uses the canonical cleanup winner order", async () => {
+  const db = fakePool(async () => ({ rows: [] }));
+  const repository = new PgFinanceRepository(db.pool);
+
+  await repository.listRecurringStreams("shared");
+
+  const query = db.calls.find((call) =>
+    call.sql.includes("FROM recurring_streams r"),
+  );
+  assert.match(
+    query.sql,
+    /ORDER BY \(rule\.match_mode = 'exact'\) DESC, \(rule\.match_field = 'normalized_merchant'\) DESC, length\(rule\.normalized_match_value\) DESC, rule\.updated_at DESC, rule\.id LIMIT 1/,
+  );
 });
 
 test("editing and deleting a rule refresh old and new match sets", async () => {

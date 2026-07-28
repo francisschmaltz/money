@@ -11,6 +11,7 @@ function charge({
   date,
   amount = -1_999,
   merchant = "Disney Plus",
+  displayName,
   account = "account_card",
   category = "ENTERTAINMENT",
   detailed = "ENTERTAINMENT_TV",
@@ -23,6 +24,9 @@ function charge({
     merchant_name: merchant,
     normalized_merchant: merchant.toLowerCase(),
     name: merchant,
+    ...(displayName === undefined
+      ? {}
+      : { display_name: displayName }),
     account_id: account,
     account_name: account,
     category_primary: category,
@@ -271,6 +275,26 @@ test("separates same-merchant amount clusters instead of merging Apple charges",
     streams.map((stream) => stream.expected_amount_minor).sort((a, b) => a - b),
     [999, 2_803],
   );
+});
+
+test("recurring presentation uses the verbatim effective name without changing raw identity", () => {
+  const rows = ["2026-01-01", "2026-02-01", "2026-03-01"].map(
+    (date, index) =>
+      charge({
+        id: `apple-${index}`,
+        date,
+        merchant: "APPLE.COM/BILL 0042",
+        displayName: "apple one+",
+      }),
+  );
+
+  const stream = detectRecurringStreams(rows, {
+    now: new Date("2026-03-20T00:00:00Z"),
+  })[0];
+
+  assert.equal(stream.display_name, "apple one+");
+  assert.equal(stream.service_family, "apple services");
+  assert.deepEqual(stream.transaction_ids, rows.map((row) => row.id));
 });
 
 test("possible duplicates require overlapping windows and respect intentional overrides", () => {

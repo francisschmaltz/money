@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import {
   buildBalanceSummary,
   buildCreditSummary,
@@ -9,6 +11,13 @@ import {
 import {
   buildCreditScoreSummary,
 } from "./creditScoreTracking.js";
+import {
+  buildInsightLlmRequest,
+  DEFAULT_INSIGHT_LLM_SETTINGS,
+  estimateInputTokens,
+  LOCKED_RANKING_CONTRACT,
+  validateInsightLlmSettings,
+} from "./narrativeService.js";
 import { DEMO_IDS } from "../demo/fixtureIds.js";
 import {
   buildDefaultAccounts,
@@ -859,6 +868,27 @@ export class DemoFinanceService {
     archived_count: 2,
     total_count: 9,
   };
+  #insightLlmSettings = {
+    ...structuredClone(DEFAULT_INSIGHT_LLM_SETTINGS),
+    revision: 1,
+  };
+  #insightLlmCallStatuses = {
+    weekly: {
+      family: "weekly",
+      run_id: "demo-insight-run-1",
+      guidance_revision: 1,
+      model: "demo-finance-ranker",
+      status: "succeeded",
+      estimated_input_tokens: 742,
+      prompt_tokens: 701,
+      completion_tokens: 44,
+      total_tokens: 745,
+      context_length: 8_192,
+      finish_reason: "stop",
+      latency_ms: 286,
+      called_at: "2026-07-27T09:02:00.000Z",
+    },
+  };
   #creditScoreSources = [
     {
       id: "score_source_amex",
@@ -912,8 +942,25 @@ export class DemoFinanceService {
     },
   ];
 
-  constructor({ scenario = "default" } = {}) {
+  constructor({
+    scenario = "default",
+    insightsPaused = false,
+  } = {}) {
     this.#scenario = scenario;
+    if (insightsPaused) {
+      this.#insightStatus = {
+        ...this.#insightStatus,
+        state: "paused",
+        can_run: false,
+        pause_reasons: [
+          {
+            code: "connection_attention",
+            message:
+              "Connected finance data is stale or incomplete.",
+          },
+        ],
+      };
+    }
     const defaultAccounts = buildDefaultAccounts();
     this.#accounts =
       scenario === "ux-stress"
@@ -3148,6 +3195,175 @@ export class DemoFinanceService {
     return structuredClone(this.#insightStatus);
   }
 
+  async getInsightLlmAdminState() {
+    const defaults = structuredClone(DEFAULT_INSIGHT_LLM_SETTINGS);
+    delete defaults.revision;
+    const statuses = structuredClone(this.#insightLlmCallStatuses);
+    const totals = Object.values(statuses)
+      .map((status) => status.total_tokens)
+      .filter(Number.isSafeInteger);
+    return {
+      settings: structuredClone(this.#insightLlmSettings),
+      defaults,
+      locked_contract: LOCKED_RANKING_CONTRACT,
+      metadata: demoInsightLlmMetadata(),
+      call_statuses: statuses,
+      narrative_provenance: {
+        weekly: {
+          guidance_revision: 1,
+          prompt_hash: "demo-prompt-hash",
+          model: "demo-finance-ranker",
+          generated_at: "2026-07-27T09:02:00.000Z",
+        },
+      },
+      applied_revision_by_family: {
+        weekly: 1,
+        investments: null,
+        subscriptions: null,
+      },
+      last_applied_revision: 1,
+      mixed_applied_revisions: false,
+      older_narrative_families: [],
+      families_without_narrative: [
+        "investments",
+        "subscriptions",
+      ],
+      throughput: {
+        run_id: "demo-insight-run-1",
+        total_tokens: totals.reduce((sum, value) => sum + value, 0),
+        calls_with_usage: totals.length,
+        call_count: Object.keys(statuses).length,
+      },
+    };
+  }
+
+  async previewInsightLlm(input = {}) {
+    const context = this.#demoInsightLlmContext(input);
+    return demoInsightLlmPreview(context, {
+      lastActualUsage:
+        this.#insightLlmCallStatuses[context.family] ?? null,
+    });
+  }
+
+  async testInsightLlmDraft(input = {}) {
+    const context = this.#demoInsightLlmContext(input);
+    const preview = demoInsightLlmPreview(context, {
+      lastActualUsage:
+        this.#insightLlmCallStatuses[context.family] ?? null,
+    });
+    const selected = context.findings
+      .slice(0, context.settings.result_limit)
+      .map((finding) => finding.id);
+    const rawResponse = JSON.stringify({
+      prompt_version: 1,
+      lead_finding_id: selected[0] ?? null,
+      finding_ids: selected,
+    });
+    return {
+      ...preview,
+      status: selected.length ? "succeeded" : "no_candidates",
+      selection: selected.length
+        ? {
+            lead_finding_id: selected[0],
+            finding_ids: selected,
+          }
+        : null,
+      narrative: null,
+      telemetry: {
+        guidance_revision: context.settings.revision,
+        model: "demo-finance-ranker",
+        status: selected.length ? "succeeded" : "no_candidates",
+        estimated_input_tokens: preview.estimated_input_tokens,
+        prompt_tokens: selected.length
+          ? preview.estimated_input_tokens - 11
+          : null,
+        completion_tokens: selected.length ? 31 : null,
+        total_tokens: selected.length
+          ? preview.estimated_input_tokens + 20
+          : null,
+        context_length: preview.context_length,
+        finish_reason: selected.length ? "stop" : null,
+        latency_ms: 184,
+      },
+      actual_usage: selected.length
+        ? {
+            prompt_tokens: preview.estimated_input_tokens - 11,
+            completion_tokens: 31,
+            total_tokens: preview.estimated_input_tokens + 20,
+          }
+        : null,
+      raw_response: rawResponse.slice(0, 8_000),
+    };
+  }
+
+  async saveInsightLlmSettings(input = {}, _actor = null) {
+    const expectedRevision = Number(
+      input.expected_revision ?? input.expectedRevision,
+    );
+    if (
+      !Number.isSafeInteger(expectedRevision) ||
+      expectedRevision < 0
+    ) {
+      throw demoInsightLlmError(
+        "expected_revision must be a non-negative integer",
+      );
+    }
+    if (expectedRevision !== this.#insightLlmSettings.revision) {
+      const error = demoInsightLlmError(
+        "The LLM ranking settings changed. Refresh and try again.",
+        409,
+      );
+      error.code = "INSIGHT_LLM_REVISION_CONFLICT";
+      error.currentSettings = structuredClone(
+        this.#insightLlmSettings,
+      );
+      throw error;
+    }
+    const settings = demoValidatedInsightLlmSettings(
+      input.settings ?? input,
+      this.#insightLlmSettings,
+    );
+    this.#insightLlmSettings = {
+      ...settings,
+      revision: expectedRevision + 1,
+    };
+    return {
+      saved: true,
+      settings: structuredClone(this.#insightLlmSettings),
+    };
+  }
+
+  #demoInsightLlmContext(input) {
+    const family = input.family;
+    if (
+      !["weekly", "investments", "subscriptions"].includes(family)
+    ) {
+      throw demoInsightLlmError(
+        "family must be weekly, investments, or subscriptions",
+      );
+    }
+    const settings = demoValidatedInsightLlmSettings(
+      input.settings ?? input,
+      this.#insightLlmSettings,
+    );
+    const findings = [...this.#insightFindings.values()]
+      .filter(
+        (finding) =>
+          finding.family === family &&
+          (finding.state ?? "active") === "active",
+      )
+      .slice(0, settings.candidate_limit);
+    const staleReason =
+      this.#insightStatus.pause_reasons[0]?.message ?? null;
+    return {
+      family,
+      settings,
+      findings,
+      dataStale: this.#insightStatus.state === "paused",
+      staleReason,
+    };
+  }
+
   async forceRunInsights() {
     const completedAt = new Date().toISOString();
     this.#insightStatus = {
@@ -3420,6 +3636,115 @@ function demoCreditPeriod(value) {
       end_on: "2026-07-27",
     },
   }[name];
+}
+
+function demoInsightLlmMetadata() {
+  return {
+    configured: true,
+    model: "demo-finance-ranker",
+    destination_host: "demo.local:1234",
+    model_state: "loaded",
+    context_length: 8_192,
+    context_length_source: "model",
+  };
+}
+
+function demoInsightLlmError(message, statusCode = 400) {
+  const error = new TypeError(message);
+  error.statusCode = statusCode;
+  error.expose = true;
+  return error;
+}
+
+function demoValidatedInsightLlmSettings(input, base) {
+  const fields = [
+    "base_guidance",
+    "family_guidance",
+    "candidate_limit",
+    "result_limit",
+    "feedback_mode",
+    "feedback_limit",
+    "context_length",
+  ];
+  const payload = Object.fromEntries(
+    fields
+      .filter((key) => Object.hasOwn(input ?? {}, key))
+      .map((key) => [key, input[key]]),
+  );
+  try {
+    return validateInsightLlmSettings(payload, {
+      base,
+      allowPartial: false,
+    });
+  } catch (error) {
+    throw demoInsightLlmError(
+      error instanceof Error
+        ? error.message
+        : "The LLM ranking settings are invalid.",
+    );
+  }
+}
+
+function demoInsightLlmPreview(
+  {
+    family,
+    settings,
+    findings,
+    dataStale = false,
+    staleReason = null,
+  },
+  { lastActualUsage = null } = {},
+) {
+  const requestBody = buildInsightLlmRequest({
+    family,
+    findings,
+    feedback: {},
+    settings,
+    model: "demo-finance-ranker",
+  });
+  const serialized = JSON.stringify(requestBody);
+  const estimatedInputTokens = estimateInputTokens(requestBody);
+  const estimatedTotalTokens = estimatedInputTokens + 256;
+  const contextLength = settings.context_length ?? 8_192;
+  const percent = (estimatedTotalTokens / contextLength) * 100;
+  return {
+    family,
+    request_body: requestBody,
+    counts: {
+      candidate_count: findings.length,
+      bad_feedback_count: 0,
+      archived_feedback_count: 0,
+    },
+    data_as_of: DATA_AS_OF,
+    data_stale: dataStale,
+    stale_reason: staleReason,
+    stale_reasons: staleReason ? [staleReason] : [],
+    estimated_input_tokens: estimatedInputTokens,
+    output_token_reserve: 256,
+    estimated_total_tokens: estimatedTotalTokens,
+    context_length: contextLength,
+    context_length_source:
+      settings.context_length == null ? "model" : "settings",
+    utilization: {
+      percent,
+      state:
+        percent > 100
+          ? "over"
+          : percent >= 95
+            ? "critical"
+            : percent >= 80
+              ? "warning"
+              : "normal",
+    },
+    model_state: "loaded",
+    model: "demo-finance-ranker",
+    destination_host: "demo.local:1234",
+    last_actual_usage: lastActualUsage,
+    prompt_hash: createHash("sha256")
+      .update(serialized)
+      .digest("hex"),
+    guidance_revision: settings.revision,
+  };
 }
 
 export function createDemoFinanceService(options = {}) {

@@ -56,6 +56,229 @@ test("spending categories use explicit hierarchy and classification controls", a
   });
 });
 
+test("category browse, edit, and merge layouts keep their intended columns", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 800, height: 900 });
+  await page.goto("/format-rules/categories");
+
+  const section = page.locator("#spending-categories");
+  const heading = section.locator(":scope > .settings-card__heading");
+  const headingGeometry = await heading.evaluate((element) => {
+    const copy = element.firstElementChild.getBoundingClientRect();
+    const actions = element.lastElementChild.getBoundingClientRect();
+    return {
+      copyBottom: copy.bottom,
+      actionsTop: actions.top,
+    };
+  });
+  expect(headingGeometry.actionsTop).toBeGreaterThanOrEqual(
+    headingGeometry.copyBottom,
+  );
+  expect(
+    headingGeometry.actionsTop - headingGeometry.copyBottom,
+  ).toBeLessThanOrEqual(24);
+
+  const firstRow = section.locator("[data-category-row]").first();
+  const systemRow = section.locator(
+    ".category-manager-row--system",
+  );
+  const systemPlaceholder = systemRow.locator(
+    "[data-category-merge-control]",
+  );
+  await expect(systemPlaceholder).toBeHidden();
+  expect(
+    await firstRow.evaluate(
+      (row) =>
+        getComputedStyle(row)
+          .gridTemplateColumns.trim()
+          .split(/\s+/)
+          .filter(Boolean).length,
+    ),
+  ).toBe(1);
+
+  await section
+    .getByRole("button", { name: "Edit categories" })
+    .click();
+  const createForm = section.locator("[data-category-create-form]");
+  const editForm = firstRow.locator("[data-category-edit-form]");
+  await expect(createForm).toBeVisible();
+  await expect(editForm).toBeVisible();
+  for (const form of [createForm, editForm]) {
+    expect(
+      await form.evaluate(
+        (element) =>
+          getComputedStyle(element)
+            .gridTemplateColumns.trim()
+            .split(/\s+/)
+            .filter(Boolean).length,
+      ),
+    ).toBe(1);
+  }
+  expect(
+    await firstRow.evaluate(
+      (row) =>
+        getComputedStyle(row)
+          .gridTemplateColumns.trim()
+          .split(/\s+/)
+          .filter(Boolean).length,
+    ),
+  ).toBe(1);
+
+  await section
+    .getByRole("button", { name: "Save changes" })
+    .click();
+  await section
+    .getByRole("button", { name: "Merge categories" })
+    .click();
+  await expect(systemPlaceholder).toHaveJSProperty("hidden", false);
+  expect(
+    await systemPlaceholder.evaluate(
+      (placeholder) => placeholder.getBoundingClientRect().width,
+    ),
+  ).toBe(22);
+  const mergeColumns = await firstRow.evaluate((row) =>
+    getComputedStyle(row)
+      .gridTemplateColumns.trim()
+      .split(/\s+/)
+      .filter(Boolean),
+  );
+  expect(mergeColumns).toHaveLength(2);
+  expect(mergeColumns[0]).toBe("22px");
+});
+
+test("category modes stay readable at every repair breakpoint", async ({
+  page,
+}) => {
+  for (const width of [1120, 989, 800, 641, 640, 390, 320]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto("/format-rules/categories");
+
+    const section = page.locator("#spending-categories");
+    const firstRow = section.locator("[data-category-row]").first();
+    const heading = section.locator(":scope > .settings-card__heading");
+    const layout = await heading.evaluate((element) => {
+      const copy = element.firstElementChild.getBoundingClientRect();
+      const actions = element.lastElementChild.getBoundingClientRect();
+      const overlapWidth = Math.max(
+        0,
+        Math.min(copy.right, actions.right) -
+          Math.max(copy.left, actions.left),
+      );
+      const overlapHeight = Math.max(
+        0,
+        Math.min(copy.bottom, actions.bottom) -
+          Math.max(copy.top, actions.top),
+      );
+      return {
+        overlaps: overlapWidth > 1 && overlapHeight > 1,
+        pageWidth: document.documentElement.scrollWidth,
+        viewportWidth: document.documentElement.clientWidth,
+      };
+    });
+    expect(layout.overlaps, `heading at ${width}px`).toBe(false);
+    expect(layout.pageWidth).toBeLessThanOrEqual(
+      layout.viewportWidth + 1,
+    );
+
+    const browseRatio = await firstRow.evaluate((row) => {
+      const rowBounds = row.getBoundingClientRect();
+      const viewBounds = row
+        .querySelector(".category-manager-row__view")
+        .getBoundingClientRect();
+      return viewBounds.width / rowBounds.width;
+    });
+    expect(browseRatio, `browse row at ${width}px`).toBeGreaterThan(
+      0.75,
+    );
+
+    await section
+      .getByRole("button", { name: "Edit categories" })
+      .click();
+    const editRatio = await firstRow.evaluate((row) => {
+      const rowBounds = row.getBoundingClientRect();
+      const formBounds = row
+        .querySelector("[data-category-edit-form]")
+        .getBoundingClientRect();
+      return formBounds.width / rowBounds.width;
+    });
+    expect(editRatio, `edit row at ${width}px`).toBeGreaterThan(0.75);
+
+    await section
+      .getByRole("button", { name: "Save changes" })
+      .click();
+    await section
+      .getByRole("button", { name: "Merge categories" })
+      .click();
+    const mergeLayout = await firstRow.evaluate((row) => {
+      const columns = getComputedStyle(row)
+        .gridTemplateColumns.trim()
+        .split(/\s+/)
+        .filter(Boolean);
+      const rowBounds = row.getBoundingClientRect();
+      const viewBounds = row
+        .querySelector(".category-manager-row__view")
+        .getBoundingClientRect();
+      return {
+        columns,
+        viewRatio: viewBounds.width / rowBounds.width,
+      };
+    });
+    expect(mergeLayout.columns).toHaveLength(2);
+    expect(mergeLayout.columns[0]).toBe("22px");
+    expect(
+      mergeLayout.viewRatio,
+      `merge row at ${width}px`,
+    ).toBeGreaterThan(0.7);
+  }
+});
+
+test("long category labels wrap inside the manager at 320px", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 320, height: 760 });
+  await page.goto("/format-rules/categories");
+
+  const row = page.locator("[data-category-row]").first();
+  const label = row.locator(".category-manager-row__title strong");
+  await label.evaluate((element) => {
+    element.textContent =
+      "A_category_label_that_is_deliberately_long_enough_to_wrap_without_spaces";
+  });
+  const geometry = await row.evaluate((element) => {
+    const rowBounds = element.getBoundingClientRect();
+    const labelBounds = element
+      .querySelector(".category-manager-row__title strong")
+      .getBoundingClientRect();
+    return {
+      rowLeft: rowBounds.left,
+      rowRight: rowBounds.right,
+      labelLeft: labelBounds.left,
+      labelRight: labelBounds.right,
+      labelHeight: labelBounds.height,
+      lineHeight: Number.parseFloat(
+        getComputedStyle(
+          element.querySelector(".category-manager-row__title strong"),
+        ).lineHeight,
+      ),
+    };
+  });
+  expect(geometry.labelLeft).toBeGreaterThanOrEqual(
+    geometry.rowLeft - 1,
+  );
+  expect(geometry.labelRight).toBeLessThanOrEqual(
+    geometry.rowRight + 1,
+  );
+  expect(geometry.labelHeight).toBeGreaterThan(
+    geometry.lineHeight * 1.5,
+  );
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth,
+    ),
+  ).toBeLessThanOrEqual(320);
+});
+
 test("a category can be renamed and reclassified with its exact version", async ({
   page,
 }) => {

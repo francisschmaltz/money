@@ -674,7 +674,30 @@ test("accepts every real FinanceService wrapper and translates MCP filters", asy
     async listTransactions(_workspaceId, options) {
       transactionOptions = options;
       return {
-        transactions: [],
+        transactions: [
+          {
+            id: "transaction-canonical",
+            provider_transaction_id: "provider-raw",
+            posted_on: "2026-07-20",
+            authorized_at: null,
+            authorized_on: null,
+            posted_at: null,
+            display_name: "acme one+",
+            merchant_name: "ACME #0042",
+            name: "ACME ONLINE PURCHASE 0042",
+            category_primary: "Shopping",
+            category_detailed: null,
+            account_id: "account-checking",
+            account_name: "Checking",
+            account_mask: "1234",
+            institution_name: "Test Bank",
+            amount_minor: -1_250,
+            currency_code: "USD",
+            pending: false,
+            excluded_from_spending: false,
+            is_fixed: false,
+          },
+        ],
         pageInfo: { next_cursor: null, has_more: false },
       };
     },
@@ -699,6 +722,7 @@ test("accepts every real FinanceService wrapper and translates MCP filters", asy
     now: () => NOW,
   });
   const tools = captureRegisteredTools(service);
+  let transactionResult;
 
   for (const [toolName, { callback }] of tools) {
     const input =
@@ -715,6 +739,9 @@ test("accepts every real FinanceService wrapper and translates MCP filters", asy
     const result = await callback(input);
     assert.equal(result.isError, undefined, toolName);
     assert.equal(assertFinanceToolResult(result), true, toolName);
+    if (toolName === "list_transactions") {
+      transactionResult = result;
+    }
   }
 
   assert.deepEqual(transactionOptions, {
@@ -725,6 +752,24 @@ test("accepts every real FinanceService wrapper and translates MCP filters", asy
     status: "posted",
     limit: 20,
   });
+  assert.deepEqual(
+    transactionResult.structuredContent.data.transactions.map(
+      ({ merchant, display_name, raw_merchant, raw_name }) => ({
+        merchant,
+        display_name,
+        raw_merchant,
+        raw_name,
+      }),
+    ),
+    [
+      {
+        merchant: "acme one+",
+        display_name: "acme one+",
+        raw_merchant: "ACME #0042",
+        raw_name: "ACME ONLINE PURCHASE 0042",
+      },
+    ],
+  );
 });
 
 test("the complete demo dataset satisfies every native card contract", async () => {

@@ -23,6 +23,12 @@ import {
 } from "./transactionCategories.js";
 import { presentInsightForWeb } from "./insightPresentation.js";
 import {
+  DEFAULT_INSIGHT_LLM_SETTINGS,
+  INSIGHT_LLM_FAMILIES,
+  LOCKED_RANKING_CONTRACT,
+  validateInsightLlmSettings,
+} from "./narrativeService.js";
+import {
   normalizeMerchant,
   normalizeTransactionName,
 } from "../providers/plaidNormalizer.js";
@@ -35,6 +41,7 @@ import {
   CREDIT_SCORE_PRESETS,
 } from "./creditScoreTracking.js";
 import { expandTransactionsWithSplits } from "./planningAnalytics.js";
+import { effectiveTransactionName } from "./transactionNames.js";
 
 const CATEGORY_COLORS = [
   "#2fa94f",
@@ -67,10 +74,12 @@ export class FinanceService {
   #workspaceId;
   #currency;
   #baseUrl;
+  #narrativeService;
 
   constructor({
     repository,
     jobQueue = null,
+    narrativeService = null,
     now = () => new Date(),
     workspaceId = "shared",
     currency = "USD",
@@ -79,6 +88,7 @@ export class FinanceService {
     if (!repository) throw new TypeError("repository is required");
     this.#repository = repository;
     this.#jobQueue = jobQueue;
+    this.#narrativeService = narrativeService;
     this.#now = now;
     this.#workspaceId = workspaceId;
     this.#currency = currency;
@@ -1366,6 +1376,7 @@ export class FinanceService {
       );
     }
     if (
+      Object.hasOwn(changes, "displayName") ||
       Object.hasOwn(changes, "categoryPrimary") ||
       Object.hasOwn(changes, "excludedFromSpending")
     ) {
@@ -2091,6 +2102,324 @@ export class FinanceService {
     return this.#buildInsightStatus(freshness);
   }
 
+  async getInsightLlmAdminState() {
+    const [
+      storedSettings,
+      metadata,
+      callStatuses,
+      latestNarratives,
+    ] =
+      await Promise.all([
+        optionalRepositoryCall(
+          this.#repository,
+          "getInsightLlmSettings",
+          null,
+          this.#workspaceId,
+        ),
+        this.#narrativeService?.metadata?.() ??
+          Promise.resolve(unconfiguredInsightLlmMetadata()),
+        optionalRepositoryCall(
+          this.#repository,
+          "listInsightLlmCallStatuses",
+          [],
+          this.#workspaceId,
+        ),
+        Promise.all(
+          [...INSIGHT_LLM_FAMILIES].map((family) =>
+            optionalRepositoryCall(
+              this.#repository,
+              "getLatestNarrative",
+              null,
+              this.#workspaceId,
+              family,
+            ),
+          ),
+        ),
+      ]);
+    const settings = effectiveInsightLlmSettings(storedSettings);
+    const statuses = Object.fromEntries(
+      callStatuses.map((status) => [status.family, status]),
+    );
+    const narrativeProvenance = Object.fromEntries(
+      latestNarratives
+        .filter(Boolean)
+        .map((narrative) => [
+          narrative.family,
+          {
+            guidance_revision: Number(
+              narrative.guidance_revision ?? 0,
+            ),
+            prompt_hash: narrative.prompt_hash ?? null,
+            model: narrative.model ?? null,
+            generated_at: narrative.generated_at ?? null,
+          },
+        ]),
+    );
+    const appliedRevisionByFamily = Object.fromEntries(
+      [...INSIGHT_LLM_FAMILIES].map((family) => [
+        family,
+        narrativeProvenance[family]?.guidance_revision ?? null,
+      ]),
+    );
+    const appliedRevisions = Object.values(appliedRevisionByFamily)
+      .filter(Number.isSafeInteger);
+    const uniqueAppliedRevisions = new Set(appliedRevisions);
+    const olderNarrativeFamilies = Object.entries(
+      appliedRevisionByFamily,
+    )
+      .filter(
+        ([, revision]) =>
+          Number.isSafeInteger(revision) &&
+          revision < settings.revision,
+      )
+      .map(([family]) => family);
+    const familiesWithoutNarrative = Object.entries(
+      appliedRevisionByFamily,
+    )
+      .filter(([, revision]) => revision == null)
+      .map(([family]) => family);
+    const latestRunId = [...callStatuses].sort(
+      (left, right) =>
+        Date.parse(right.called_at ?? 0) -
+        Date.parse(left.called_at ?? 0),
+    )[0]?.run_id ?? null;
+    const throughputStatuses = latestRunId
+      ? callStatuses.filter(
+          (status) => status.run_id === latestRunId,
+        )
+      : [];
+    const actualTotals = throughputStatuses
+      .map((status) => status.total_tokens)
+      .filter(Number.isSafeInteger);
+    const defaults = effectiveInsightLlmSettings(null);
+    delete defaults.revision;
+    return {
+      settings,
+      defaults,
+      locked_contract: LOCKED_RANKING_CONTRACT,
+      metadata: sanitizeInsightLlmMetadata(metadata),
+      call_statuses: statuses,
+      narrative_provenance: narrativeProvenance,
+      applied_revision_by_family: appliedRevisionByFamily,
+      last_applied_revision:
+        uniqueAppliedRevisions.size === 1
+        ? appliedRevisions[0]
+        : null,
+      mixed_applied_revisions: uniqueAppliedRevisions.size > 1,
+      older_narrative_families: olderNarrativeFamilies,
+      families_without_narrative: familiesWithoutNarrative,
+      throughput: {
+        run_id: latestRunId,
+        total_tokens: actualTotals.length
+          ? actualTotals.reduce((sum, value) => sum + value, 0)
+          : null,
+        calls_with_usage: actualTotals.length,
+        call_count: throughputStatuses.length,
+      },
+    };
+  }
+
+  async previewInsightLlm(input = {}) {
+    const context = await this.#insightLlmDraftContext(input);
+    const preview = await this.#requireNarrativeService(
+      "preview",
+    ).preview({
+      ...context,
+      dataAsOf: context.dataAsOf,
+      lastActualUsage: context.lastActualUsage,
+    });
+    return {
+      ...preview,
+      data_stale: context.dataStale,
+      stale_reason: context.staleReason,
+      stale_reasons: context.staleReasons,
+    };
+  }
+
+  async testInsightLlmDraft(input = {}) {
+    const context = await this.#insightLlmDraftContext(input);
+    const preview = await this.#requireNarrativeService(
+      "executeTest",
+    ).preview({
+      ...context,
+      dataAsOf: context.dataAsOf,
+      lastActualUsage: context.lastActualUsage,
+    });
+    const tested = await this.#narrativeService.executeTest({
+      family: context.family,
+      findings: context.findings,
+      feedback: context.feedback,
+      settings: context.settings,
+    });
+    return {
+      ...preview,
+      data_stale: context.dataStale,
+      stale_reason: context.staleReason,
+      stale_reasons: context.staleReasons,
+      status: tested.status,
+      selection: tested.selection ?? null,
+      narrative: tested.narrative ?? null,
+      telemetry: tested.telemetry ?? null,
+      actual_usage: insightLlmActualUsage(tested.telemetry),
+      raw_response: tested.raw_response ?? null,
+      prompt_hash: tested.prompt_hash ?? preview.prompt_hash,
+      guidance_revision:
+        tested.guidance_revision ?? preview.guidance_revision,
+    };
+  }
+
+  async saveInsightLlmSettings(input = {}, actor = null) {
+    const expectedRevision = Number(
+      input.expectedRevision ?? input.expected_revision,
+    );
+    if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
+      throw badRequest(
+        "expected_revision must be a non-negative integer",
+      );
+    }
+    const current = effectiveInsightLlmSettings(
+      await optionalRepositoryCall(
+        this.#repository,
+        "getInsightLlmSettings",
+        null,
+        this.#workspaceId,
+      ),
+    );
+    const settings = validatedInsightLlmSettings(
+      insightLlmSettingsPayload(input),
+      current,
+    );
+    if (
+      typeof this.#repository.upsertInsightLlmSettings !== "function"
+    ) {
+      const error = new Error("LLM ranking settings are unavailable.");
+      error.statusCode = 503;
+      error.expose = true;
+      throw error;
+    }
+    const result = await this.#repository.upsertInsightLlmSettings(
+      this.#workspaceId,
+      {
+        expectedRevision,
+        baseGuidance: settings.base_guidance,
+        familyGuidance: settings.family_guidance,
+        candidateLimit: settings.candidate_limit,
+        resultLimit: settings.result_limit,
+        feedbackMode: settings.feedback_mode,
+        feedbackLimit: settings.feedback_limit,
+        contextLength: settings.context_length,
+        updatedBy: actor?.id ?? null,
+      },
+    );
+    if (result.conflict) {
+      const error = new Error(
+        "The LLM ranking settings changed. Refresh and try again.",
+      );
+      error.statusCode = 409;
+      error.expose = true;
+      error.code = "INSIGHT_LLM_REVISION_CONFLICT";
+      error.currentSettings = effectiveInsightLlmSettings(
+        result.current,
+      );
+      throw error;
+    }
+    return {
+      saved: true,
+      settings: effectiveInsightLlmSettings(result.settings),
+    };
+  }
+
+  async #insightLlmDraftContext(input) {
+    const family = insightLlmFamily(input.family);
+    const storedSettings = effectiveInsightLlmSettings(
+      await optionalRepositoryCall(
+        this.#repository,
+        "getInsightLlmSettings",
+        null,
+        this.#workspaceId,
+      ),
+    );
+    const settings = validatedInsightLlmSettings(
+      insightLlmSettingsPayload(input),
+      storedSettings,
+    );
+    const [findings, feedback, freshness, lastActualUsage] =
+      await Promise.all([
+        this.#repository.listInsightFindings(this.#workspaceId, {
+          family,
+          scope: "active",
+          limit: settings.candidate_limit,
+        }),
+        settings.feedback_mode === "none" ||
+        settings.feedback_limit === 0
+          ? Promise.resolve({ bad: [], archived: [] })
+          : optionalRepositoryCall(
+              this.#repository,
+              "getInsightFeedbackSummary",
+              { bad: [], archived: [] },
+              this.#workspaceId,
+              {
+                family,
+                limit: settings.feedback_limit,
+              },
+            ),
+        optionalRepositoryCall(
+          this.#repository,
+          "getDataFreshness",
+          {
+            data_as_of: null,
+            partial: true,
+            warnings: [],
+          },
+          this.#workspaceId,
+        ),
+        optionalRepositoryCall(
+          this.#repository,
+          "getInsightLlmCallStatus",
+          null,
+          this.#workspaceId,
+          family,
+        ),
+      ]);
+    return {
+      family,
+      findings,
+      feedback,
+      settings,
+      dataAsOf: freshness.data_as_of ?? null,
+      dataStale: Boolean(freshness.partial),
+      staleReasons: (freshness.warnings ?? [])
+        .map((warning) =>
+          typeof warning === "string"
+            ? warning
+            : warning?.message,
+        )
+        .filter((warning) => typeof warning === "string"),
+      staleReason:
+        (freshness.warnings ?? [])
+          .map((warning) =>
+            typeof warning === "string"
+              ? warning
+              : warning?.message,
+          )
+          .find((warning) => typeof warning === "string") ??
+        (freshness.partial
+          ? "Connected finance data is stale or incomplete."
+          : null),
+      lastActualUsage,
+    };
+  }
+
+  #requireNarrativeService(method) {
+    if (typeof this.#narrativeService?.[method] === "function") {
+      return this.#narrativeService;
+    }
+    const error = new Error("LLM ranking is not configured.");
+    error.statusCode = 503;
+    error.expose = true;
+    throw error;
+  }
+
   async forceRunInsights(_input = {}, actor = null) {
     const status = await this.getInsightStatus();
     if (status.state === "paused") {
@@ -2534,6 +2863,7 @@ export class FinanceService {
         transactionTagRows,
         cleanupRuleResult,
         insightStatus,
+        insightLlm,
       ] = await Promise.all([
         typeof this.#repository.listFinanceConnections === "function"
           ? this.#repository.listFinanceConnections(this.#workspaceId)
@@ -2568,6 +2898,7 @@ export class FinanceService {
         ),
         this.listTransactionCleanupRules(),
         this.#buildInsightStatus(freshness),
+        this.getInsightLlmAdminState(),
       ]);
       const manualAssets = manualAssetsAt(
         rawManualAssets,
@@ -2629,6 +2960,7 @@ export class FinanceService {
         transactionRules: cleanupRuleResult.rules,
         transactionCleanup,
         insightStatus,
+        insightLlm,
       };
     }
     if (view === "transactions") {
@@ -3171,10 +3503,7 @@ function creditAccountCardFields(account) {
 }
 
 function transactionCard(transaction) {
-  const displayName =
-    transaction.display_name ??
-    transaction.merchant_name ??
-    transaction.name;
+  const displayName = effectiveTransactionName(transaction);
   return {
     id: transaction.id,
     provider_transaction_id:
@@ -4499,10 +4828,7 @@ function webTransaction(transaction) {
 function transactionCleanupRow(transaction, fallbackCurrency) {
   return {
     id: transaction.id,
-    display_name:
-      transaction.display_name ??
-      transaction.merchant_name ??
-      transaction.name,
+    display_name: effectiveTransactionName(transaction),
     raw_merchant: transaction.merchant_name ?? null,
     raw_name: transaction.name,
     category_primary: transaction.category_primary ?? null,
@@ -5120,6 +5446,155 @@ function insightRuleDefinition(ruleId) {
   );
   if (!definition) throw new TypeError("Unknown insight rule");
   return definition;
+}
+
+function effectiveInsightLlmSettings(stored) {
+  const defaults = structuredClone(DEFAULT_INSIGHT_LLM_SETTINGS);
+  if (!stored) return defaults;
+  return {
+    revision: Number(stored.revision ?? defaults.revision ?? 0),
+    base_guidance:
+      stored.base_guidance ?? defaults.base_guidance,
+    family_guidance: {
+      ...defaults.family_guidance,
+      ...(stored.family_guidance ?? {}),
+    },
+    candidate_limit:
+      stored.candidate_limit ?? defaults.candidate_limit,
+    result_limit: stored.result_limit ?? defaults.result_limit,
+    feedback_mode:
+      stored.feedback_mode ?? defaults.feedback_mode,
+    feedback_limit:
+      stored.feedback_limit ?? defaults.feedback_limit,
+    context_length:
+      stored.context_length ?? defaults.context_length,
+  };
+}
+
+function insightLlmSettingsPayload(input) {
+  const source =
+    input?.settings &&
+    typeof input.settings === "object" &&
+    !Array.isArray(input.settings)
+      ? input.settings
+      : input;
+  return Object.fromEntries(
+    [
+      "base_guidance",
+      "family_guidance",
+      "candidate_limit",
+      "result_limit",
+      "feedback_mode",
+      "feedback_limit",
+      "context_length",
+    ]
+      .filter((key) => Object.hasOwn(source ?? {}, key))
+      .map((key) => [key, source[key]]),
+  );
+}
+
+function validatedInsightLlmSettings(value, base) {
+  try {
+    return validateInsightLlmSettings(value, {
+      base,
+      allowPartial: false,
+    });
+  } catch (error) {
+    throw badRequest(
+      error instanceof Error
+        ? error.message
+        : "The LLM ranking settings are invalid.",
+    );
+  }
+}
+
+function insightLlmFamily(value) {
+  const supported = new Set(INSIGHT_LLM_FAMILIES);
+  if (typeof value !== "string" || !supported.has(value)) {
+    throw badRequest(
+      "family must be weekly, investments, or subscriptions",
+    );
+  }
+  return value;
+}
+
+function unconfiguredInsightLlmMetadata() {
+  return {
+    configured: false,
+    model: null,
+    destination_host: null,
+    model_state: "not_configured",
+    context_length: null,
+    context_length_source: "unknown",
+  };
+}
+
+function sanitizeInsightLlmMetadata(value) {
+  const metadata = value ?? unconfiguredInsightLlmMetadata();
+  return {
+    configured: Boolean(metadata.configured),
+    model:
+      typeof metadata.model === "string"
+        ? metadata.model.slice(0, 255)
+        : null,
+    destination_host: safeDestinationHost(
+      metadata.destination_host,
+    ),
+    model_state: [
+      "loaded",
+      "not_loaded",
+      "not_found",
+      "unavailable",
+      "not_configured",
+    ].includes(metadata.model_state)
+      ? metadata.model_state
+      : "unavailable",
+    context_length:
+      Number.isSafeInteger(metadata.context_length) &&
+      metadata.context_length > 0
+        ? metadata.context_length
+        : null,
+    context_length_source: [
+      "model",
+      "unknown",
+    ].includes(metadata.context_length_source)
+      ? metadata.context_length_source
+      : "unknown",
+  };
+}
+
+function safeDestinationHost(value) {
+  if (typeof value !== "string" || !value.trim()) return null;
+  const candidate = value.trim().slice(0, 512);
+  try {
+    const parsed = new URL(
+      candidate.includes("://") ? candidate : `http://${candidate}`,
+    );
+    return parsed.host.slice(0, 255) || null;
+  } catch {
+    return null;
+  }
+}
+
+function insightLlmActualUsage(telemetry) {
+  if (!telemetry || typeof telemetry !== "object") return null;
+  const usage = {
+    prompt_tokens:
+      Number.isSafeInteger(telemetry.prompt_tokens)
+        ? telemetry.prompt_tokens
+        : null,
+    completion_tokens:
+      Number.isSafeInteger(telemetry.completion_tokens)
+        ? telemetry.completion_tokens
+        : null,
+    total_tokens:
+      Number.isSafeInteger(telemetry.total_tokens)
+        ? telemetry.total_tokens
+        : null,
+  };
+  return Object.values(usage).some(Number.isSafeInteger)
+    ? usage
+    : null;
 }
 
 function earlierDate(left, right) {

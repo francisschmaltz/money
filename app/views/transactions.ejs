@@ -60,13 +60,6 @@
       method="get"
       data-transaction-filter
     >
-      <label class="transaction-filter__search">
-        <span class="filter-field-label">Search</span>
-        <span class="transaction-filter__search-control">
-          <i class="ph ph-magnifying-glass" aria-hidden="true"></i>
-          <input type="search" name="q" value="<%= query.q || '' %>" placeholder="Merchant, category, or note">
-        </span>
-      </label>
       <div class="transaction-filter__fields">
         <label class="filter-field">
           <span class="filter-field-label">Timeline</span>
@@ -116,9 +109,15 @@
           </select>
         </label>
       </div>
+      <label class="transaction-filter__search">
+        <span class="filter-field-label">Search</span>
+        <span class="transaction-filter__search-control">
+          <i class="ph ph-magnifying-glass" aria-hidden="true"></i>
+          <input type="search" name="q" value="<%= query.q || '' %>" placeholder="Merchant, category, or note">
+        </span>
+      </label>
       <div class="transaction-filter__actions">
         <button class="button button--dark" type="submit" data-transaction-filter-submit>Apply</button>
-        <a class="button button--ghost" href="/transactions">Clear</a>
       </div>
     </form>
 
@@ -620,11 +619,6 @@
               <% activeSpendingSegments.forEach((segment, index) => { %>
                 <%
                   const isSelected = selectedSpendingSegment?.key === segment.key;
-                  const canFilterLedger = !segment.key.endsWith("-other");
-                  const ledgerHref =
-                    activeSpendingGroup.key === "merchant"
-                      ? transactionQuery({ q: segment.value ?? segment.label }, ["cursor"])
-                      : transactionQuery({ category: segment.value ?? segment.label }, ["cursor"]);
                 %>
                 <article class="spending-detail-category <%= isSelected ? 'is-selected' : '' %>" data-spending-segment-item>
                   <a
@@ -642,11 +636,6 @@
                     </span>
                     <strong><%= formatMoney(segment.amount) %></strong>
                   </a>
-                  <% if (canFilterLedger) { %>
-                    <a class="spending-detail-category__filter" href="<%= ledgerHref %>">Show matching transactions</a>
-                  <% } else { %>
-                    <span class="spending-detail-category__filter spending-detail-category__filter--note">Remaining groups combined</span>
-                  <% } %>
                 </article>
               <% }) %>
             </div>

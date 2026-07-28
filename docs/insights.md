@@ -56,3 +56,23 @@ priority order. The server renders the selected findings' existing action
 titles, details, periods, and links.
 
 No growing conversation history or giant system prompt is required.
+
+### Admin tuning and request inspection
+
+Settings keeps LLM ranking separate from deterministic insight rules. An
+administrator can edit shared ranking guidance and optional family-specific
+guidance, bound candidate and feedback counts, inspect the exact next request,
+and test an unsaved draft without changing stored findings or narratives. The
+ID-only response contract remains code-owned and cannot be edited.
+
+Request previews are rebuilt from the current active findings; full prompts,
+payloads, and raw model responses are never persisted or logged. The app stores
+only the saved guidance revision and numeric status/usage metadata for the
+latest production call in each family.
+
+Token counts shown before a call are explicitly approximate. Provider-reported
+usage after a call is authoritative when available. Context utilization is
+calculated per family request because weekly, investments, and subscriptions
+are separate calls; their sum is throughput, not one context window. An
+optional context-limit override lives with the saved ranking guidance; when it
+is blank, the inspector uses the loaded model's reported context length.

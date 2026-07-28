@@ -10,6 +10,7 @@ import {
   detectInvestmentInsights,
   detectWeeklyInsights,
 } from "../app/services/insightDetectors.js";
+import { presentInsightForWeb } from "../app/services/insightPresentation.js";
 import { safeJobError } from "../app/db/jobQueue.js";
 import { validateNarrative } from "../app/services/narrativeService.js";
 import {
@@ -26,6 +27,7 @@ function transaction({
   amount,
   category = "FOOD_AND_DRINK",
   merchant = "Merchant",
+  displayName,
   excluded = false,
   fixed = false,
   pending = false,
@@ -40,6 +42,9 @@ function transaction({
     merchant_name: merchant,
     normalized_merchant: merchant.toLowerCase(),
     name: merchant,
+    ...(displayName === undefined
+      ? {}
+      : { display_name: displayName }),
     account_id: "account_1",
     account_name: "Checking",
     excluded_from_spending: excluded,
@@ -312,6 +317,47 @@ test("weekly insights cover merchant increases and repeated convenience clusters
       true,
     );
   }
+});
+
+test("merchant insights use one effective name for grouping, copy, evidence, and action queries", () => {
+  const rows = [
+    transaction({
+      id: "prior",
+      date: "2026-07-15",
+      amount: -1_000,
+      merchant: "ACME #0042",
+      displayName: "acme & Sons™",
+    }),
+    ...[1, 2, 3].map((index) =>
+      transaction({
+        id: `current-${index}`,
+        date: `2026-07-2${index}`,
+        amount: -1_250,
+        merchant: `ACME ONLINE ${index}`,
+        displayName: "acme & Sons™",
+      }),
+    ),
+  ];
+
+  const finding = detectWeeklyInsights(rows, {
+    asOf: new Date("2026-07-26T12:00:00Z"),
+    minimumChangeMinor: 2_500,
+    minimumChangeBasisPoints: 1_500,
+  }).find(
+    (candidate) =>
+      candidate.rule.key === "merchant_spend_increase",
+  );
+
+  assert.equal(finding.title, "Spending rose at acme & Sons™");
+  assert.equal(finding.metrics.previous.amount_minor, 1_000);
+  assert.deepEqual(
+    [...new Set(finding.evidence.map((entry) => entry.label))],
+    ["acme & Sons™"],
+  );
+  assert.equal(
+    presentInsightForWeb(finding).solveAction.webUrl,
+    "/transactions?q=acme+%26+Sons%E2%84%A2&start=2026-07-19&end=2026-07-26",
+  );
 });
 
 test("single-security concentration starts above, not at, 25 percent", () => {

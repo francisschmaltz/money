@@ -28,6 +28,34 @@ test("logs redact credentials and financial detail", () => {
   assert.match(output, /\[redacted\]/);
 });
 
+test("logs never retain LLM prompts, messages, or raw model output", () => {
+  const original = console.log;
+  let output = "";
+  console.log = (value) => {
+    output = value;
+  };
+  try {
+    log("warn", "ranking failed", {
+      prompt: "Rank the private finance findings.",
+      messages: [{ role: "user", content: "Private subscription details" }],
+      raw_response: '{"finding_ids":["private-finding"]}',
+      status: "invalid_response",
+    });
+  } finally {
+    console.log = original;
+  }
+
+  const entry = JSON.parse(output);
+  assert.equal(entry.prompt, "[redacted]");
+  assert.equal(entry.messages, "[redacted]");
+  assert.equal(entry.raw_response, "[redacted]");
+  assert.equal(entry.status, "invalid_response");
+  assert.doesNotMatch(
+    output,
+    /private finance|Private subscription|private-finding/,
+  );
+});
+
 test("logs redact OIDC secrets and transient authorization artifacts", () => {
   const original = console.log;
   let output = "";
