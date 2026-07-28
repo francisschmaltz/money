@@ -45,6 +45,8 @@ function pageMeta(pathname) {
     "/accounts": "Accounts",
     "/search": "Search",
     "/settings": "Settings",
+    "/format-rules": "Format Rules",
+    "/format-rules/categories": "Format Rules",
     "/plaid/oauth": "Finish connecting",
   };
   return pages[pathname] || "Money";
@@ -123,36 +125,41 @@ export function createWebRouter({
     next();
   });
 
-  async function renderPage(req, res, view) {
+  async function renderPage(
+    req,
+    res,
+    view,
+    { dataView = view, locals = {} } = {},
+  ) {
     const pageTitle = pageMeta(req.path);
     const planning =
-      view === "dashboard" &&
+      dataView === "dashboard" &&
       typeof planningService?.getSafeToSpend === "function"
         ? {
             safeToSpend: (
               await planningService.getSafeToSpend()
             ).data,
           }
-        : view === "plan" &&
+        : dataView === "plan" &&
             typeof planningService?.getPlanningOverview === "function"
           ? await planningService.getPlanningOverview({
               month_on: null,
             })
           : null;
     const serviceModel =
-      view === "plan"
+      dataView === "plan"
         ? planning
         : demoMode
           ? await demoPageModel(
-              view,
+              dataView,
               req.query,
               demo,
               financeService,
               planningService,
             )
-          : await financeService?.getPageData?.(view, req);
-    if (!demoMode && view !== "plan") {
-      assertPageModel(view, serviceModel);
+          : await financeService?.getPageData?.(dataView, req);
+    if (!demoMode && dataView !== "plan") {
+      assertPageModel(dataView, serviceModel);
     }
     if (view === "plan" && !serviceModel) {
       const error = new Error("Planning is unavailable.");
@@ -214,6 +221,7 @@ export function createWebRouter({
       ),
       pageTitle,
       activePath: req.path,
+      ...locals,
     });
   }
 
@@ -315,6 +323,26 @@ export function createWebRouter({
       }),
   );
   router.get("/settings", requireAuth, requireAdmin, (req, res, next) => renderPage(req, res, "settings").catch(next));
+  router.get(
+    "/format-rules",
+    requireAuth,
+    requireAdmin,
+    (req, res, next) =>
+      renderPage(req, res, "format-rules", {
+        dataView: "settings",
+        locals: { formatRulesSection: "rules" },
+      }).catch(next),
+  );
+  router.get(
+    "/format-rules/categories",
+    requireAuth,
+    requireAdmin,
+    (req, res, next) =>
+      renderPage(req, res, "format-rules", {
+        dataView: "settings",
+        locals: { formatRulesSection: "categories" },
+      }).catch(next),
+  );
 
   router.get("/api/search", requireAuth, async (req, res, next) => {
     try {

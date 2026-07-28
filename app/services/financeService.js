@@ -2127,6 +2127,41 @@ export class FinanceService {
     return { merged: true, category: merged };
   }
 
+  async splitSpendingCategory(input = {}, actor = null) {
+    const categoryId = requiredId(
+      input.categoryId ?? input.category_id,
+      "category_id",
+    );
+    const expectedVersion = positiveVersion(
+      input.expectedVersion ?? input.expected_version,
+      "expected_version",
+    );
+    const split = await this.#repository.splitSpendingCategory(
+      this.#workspaceId,
+      {
+        categoryId,
+        expectedVersion,
+        userId: actor?.id ?? input.userId ?? input.user_id ?? null,
+      },
+    );
+    if (!split) throw notFound("Category not found");
+    if (split.notMerged) {
+      throw badRequest("Only a merged category can be split out");
+    }
+    if (split.stale) {
+      throw categoryConflict(
+        "The category changed before this split. Refresh and try again.",
+      );
+    }
+    if (split.conflict) {
+      throw categoryConflict(
+        "Rename the destination before splitting this category out.",
+      );
+    }
+    await this.#enqueueRecompute();
+    return { split: true, category: split };
+  }
+
   async getPageData(view, request = {}) {
     const query = request.query ?? {};
     const freshness = await this.#repository.getDataFreshness(
@@ -2157,6 +2192,7 @@ export class FinanceService {
           "listSpendingCategories",
           [],
           this.#workspaceId,
+          { includeMerged: true },
         ),
         optionalRepositoryCall(
           this.#repository,
@@ -2203,7 +2239,9 @@ export class FinanceService {
           spendingCategories.length
             ? spendingCategories
                 .filter(
-                  (category) => category.classification === "fixed",
+                  (category) =>
+                    category.status !== "merged" &&
+                    category.classification === "fixed",
                 )
                 .map((category) => category.path)
             : rules["weekly.fixed_categories"]?.categories ?? [],
@@ -3348,7 +3386,7 @@ function transactionCleanupRuleMutation(input) {
   }
   if (
     Object.keys(matcher).some(
-      (key) => !["field", "value"].includes(key),
+      (key) => !["field", "mode", "value"].includes(key),
     )
   ) {
     throw new TypeError("Unsupported cleanup matcher field");
@@ -3374,6 +3412,10 @@ function transactionCleanupRuleMutation(input) {
   ) {
     throw new TypeError("matcher.field is not supported");
   }
+  const matchMode = matcher.mode ?? "exact";
+  if (!["exact", "contains"].includes(matchMode)) {
+    throw new TypeError("matcher.mode is not supported");
+  }
   const rawMatchValue = boundedText(
     matcher.value,
     "matcher.value",
@@ -3388,9 +3430,15 @@ function transactionCleanupRuleMutation(input) {
       "matcher.value must produce between 1 and 160 normalized characters",
     );
   }
+  if (matchMode === "contains" && matchValue.length < 3) {
+    throw new TypeError(
+      "contains matchers require at least 3 normalized characters",
+    );
+  }
 
   const result = {
     matchField,
+    matchMode,
     matchValue: rawMatchValue,
     normalizedMatchValue: matchValue,
   };
@@ -3451,6 +3499,12 @@ function transactionCleanupRuleResponse(rule) {
     rule?.matcher_value ??
     rule?.matchValue ??
     null;
+  const matchMode =
+    matcher.mode ??
+    rule?.match_mode ??
+    rule?.matcher_mode ??
+    rule?.matchMode ??
+    "exact";
   const normalizedMatchValue =
     matcher.normalized_value ??
     matcher.normalizedValue ??
@@ -3485,6 +3539,7 @@ function transactionCleanupRuleResponse(rule) {
     id: rule?.id,
     matcher: {
       field: matchField,
+      mode: matchMode,
       value: matchValue,
       normalized_value: normalizedMatchValue,
     },
@@ -3512,7 +3567,7 @@ function isCleanupRuleConflict(error) {
 
 function cleanupRuleConflict() {
   const error = new Error(
-    "A cleanup rule already uses this exact matcher",
+    "A cleanup rule already uses this matcher",
   );
   error.statusCode = 409;
   return error;

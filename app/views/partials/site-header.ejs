@@ -37,6 +37,9 @@
             <i class="ph ph-bank" aria-hidden="true"></i> Accounts
           </a>
           <% if (viewer?.is_admin) { %>
+            <a href="/format-rules" <%- activePath?.startsWith("/format-rules") ? 'aria-current="page"' : "" %>>
+              <i class="ph ph-magic-wand" aria-hidden="true"></i> Format Rules
+            </a>
             <a href="/settings" <%- activePath === "/settings" ? 'aria-current="page"' : "" %>>
               <i class="ph ph-gear" aria-hidden="true"></i> Settings
             </a>

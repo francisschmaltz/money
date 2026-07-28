@@ -6,6 +6,10 @@ const migrationUrl = new URL(
   "../migrations/020_spending_categories.sql",
   import.meta.url,
 );
+const splitMigrationUrl = new URL(
+  "../migrations/022_spending_category_split.sql",
+  import.meta.url,
+);
 const repositoryUrl = new URL(
   "../app/db/financeRepository.js",
   import.meta.url,
@@ -67,4 +71,14 @@ test("transaction fixed status comes from the canonical category", async () => {
   assert.match(repository, /category\.classification = 'fixed' AS is_fixed/);
   assert.doesNotMatch(repository, /transaction_override\.is_fixed/);
   assert.doesNotMatch(repository, /merchant_override\.is_fixed/);
+});
+
+test("category event history records categories split out of a merge", async () => {
+  const migration = await readFile(splitMigrationUrl, "utf8");
+  const repository = await readFile(repositoryUrl, "utf8");
+
+  assert.match(migration, /'split'/);
+  assert.match(repository, /async splitSpendingCategory/);
+  assert.match(repository, /'split'/);
+  assert.match(repository, /SET merged_into_category_id = NULL/);
 });

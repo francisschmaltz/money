@@ -555,18 +555,17 @@ export class PgFinanceRepository {
           FROM transaction_cleanup_rules rule
           WHERE rule.workspace_id = t.workspace_id
             AND rule.enabled = true
-            AND (
-              (
-                rule.match_field = 'normalized_merchant'
-                AND rule.normalized_match_value = t.normalized_merchant
-              )
-              OR (
-                rule.match_field = 'normalized_name'
-                AND rule.normalized_match_value = t.normalized_name
-              )
+            AND transaction_cleanup_rule_matches(
+              rule.match_field,
+              rule.match_mode,
+              rule.normalized_match_value,
+              t.normalized_merchant,
+              t.normalized_name
             )
           ORDER BY
+            (rule.match_mode = 'exact') DESC,
             (rule.match_field = 'normalized_merchant') DESC,
+            length(rule.normalized_match_value) DESC,
             rule.updated_at DESC,
             rule.id
           LIMIT 1
@@ -580,19 +579,17 @@ export class PgFinanceRepository {
           WHERE original.id IS NOT NULL
             AND rule.workspace_id = original.workspace_id
             AND rule.enabled = true
-            AND (
-              (
-                rule.match_field = 'normalized_merchant'
-                AND rule.normalized_match_value =
-                    original.normalized_merchant
-              )
-              OR (
-                rule.match_field = 'normalized_name'
-                AND rule.normalized_match_value = original.normalized_name
-              )
+            AND transaction_cleanup_rule_matches(
+              rule.match_field,
+              rule.match_mode,
+              rule.normalized_match_value,
+              original.normalized_merchant,
+              original.normalized_name
             )
           ORDER BY
+            (rule.match_mode = 'exact') DESC,
             (rule.match_field = 'normalized_merchant') DESC,
+            length(rule.normalized_match_value) DESC,
             rule.updated_at DESC,
             rule.id
           LIMIT 1
@@ -661,26 +658,27 @@ export class PgFinanceRepository {
   async #transactionIdsForCleanupRule(
     client,
     workspaceId,
-    { match_field: matchField, normalized_match_value: matchValue },
+    {
+      match_field: matchField,
+      match_mode: matchMode = "exact",
+      normalized_match_value: matchValue,
+    },
   ) {
     const result = await client.query(
       `
         SELECT id
         FROM transactions
         WHERE workspace_id = $1
-          AND (
-            (
-              $2 = 'normalized_merchant'
-              AND normalized_merchant = $3
-            )
-            OR (
-              $2 = 'normalized_name'
-              AND normalized_name = $3
-            )
+          AND transaction_cleanup_rule_matches(
+            $2,
+            $3,
+            $4,
+            normalized_merchant,
+            normalized_name
           )
         ORDER BY id
       `,
-      [workspaceId, matchField, matchValue],
+      [workspaceId, matchField, matchMode, matchValue],
     );
     return result.rows.map((row) => row.id);
   }
@@ -699,18 +697,17 @@ export class PgFinanceRepository {
           FROM transaction_cleanup_rules rule
           WHERE rule.workspace_id = t.workspace_id
             AND rule.enabled = true
-            AND (
-              (
-                rule.match_field = 'normalized_merchant'
-                AND rule.normalized_match_value = t.normalized_merchant
-              )
-              OR (
-                rule.match_field = 'normalized_name'
-                AND rule.normalized_match_value = t.normalized_name
-              )
+            AND transaction_cleanup_rule_matches(
+              rule.match_field,
+              rule.match_mode,
+              rule.normalized_match_value,
+              t.normalized_merchant,
+              t.normalized_name
             )
           ORDER BY
+            (rule.match_mode = 'exact') DESC,
             (rule.match_field = 'normalized_merchant') DESC,
+            length(rule.normalized_match_value) DESC,
             rule.updated_at DESC,
             rule.id
           LIMIT 1
@@ -2860,18 +2857,17 @@ export class PgFinanceRepository {
           FROM transaction_cleanup_rules rule
           WHERE rule.workspace_id = t.workspace_id
             AND rule.enabled = true
-            AND (
-              (
-                rule.match_field = 'normalized_merchant'
-                AND rule.normalized_match_value = t.normalized_merchant
-              )
-              OR (
-                rule.match_field = 'normalized_name'
-                AND rule.normalized_match_value = t.normalized_name
-              )
+            AND transaction_cleanup_rule_matches(
+              rule.match_field,
+              rule.match_mode,
+              rule.normalized_match_value,
+              t.normalized_merchant,
+              t.normalized_name
             )
           ORDER BY
+            (rule.match_mode = 'exact') DESC,
             (rule.match_field = 'normalized_merchant') DESC,
+            length(rule.normalized_match_value) DESC,
             rule.updated_at DESC,
             rule.id
           LIMIT 1
@@ -2917,20 +2913,17 @@ export class PgFinanceRepository {
           WHERE original_transaction.id IS NOT NULL
             AND rule.workspace_id = original_transaction.workspace_id
             AND rule.enabled = true
-            AND (
-              (
-                rule.match_field = 'normalized_merchant'
-                AND rule.normalized_match_value =
-                    original_transaction.normalized_merchant
-              )
-              OR (
-                rule.match_field = 'normalized_name'
-                AND rule.normalized_match_value =
-                    original_transaction.normalized_name
-              )
+            AND transaction_cleanup_rule_matches(
+              rule.match_field,
+              rule.match_mode,
+              rule.normalized_match_value,
+              original_transaction.normalized_merchant,
+              original_transaction.normalized_name
             )
           ORDER BY
+            (rule.match_mode = 'exact') DESC,
             (rule.match_field = 'normalized_merchant') DESC,
+            length(rule.normalized_match_value) DESC,
             rule.updated_at DESC,
             rule.id
           LIMIT 1
@@ -3226,18 +3219,17 @@ export class PgFinanceRepository {
           FROM transaction_cleanup_rules rule
           WHERE rule.workspace_id = t.workspace_id
             AND rule.enabled = true
-            AND (
-              (
-                rule.match_field = 'normalized_merchant'
-                AND rule.normalized_match_value = t.normalized_merchant
-              )
-              OR (
-                rule.match_field = 'normalized_name'
-                AND rule.normalized_match_value = t.normalized_name
-              )
+            AND transaction_cleanup_rule_matches(
+              rule.match_field,
+              rule.match_mode,
+              rule.normalized_match_value,
+              t.normalized_merchant,
+              t.normalized_name
             )
           ORDER BY
+            (rule.match_mode = 'exact') DESC,
             (rule.match_field = 'normalized_merchant') DESC,
+            length(rule.normalized_match_value) DESC,
             rule.updated_at DESC,
             rule.id
           LIMIT 1
@@ -3263,20 +3255,17 @@ export class PgFinanceRepository {
           WHERE original_transaction.id IS NOT NULL
             AND rule.workspace_id = original_transaction.workspace_id
             AND rule.enabled = true
-            AND (
-              (
-                rule.match_field = 'normalized_merchant'
-                AND rule.normalized_match_value =
-                    original_transaction.normalized_merchant
-              )
-              OR (
-                rule.match_field = 'normalized_name'
-                AND rule.normalized_match_value =
-                    original_transaction.normalized_name
-              )
+            AND transaction_cleanup_rule_matches(
+              rule.match_field,
+              rule.match_mode,
+              rule.normalized_match_value,
+              original_transaction.normalized_merchant,
+              original_transaction.normalized_name
             )
           ORDER BY
+            (rule.match_mode = 'exact') DESC,
             (rule.match_field = 'normalized_merchant') DESC,
+            length(rule.normalized_match_value) DESC,
             rule.updated_at DESC,
             rule.id
           LIMIT 1
@@ -3334,19 +3323,17 @@ export class PgFinanceRepository {
             FROM transaction_cleanup_rules rule
             WHERE rule.workspace_id = t.workspace_id
               AND rule.enabled = true
-              AND (
-                (
-                  rule.match_field = 'normalized_merchant'
-                  AND rule.normalized_match_value =
-                      t.normalized_merchant
-                )
-                OR (
-                  rule.match_field = 'normalized_name'
-                  AND rule.normalized_match_value = t.normalized_name
-                )
+              AND transaction_cleanup_rule_matches(
+                rule.match_field,
+                rule.match_mode,
+                rule.normalized_match_value,
+                t.normalized_merchant,
+                t.normalized_name
               )
             ORDER BY
+              (rule.match_mode = 'exact') DESC,
               (rule.match_field = 'normalized_merchant') DESC,
+              length(rule.normalized_match_value) DESC,
               rule.updated_at DESC,
               rule.id
             LIMIT 1
@@ -3389,6 +3376,7 @@ export class PgFinanceRepository {
     {
       id = randomUUID(),
       matchField,
+      matchMode = "exact",
       matchValue,
       normalizedMatchValue,
       displayName = null,
@@ -3402,12 +3390,13 @@ export class PgFinanceRepository {
       const result = await client.query(
         `
           INSERT INTO transaction_cleanup_rules (
-            id, workspace_id, match_field, match_value,
-            normalized_match_value, display_name, category_primary,
-            tags, enabled, created_by, updated_by
+            id, workspace_id, match_field, match_mode,
+            match_value, normalized_match_value, display_name,
+            category_primary, tags, enabled, created_by, updated_by
           )
           VALUES (
-            $1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $10
+            $1, $2, $3, $4, $5, $6, $7, $8,
+            $9::jsonb, $10, $11, $11
           )
           RETURNING *
         `,
@@ -3415,6 +3404,7 @@ export class PgFinanceRepository {
           id,
           workspaceId,
           matchField,
+          matchMode,
           matchValue,
           normalizedMatchValue,
           displayName,
@@ -3452,6 +3442,7 @@ export class PgFinanceRepository {
     {
       ruleId,
       matchField,
+      matchMode = "exact",
       matchValue,
       normalizedMatchValue,
       displayName = null,
@@ -3482,13 +3473,14 @@ export class PgFinanceRepository {
         `
           UPDATE transaction_cleanup_rules
           SET match_field = $3,
-              match_value = $4,
-              normalized_match_value = $5,
-              display_name = $6,
-              category_primary = $7,
-              tags = $8::jsonb,
-              enabled = COALESCE($9::boolean, enabled),
-              updated_by = $10,
+              match_mode = $4,
+              match_value = $5,
+              normalized_match_value = $6,
+              display_name = $7,
+              category_primary = $8,
+              tags = $9::jsonb,
+              enabled = COALESCE($10::boolean, enabled),
+              updated_by = $11,
               updated_at = now()
           WHERE workspace_id = $1 AND id = $2
           RETURNING *
@@ -3497,6 +3489,7 @@ export class PgFinanceRepository {
           workspaceId,
           ruleId,
           matchField,
+          matchMode,
           matchValue,
           normalizedMatchValue,
           displayName,
@@ -3720,18 +3713,17 @@ export class PgFinanceRepository {
             FROM transaction_cleanup_rules rule
             WHERE rule.workspace_id = t.workspace_id
               AND rule.enabled = true
-              AND (
-                (
-                  rule.match_field = 'normalized_merchant'
-                  AND rule.normalized_match_value = t.normalized_merchant
-                )
-                OR (
-                  rule.match_field = 'normalized_name'
-                  AND rule.normalized_match_value = t.normalized_name
-                )
+              AND transaction_cleanup_rule_matches(
+                rule.match_field,
+                rule.match_mode,
+                rule.normalized_match_value,
+                t.normalized_merchant,
+                t.normalized_name
               )
             ORDER BY
+              (rule.match_mode = 'exact') DESC,
               (rule.match_field = 'normalized_merchant') DESC,
+              length(rule.normalized_match_value) DESC,
               rule.updated_at DESC,
               rule.id
             LIMIT 1
@@ -3757,20 +3749,17 @@ export class PgFinanceRepository {
             WHERE original_transaction.id IS NOT NULL
               AND rule.workspace_id = original_transaction.workspace_id
               AND rule.enabled = true
-              AND (
-                (
-                  rule.match_field = 'normalized_merchant'
-                  AND rule.normalized_match_value =
-                      original_transaction.normalized_merchant
-                )
-                OR (
-                  rule.match_field = 'normalized_name'
-                  AND rule.normalized_match_value =
-                      original_transaction.normalized_name
-                )
+              AND transaction_cleanup_rule_matches(
+                rule.match_field,
+                rule.match_mode,
+                rule.normalized_match_value,
+                original_transaction.normalized_merchant,
+                original_transaction.normalized_name
               )
             ORDER BY
+              (rule.match_mode = 'exact') DESC,
               (rule.match_field = 'normalized_merchant') DESC,
+              length(rule.normalized_match_value) DESC,
               rule.updated_at DESC,
               rule.id
             LIMIT 1
@@ -4177,10 +4166,28 @@ export class PgFinanceRepository {
         )
         SELECT
           category.*,
-          spending_category_name_for_id(
-            category.workspace_id,
-            category.id
-          ) AS path,
+          CASE
+            WHEN category.merged_into_category_id IS NOT NULL
+              THEN concat_ws(
+                ' / ',
+                spending_category_name_for_id(
+                  category.workspace_id,
+                  category.parent_category_id
+                ),
+                category.name
+              )
+            ELSE spending_category_name_for_id(
+              category.workspace_id,
+              category.id
+            )
+          END AS path,
+          CASE
+            WHEN category.merged_into_category_id IS NOT NULL
+              THEN spending_category_name_for_id(
+                category.workspace_id,
+                category.merged_into_category_id
+              )
+          END AS merged_into_path,
           COALESCE(transaction_counts.count, 0) AS transaction_count,
           COALESCE(budget_counts.count, 0) AS budget_line_count,
           COALESCE(alias_data.aliases, '[]'::jsonb) AS aliases
@@ -4199,10 +4206,19 @@ export class PgFinanceRepository {
           ) AS aliases
           FROM spending_category_aliases alias
           WHERE alias.workspace_id = category.workspace_id
-            AND active_spending_category_id(
-              alias.workspace_id,
-              alias.category_id
-            ) = category.id
+            AND (
+              (
+                category.merged_into_category_id IS NULL
+                AND active_spending_category_id(
+                  alias.workspace_id,
+                  alias.category_id
+                ) = category.id
+              )
+              OR (
+                category.merged_into_category_id IS NOT NULL
+                AND alias.category_id = category.id
+              )
+            )
         ) alias_data ON true
         WHERE category.workspace_id = $1
           AND ($2::boolean OR category.merged_into_category_id IS NULL)
@@ -5175,6 +5191,178 @@ export class PgFinanceRepository {
     return categories.find((category) => category.id === result);
   }
 
+  async splitSpendingCategory(
+    workspaceId = DEFAULT_WORKSPACE_ID,
+    {
+      categoryId,
+      expectedVersion,
+      userId = null,
+    },
+  ) {
+    let result;
+    try {
+      result = await withTransaction(this.#pool, async (client) => {
+        const currentResult = await client.query(
+          `
+            SELECT
+              category.*,
+              spending_category_name_for_id(
+                category.workspace_id,
+                category.merged_into_category_id
+              ) AS merged_into_path
+            FROM spending_categories category
+            WHERE category.workspace_id = $1
+              AND category.id = $2
+            FOR UPDATE
+          `,
+          [workspaceId, categoryId],
+        );
+        const current = currentResult.rows[0];
+        if (!current) return "not_found";
+        if (!current.merged_into_category_id) return "not_merged";
+        if (Number(current.version) !== Number(expectedVersion)) {
+          return "stale";
+        }
+
+        const aliasConflict = await client.query(
+          `
+            SELECT active_category.id
+            FROM spending_category_aliases source_alias
+            JOIN spending_categories active_category
+              ON active_category.workspace_id = source_alias.workspace_id
+             AND active_category.normalized_name =
+               source_alias.normalized_alias
+             AND active_category.merged_into_category_id IS NULL
+             AND active_category.id <> $2
+            WHERE source_alias.workspace_id = $1
+              AND source_alias.category_id = $2
+            LIMIT 1
+          `,
+          [workspaceId, categoryId],
+        );
+        if (aliasConflict.rows[0]) return "conflict";
+
+        let nextParentCategoryId = current.parent_category_id;
+        if (nextParentCategoryId) {
+          const activeParent = await client.query(
+            `
+              SELECT active_spending_category_id($1, $2) AS category_id
+            `,
+            [workspaceId, nextParentCategoryId],
+          );
+          nextParentCategoryId =
+            activeParent.rows[0]?.category_id ?? null;
+        }
+
+        await client.query(
+          `
+            UPDATE spending_categories
+            SET merged_into_category_id = NULL,
+                parent_category_id = $3,
+                version = version + 1,
+                updated_by = $4,
+                updated_at = now()
+            WHERE workspace_id = $1
+              AND id = $2
+          `,
+          [workspaceId, categoryId, nextParentCategoryId, userId],
+        );
+        const pathResult = await client.query(
+          `
+            SELECT spending_category_name_for_id($1, $2) AS path
+          `,
+          [workspaceId, categoryId],
+        );
+        const restoredPath = pathResult.rows[0].path;
+
+        await client.query(
+          `
+            INSERT INTO spending_category_events (
+              id, workspace_id, category_id, event_type, actor_id,
+              before_value, after_value
+            )
+            VALUES (
+              $1, $2, $3, 'split', $4,
+              jsonb_build_object(
+                'merged_into_category_id', $5::text,
+                'merged_into_path', $6::text
+              ),
+              jsonb_build_object(
+                'name', $7::text,
+                'path', $8::text,
+                'parent_category_id', $9::text
+              )
+            )
+          `,
+          [
+            stableId("category-event", randomUUID()),
+            workspaceId,
+            categoryId,
+            userId,
+            current.merged_into_category_id,
+            current.merged_into_path,
+            current.name,
+            restoredPath,
+            nextParentCategoryId,
+          ],
+        );
+
+        for (const table of [
+          "categorization_overrides",
+          "transaction_cleanup_rules",
+        ]) {
+          await client.query(
+            `
+              UPDATE ${table}
+              SET category_primary = $3,
+                  updated_at = now()
+              WHERE workspace_id = $1
+                AND category_id = $2
+            `,
+            [workspaceId, categoryId, restoredPath],
+          );
+        }
+        await client.query(
+          `
+            UPDATE transaction_splits
+            SET category = $3,
+                updated_at = now()
+            WHERE workspace_id = $1
+              AND category_id = $2
+          `,
+          [workspaceId, categoryId, restoredPath],
+        );
+
+        const affected = await client.query(
+          `
+            SELECT transaction_id
+            FROM transaction_effective_spending_categories
+            WHERE workspace_id = $1
+              AND category_id = $2
+          `,
+          [workspaceId, categoryId],
+        );
+        await this.#refreshTransactionSearchDocuments(
+          client,
+          workspaceId,
+          affected.rows.map((row) => row.transaction_id),
+        );
+        return categoryId;
+      });
+    } catch (error) {
+      if (error?.code === "23505") return { conflict: true };
+      throw error;
+    }
+    if (result === "not_found") return null;
+    if (result === "not_merged") return { notMerged: true };
+    if (result === "stale") return { stale: true };
+    if (result === "conflict") return { conflict: true };
+    const categories = await this.listSpendingCategories(workspaceId, {
+      includeMerged: true,
+    });
+    return categories.find((category) => category.id === result);
+  }
+
   async listTransactionCategories(
     workspaceId = DEFAULT_WORKSPACE_ID,
     { limit = 100 } = {},
@@ -5205,18 +5393,17 @@ export class PgFinanceRepository {
           FROM transaction_cleanup_rules rule
           WHERE rule.workspace_id = t.workspace_id
             AND rule.enabled = true
-            AND (
-              (
-                rule.match_field = 'normalized_merchant'
-                AND rule.normalized_match_value = t.normalized_merchant
-              )
-              OR (
-                rule.match_field = 'normalized_name'
-                AND rule.normalized_match_value = t.normalized_name
-              )
+            AND transaction_cleanup_rule_matches(
+              rule.match_field,
+              rule.match_mode,
+              rule.normalized_match_value,
+              t.normalized_merchant,
+              t.normalized_name
             )
           ORDER BY
+            (rule.match_mode = 'exact') DESC,
             (rule.match_field = 'normalized_merchant') DESC,
+            length(rule.normalized_match_value) DESC,
             rule.updated_at DESC,
             rule.id
           LIMIT 1
@@ -5230,20 +5417,17 @@ export class PgFinanceRepository {
           WHERE original_transaction.id IS NOT NULL
             AND rule.workspace_id = original_transaction.workspace_id
             AND rule.enabled = true
-            AND (
-              (
-                rule.match_field = 'normalized_merchant'
-                AND rule.normalized_match_value =
-                    original_transaction.normalized_merchant
-              )
-              OR (
-                rule.match_field = 'normalized_name'
-                AND rule.normalized_match_value =
-                    original_transaction.normalized_name
-              )
+            AND transaction_cleanup_rule_matches(
+              rule.match_field,
+              rule.match_mode,
+              rule.normalized_match_value,
+              original_transaction.normalized_merchant,
+              original_transaction.normalized_name
             )
           ORDER BY
+            (rule.match_mode = 'exact') DESC,
             (rule.match_field = 'normalized_merchant') DESC,
+            length(rule.normalized_match_value) DESC,
             rule.updated_at DESC,
             rule.id
           LIMIT 1
@@ -6996,6 +7180,7 @@ function mapSpendingCategory(row) {
     classification: row.classification,
     parent_category_id: row.parent_category_id ?? null,
     merged_into_category_id: row.merged_into_category_id ?? null,
+    merged_into_path: row.merged_into_path ?? null,
     status: row.merged_into_category_id ? "merged" : "active",
     version: Number(row.version),
     transaction_count: Number(row.transaction_count ?? 0),
@@ -7052,6 +7237,7 @@ function mapTransactionCleanupRule(row) {
   return {
     id: row.id,
     match_field: row.match_field,
+    match_mode: row.match_mode ?? "exact",
     match_value: row.match_value,
     normalized_match_value: row.normalized_match_value,
     display_name: row.display_name ?? null,

@@ -1,0 +1,115 @@
+<%- include("partials/head", { pageTitle }) %>
+<body data-page="format-rules">
+  <%- include("partials/site-header", { activePath, viewer }) %>
+  <%
+    const configuredFixed =
+      typeof fixedCategories !== "undefined"
+        ? fixedCategories
+        : ["Housing", "Utilities"];
+    const availableCategories =
+      typeof observedCategories !== "undefined"
+        ? observedCategories
+        : ["Housing", "Utilities", "Groceries", "Dining", "Travel"];
+    const classificationCategories = [...new Set([
+      ...availableCategories,
+      ...configuredFixed,
+    ])];
+    const settingsCategories =
+      typeof spendingCategories !== "undefined" &&
+      Array.isArray(spendingCategories)
+        ? spendingCategories
+        : classificationCategories.map((label, index) => ({
+            id: `legacy-category-${index}`,
+            name: label,
+            path: label,
+            depth: 0,
+            classification: configuredFixed.includes(label)
+              ? "fixed"
+              : "flexible",
+            parent_category_id: null,
+            version: 1,
+            transaction_count: 0,
+            budget_line_count: 0,
+            aliases: [],
+          }));
+    const activeSettingsCategories = settingsCategories.filter(
+      (category) => category.status !== "merged"
+    );
+    const mergedSettingsCategories = settingsCategories.filter(
+      (category) => category.status === "merged"
+    );
+    const settingsCategoryById = new Map(
+      settingsCategories.map((category) => [category.id, category])
+    );
+    const cleanupCategories = activeSettingsCategories.map(
+      (category) => category.path
+    );
+    const cleanupTagOptions = [...new Set(
+      (
+        typeof transactionTags !== "undefined"
+          ? transactionTags.map(
+              (tag) => typeof tag === "string" ? tag : tag.name
+            )
+          : []
+      ).filter(Boolean)
+    )].sort((left, right) => left.localeCompare(right));
+    const settingsTransactionRules =
+      typeof transactionRules !== "undefined" &&
+      Array.isArray(transactionRules)
+        ? transactionRules
+        : [];
+    const cleanupRuleMatcherLabel = (rule) =>
+      rule.matcher?.field === "normalized_name"
+        ? "Transaction name"
+        : "Merchant";
+    const cleanupRuleMatcherMode = (rule) =>
+      rule.matcher?.mode === "contains" ? "contains" : "exactly";
+    const cleanupRuleChanges = (rule) => [
+      rule.changes?.display_name
+        ? `Rename to ${rule.changes.display_name}`
+        : null,
+      rule.changes?.category_primary || null,
+      Object.hasOwn(rule.changes || {}, "tags")
+        ? rule.changes.tags.length
+          ? rule.changes.tags.join(" · ")
+          : "Clear tags"
+        : null,
+    ].filter(Boolean);
+    const selectedFormatRulesSection =
+      typeof formatRulesSection !== "undefined" &&
+      formatRulesSection === "categories"
+        ? "categories"
+        : "rules";
+  %>
+  <main class="page-shell page-shell--settings">
+    <%- include("partials/page-heading", {
+      eyebrow: "Administrator",
+      pageTitle,
+      actionLabel: null,
+      actionHref: null,
+      actionIcon: null
+    }) %>
+
+    <nav class="settings-nav format-rules-nav" aria-label="Format Rules sections">
+      <a href="/format-rules" <%- selectedFormatRulesSection === "rules" ? 'aria-current="page"' : "" %>>Rules</a>
+      <a href="/format-rules/categories" <%- selectedFormatRulesSection === "categories" ? 'aria-current="page"' : "" %>>Categories</a>
+    </nav>
+
+    <% if (selectedFormatRulesSection === "rules") { %>
+      <%- include("partials/format-rules-list", {
+        settingsTransactionRules,
+        cleanupRuleChanges,
+        cleanupRuleMatcherLabel,
+        cleanupRuleMatcherMode,
+        cleanupCategories,
+        cleanupTagOptions
+      }) %>
+    <% } else { %>
+      <%- include("partials/format-rules-categories", {
+        activeSettingsCategories,
+        mergedSettingsCategories,
+        settingsCategoryById
+      }) %>
+    <% } %>
+  </main>
+  <%- include("partials/footer") %>

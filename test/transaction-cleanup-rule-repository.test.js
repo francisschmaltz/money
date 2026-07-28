@@ -33,6 +33,7 @@ function ruleRow(overrides = {}) {
     id: "rule-apple",
     workspace_id: "shared",
     match_field: "normalized_name",
+    match_mode: "exact",
     match_value: "AAPL SRV",
     normalized_match_value: "aapl srv",
     display_name: "Apple Services",
@@ -78,7 +79,7 @@ function transactionRow(overrides = {}) {
   };
 }
 
-test("rule list counts only exact deterministic winners", async () => {
+test("rule list counts deterministic exact-or-contains winners", async () => {
   const db = fakePool(async (sql) => {
     if (sql.startsWith("WITH winning_rules AS")) {
       return { rows: [ruleRow()] };
@@ -91,6 +92,7 @@ test("rule list counts only exact deterministic winners", async () => {
 
   assert.equal(rules.length, 1);
   assert.equal(rules[0].match_value, "AAPL SRV");
+  assert.equal(rules[0].match_mode, "exact");
   assert.equal(rules[0].normalized_match_value, "aapl srv");
   assert.deepEqual(rules[0].tags, ["subscription"]);
   assert.equal(rules[0].matched_transaction_count, 1);
@@ -99,27 +101,35 @@ test("rule list counts only exact deterministic winners", async () => {
   );
   assert.match(
     query.sql,
-    /rule\.normalized_match_value = t\.normalized_merchant/,
+    /transaction_cleanup_rule_matches\(\s*rule\.match_field,\s*rule\.match_mode,\s*rule\.normalized_match_value,\s*t\.normalized_merchant,\s*t\.normalized_name\s*\)/,
   );
   assert.match(
     query.sql,
-    /rule\.normalized_match_value = t\.normalized_name/,
+    /\(rule\.match_mode = 'exact'\) DESC/,
   );
   assert.match(
     query.sql,
-    /ORDER BY \(rule\.match_field = 'normalized_merchant'\) DESC, rule\.updated_at DESC, rule\.id/,
+    /length\(rule\.normalized_match_value\) DESC/,
   );
   assert.match(query.sql, /t\.pending = false/);
-  assert.doesNotMatch(query.sql, /similarity\s*\(/i);
 });
 
-test("creating a rule stores raw and normalized match values and refreshes exact matches", async () => {
+test("creating a rule stores match mode and refreshes contained matches", async () => {
   const db = fakePool(async (sql, params) => {
     if (sql.includes("INSERT INTO transaction_cleanup_rules")) {
-      return { rows: [ruleRow()] };
+      return {
+        rows: [
+          ruleRow({
+            match_field: params[2],
+            match_mode: params[3],
+            match_value: params[4],
+            normalized_match_value: params[5],
+          }),
+        ],
+      };
     }
     if (sql.startsWith("SELECT id FROM transactions")) {
-      return params[2] === "aapl srv"
+      return params[3] === "aapl srv"
         ? { rows: [{ id: "transaction-1" }] }
         : { rows: [] };
     }
@@ -133,6 +143,7 @@ test("creating a rule stores raw and normalized match values and refreshes exact
   const result = await repository.createTransactionCleanupRule("shared", {
     id: "rule-apple",
     matchField: "normalized_name",
+    matchMode: "contains",
     matchValue: "AAPL SRV",
     normalizedMatchValue: "aapl srv",
     displayName: "Apple Services",
@@ -146,18 +157,25 @@ test("creating a rule stores raw and normalized match values and refreshes exact
   const insert = db.calls.find((call) =>
     call.sql.includes("INSERT INTO transaction_cleanup_rules"),
   );
-  assert.deepEqual(insert.params.slice(2, 5), [
+  assert.deepEqual(insert.params.slice(2, 6), [
     "normalized_name",
+    "contains",
     "AAPL SRV",
     "aapl srv",
   ]);
-  assert.equal(insert.params[7], '["subscription"]');
+  assert.equal(insert.params[8], '["subscription"]');
   const match = db.calls.find((call) =>
     call.sql.startsWith("SELECT id FROM transactions"),
   );
-  assert.match(match.sql, /normalized_name = \$3/);
-  assert.match(match.sql, /normalized_merchant = \$3/);
-  assert.doesNotMatch(match.sql, /similarity\s*\(/i);
+  assert.match(
+    match.sql,
+    /transaction_cleanup_rule_matches\(\s*\$2,\s*\$3,\s*\$4,\s*normalized_merchant,\s*normalized_name\s*\)/,
+  );
+  assert.deepEqual(match.params.slice(1), [
+    "normalized_name",
+    "contains",
+    "aapl srv",
+  ]);
   const winning = db.calls.find((call) =>
     call.sql.startsWith("SELECT t.id FROM transactions t"),
   );
@@ -171,11 +189,12 @@ test("creating a rule stores raw and normalized match values and refreshes exact
   );
 });
 
-test("editing and deleting a rule refresh old and new exact match sets", async () => {
+test("editing and deleting a rule refresh old and new match sets", async () => {
   let phase = "update";
   const oldRule = ruleRow();
   const nextRule = ruleRow({
     match_field: "normalized_merchant",
+    match_mode: "contains",
     match_value: "APPLE",
     normalized_match_value: "apple",
     tags: [],
@@ -195,7 +214,7 @@ test("editing and deleting a rule refresh old and new exact match sets", async (
       return {
         rows: [
           {
-            id: params[2] === "aapl srv"
+            id: params[3] === "aapl srv"
               ? "transaction-old"
               : "transaction-new",
           },
@@ -214,6 +233,7 @@ test("editing and deleting a rule refresh old and new exact match sets", async (
     {
       ruleId: "rule-apple",
       matchField: "normalized_merchant",
+      matchMode: "contains",
       matchValue: "APPLE",
       normalizedMatchValue: "apple",
       displayName: "Apple Services",

@@ -765,6 +765,10 @@ test("spending category routes are admin-only, CSRF-protected, and preserve merg
           calls.push(["merge", input, routeActor]);
           return { merged: true };
         },
+        splitSpendingCategory(input, routeActor) {
+          calls.push(["split", input, routeActor]);
+          return { split: true };
+        },
       },
     }),
   );
@@ -794,6 +798,10 @@ test("spending category routes are admin-only, CSRF-protected, and preserve merg
     .post("/api/v1/categories/merge")
     .send(mergeBody)
     .expect(200);
+  await request(app)
+    .post("/api/v1/categories/category-tolls/split")
+    .send({ expected_version: 2 })
+    .expect(200);
 
   assert.deepEqual(calls, [
     ["list", { include_merged: false }],
@@ -816,6 +824,14 @@ test("spending category routes are admin-only, CSRF-protected, and preserve merg
       actor,
     ],
     ["merge", mergeBody, actor],
+    [
+      "split",
+      {
+        expected_version: 2,
+        category_id: "category-tolls",
+      },
+      actor,
+    ],
   ]);
   assert.deepEqual(middleware, [
     "admin:GET",
@@ -823,6 +839,8 @@ test("spending category routes are admin-only, CSRF-protected, and preserve merg
     "csrf:POST",
     "admin:PATCH",
     "csrf:PATCH",
+    "admin:POST",
+    "csrf:POST",
     "admin:POST",
     "csrf:POST",
   ]);

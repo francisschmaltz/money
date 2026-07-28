@@ -473,3 +473,44 @@ test("demo cleanup rules apply exact provider normalization without overriding m
   assert.equal(apple.category_primary, "Subscriptions");
   assert.deepEqual(apple.tags, []);
 });
+
+test("demo cleanup contains rules match any normalized substring and yield to exact rules", async () => {
+  const service = createDemoFinanceService();
+  const containsResult = await service.createTransactionCleanupRule({
+    matcher: {
+      field: "normalized_name",
+      mode: "contains",
+      value: "SRV",
+    },
+    changes: { display_name: "Contained billing" },
+  });
+
+  assert.equal(containsResult.rule.matcher.mode, "contains");
+  assert.equal(containsResult.rule.matched_transaction_count, 1);
+  let ledger = await service.listTransactions({ status: "posted" });
+  let apple = ledger.data.transactions.find(
+    (transaction) => transaction.id === "txn_apple_services",
+  );
+  assert.equal(apple.display_name, "Contained billing");
+
+  const exactResult = await service.createTransactionCleanupRule({
+    matcher: {
+      field: "normalized_name",
+      mode: "exact",
+      value: "AAPL SRV 0042",
+    },
+    changes: { display_name: "Exact billing" },
+  });
+  const rules = (await service.listTransactionCleanupRules()).rules;
+  assert.equal(
+    rules.find((rule) => rule.id === containsResult.rule.id)
+      .matched_transaction_count,
+    0,
+  );
+  assert.equal(exactResult.rule.matched_transaction_count, 1);
+  ledger = await service.listTransactions({ status: "posted" });
+  apple = ledger.data.transactions.find(
+    (transaction) => transaction.id === "txn_apple_services",
+  );
+  assert.equal(apple.display_name, "Exact billing");
+});

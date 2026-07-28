@@ -641,7 +641,10 @@ function normalizedMatchText(value) {
 function cloneTransactionCleanupRule(rule) {
   return {
     id: rule.id,
-    matcher: { ...rule.matcher },
+    matcher: {
+      ...rule.matcher,
+      mode: rule.matcher.mode ?? "exact",
+    },
     changes: {
       ...rule.changes,
       ...(Object.hasOwn(rule.changes, "tags")
@@ -670,6 +673,12 @@ function validatedTransactionCleanupMatcher(input) {
       "matcher.field must be normalized_merchant or normalized_name",
     );
   }
+  const mode = String(input.mode ?? input.match_mode ?? "exact").trim();
+  if (!["exact", "contains"].includes(mode)) {
+    throw transactionCleanupRuleError(
+      "matcher.mode must be exact or contains",
+    );
+  }
   const value = String(
     input.value ?? input.match_value ?? "",
   ).trim();
@@ -687,8 +696,14 @@ function validatedTransactionCleanupMatcher(input) {
       "matcher.value must produce between 1 and 160 normalized characters",
     );
   }
+  if (mode === "contains" && normalizedValue.length < 3) {
+    throw transactionCleanupRuleError(
+      "contains matchers require at least 3 normalized characters",
+    );
+  }
   return {
     field,
+    mode,
     value,
     normalized_value: normalizedValue,
   };
@@ -996,12 +1011,18 @@ export class DemoFinanceService {
           rule.matcher.field === "normalized_merchant"
             ? normalizeMerchant(transaction.raw_merchant)
             : normalizeTransactionName(transaction.raw_name);
-        return value === rule.matcher.normalized_value;
+        return (rule.matcher.mode ?? "exact") === "contains"
+          ? value.includes(rule.matcher.normalized_value)
+          : value === rule.matcher.normalized_value;
       })
       .sort(
         (left, right) =>
+          Number((right.matcher.mode ?? "exact") === "exact") -
+            Number((left.matcher.mode ?? "exact") === "exact") ||
           Number(right.matcher.field === "normalized_merchant") -
             Number(left.matcher.field === "normalized_merchant") ||
+          right.matcher.normalized_value.length -
+            left.matcher.normalized_value.length ||
           right.updated_at.localeCompare(left.updated_at) ||
           right.id.localeCompare(left.id),
       )[0] ?? null;
@@ -1049,11 +1070,12 @@ export class DemoFinanceService {
       (rule) =>
         rule.id !== excludingId &&
         rule.matcher.field === matcher.field &&
+        (rule.matcher.mode ?? "exact") === matcher.mode &&
         rule.matcher.normalized_value === matcher.normalized_value,
     );
     if (duplicate) {
       throw transactionCleanupRuleError(
-        "A cleanup rule already uses this exact matcher",
+        "A cleanup rule already uses this matcher",
         409,
       );
     }

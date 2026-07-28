@@ -22,13 +22,16 @@ test("spending categories use explicit hierarchy and classification controls", a
   page,
 }) => {
   const capturedWrite = await captureCategoryWrite(page);
-  await page.goto("/settings");
+  await page.goto("/format-rules/categories");
 
   const section = page.locator("#spending-categories");
   await expect(
     section.getByRole("heading", { name: "Spending categories" }),
   ).toBeVisible();
   await expect(section.getByText("Fixed categories stay visible")).toBeVisible();
+  await section
+    .getByRole("button", { name: "Edit categories" })
+    .click();
 
   const form = section.locator("[data-category-create-form]");
   await form.getByLabel("Name").fill("Car");
@@ -57,18 +60,25 @@ test("a category can be renamed and reclassified with its exact version", async 
   page,
 }) => {
   const capturedWrite = await captureCategoryWrite(page);
-  await page.goto("/settings");
+  await page.goto("/format-rules/categories");
 
+  const section = page.locator("#spending-categories");
+  await section
+    .getByRole("button", { name: "Edit categories" })
+    .click();
   const form = page
     .locator("#spending-categories [data-category-edit-form]")
     .first();
+  await expect(form).toBeVisible();
   await form.getByLabel("Category name").fill("Home");
   await form
     .getByLabel("Spending classification")
     .selectOption("flexible");
   await Promise.all([
     page.waitForRequest((request) => request.method() === "PATCH"),
-    form.getByRole("button", { name: "Save" }).click(),
+    section
+      .getByRole("button", { name: "Save changes" })
+      .click(),
   ]);
 
   expect(capturedWrite()).toMatchObject({
@@ -86,7 +96,7 @@ test("merge preview counts affected records and submits a new destination", asyn
   page,
 }) => {
   const capturedWrite = await captureCategoryWrite(page);
-  await page.goto("/settings");
+  await page.goto("/format-rules/categories");
 
   const categoryRows = page.locator(
     "#spending-categories [data-category-row]",

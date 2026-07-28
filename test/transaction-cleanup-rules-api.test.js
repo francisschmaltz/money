@@ -56,6 +56,7 @@ test("cleanup rule API exposes admin CRUD with CSRF on mutations", async () => {
   const body = {
     matcher: {
       field: "normalized_merchant",
+      mode: "contains",
       value: "  AAPL SRV 0042  ",
     },
     changes: {
@@ -84,6 +85,7 @@ test("cleanup rule API exposes admin CRUD with CSRF on mutations", async () => {
   const cleanedBody = {
     matcher: {
       field: "normalized_merchant",
+      mode: "contains",
       value: "AAPL SRV 0042",
     },
     changes: {
@@ -137,6 +139,14 @@ test("cleanup rule API rejects malformed matchers and empty changes", async () =
   const invalidBodies = [
     {
       matcher: { field: "fuzzy", value: "Apple" },
+      changes: { display_name: "Apple" },
+    },
+    {
+      matcher: {
+        field: "normalized_merchant",
+        mode: "similar",
+        value: "Apple",
+      },
       changes: { display_name: "Apple" },
     },
     {

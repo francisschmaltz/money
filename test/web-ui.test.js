@@ -44,12 +44,17 @@ test("all primary finance views render with shared navigation and local assets",
     ["credit", "/credit"],
     ["accounts", "/accounts"],
     ["settings", "/settings"],
+    ["format-rules", "/format-rules"],
   ];
 
   for (const [view, activePath] of pages) {
     const html = await render(view, {
-      pageTitle: view[0].toUpperCase() + view.slice(1),
+      pageTitle:
+        view === "format-rules"
+          ? "Format Rules"
+          : view[0].toUpperCase() + view.slice(1),
       activePath,
+      formatRulesSection: "rules",
     });
     assert.match(html, /\/vendor\/phosphor\/regular\/style\.css/);
     assert.match(html, /\/vendor\/chart\/chart\.umd\.js/);
@@ -60,6 +65,32 @@ test("all primary finance views render with shared navigation and local assets",
       assert.match(html, /<h1>Settings<\/h1>/);
     }
   }
+});
+
+test("Format Rules routes split automatic rules from spending categories", async () => {
+  const app = express();
+  app.set("views", viewsRoot);
+  app.set("view engine", "ejs");
+  app.use(createWebRouter({ demoMode: true }));
+
+  const rules = await request(app).get("/format-rules").expect(200);
+  assert.match(rules.text, /<h1>Format Rules<\/h1>/);
+  assert.match(
+    rules.text,
+    /href="\/format-rules" aria-current="page">Rules</,
+  );
+  assert.match(rules.text, /data-cleanup-rules/);
+  assert.doesNotMatch(rules.text, /data-category-manager/);
+
+  const categories = await request(app)
+    .get("/format-rules/categories")
+    .expect(200);
+  assert.match(
+    categories.text,
+    /href="\/format-rules\/categories" aria-current="page">Categories</,
+  );
+  assert.match(categories.text, /data-category-manager/);
+  assert.doesNotMatch(categories.text, /data-cleanup-rules/);
 });
 
 test("Plaid OAuth callback renders a resumable authenticated return page", async () => {
@@ -75,7 +106,7 @@ test("Plaid OAuth callback renders a resumable authenticated return page", async
   assert.match(response.text, /data-page="plaid-oauth"/);
   assert.match(response.text, /data-plaid-oauth-return/);
   assert.match(response.text, /Returning to Plaid/);
-  assert.match(response.text, /\/js\/money\.js\?v=21/);
+  assert.match(response.text, /\/js\/money\.js\?v=22/);
   assert.doesNotMatch(response.text, /data-search-dialog/);
 });
 
@@ -316,6 +347,7 @@ test("transaction ledger supports selecting rows and choosing bulk overrides", a
   assert.match(html, /> Select &amp; edit/);
   assert.match(html, /data-bulk-selection-bar hidden/);
   assert.match(html, /data-bulk-transaction-select/);
+  assert.match(html, /class="transaction-select-control" hidden/);
   assert.match(html, /data-bulk-edit-dialog/);
   assert.match(html, /Fields to override/);
   for (const field of [
@@ -332,7 +364,7 @@ test("transaction ledger supports selecting rows and choosing bulk overrides", a
   assert.doesNotMatch(html, /data-bulk-change="is_fixed"/);
   assert.match(
     html,
-    /Amount, account, and provider dates stay untouched/,
+    /No automatic cleanup rule is created; provider data stays untouched/,
   );
 
   const memberHtml = await render("transactions", {
@@ -344,7 +376,7 @@ test("transaction ledger supports selecting rows and choosing bulk overrides", a
   assert.doesNotMatch(memberHtml, /data-bulk-edit-dialog/);
 });
 
-test("selected transactions link administrators to Settings cleanup", async () => {
+test("selected transactions can change one category without creating a rule", async () => {
   const html = await render("transactions", {
     pageTitle: "Transactions",
     activePath: "/transactions",
@@ -355,7 +387,14 @@ test("selected transactions link administrators to Settings cleanup", async () =
     html,
     /href="\/settings\?transaction=txn_whole_foods#transaction-cleanup"/,
   );
-  assert.match(html, /Clean up name, category &amp; tags/);
+  assert.match(html, /Edit similar transactions or create a rule/);
+  assert.match(html, /data-transaction-category-form/);
+  assert.match(html, /data-transaction-id="txn_whole_foods"/);
+  assert.match(html, /Save for this transaction/);
+  assert.match(
+    html,
+    /Changes only this transaction\. No automatic cleanup rule is created\./,
+  );
   assert.match(
     html,
     /<dialog[\s\S]*data-detail-query-key="transaction"/,
@@ -711,12 +750,16 @@ test("settings exposes account grouping and manual asset CRUD controls", async (
   assert.match(html, /data-transaction-cleanup/);
   assert.match(html, /data-cleanup-search/);
   assert.match(html, /Fuzzy matching suggests candidates/);
+  assert.match(html, /href="\/format-rules">Manage format rules</);
+  assert.doesNotMatch(html, /data-cleanup-rules/);
+  assert.doesNotMatch(html, /data-category-manager/);
 });
 
-test("settings manages nested spending categories without visibility switches", async () => {
-  const html = await render("settings", {
-    pageTitle: "Settings",
-    activePath: "/settings",
+test("Format Rules manages nested spending categories without visibility switches", async () => {
+  const html = await render("format-rules", {
+    pageTitle: "Format Rules",
+    activePath: "/format-rules/categories",
+    formatRulesSection: "categories",
     spendingCategories: [
       {
         id: "category-car",
@@ -754,17 +797,50 @@ test("settings manages nested spending categories without visibility switches", 
         budget_line_count: 1,
         aliases: [],
       },
+      {
+        id: "category-tolls",
+        name: "Tolls",
+        path: "Car / Tolls",
+        depth: 1,
+        classification: "flexible",
+        parent_category_id: "category-car",
+        merged_into_category_id: "category-gas",
+        merged_into_path: "Car / Gas",
+        status: "merged",
+        version: 4,
+        transaction_count: 0,
+        budget_line_count: 0,
+        aliases: [{ label: "TOLLS", type: "observed" }],
+      },
     ],
   });
 
   assert.match(html, />Spending categories</);
+  assert.match(
+    html,
+    /href="\/format-rules\/categories" aria-current="page">Categories</,
+  );
   assert.match(html, /data-category-create-form/);
   assert.match(html, /data-category-edit-form/);
+  assert.match(html, /data-category-edit-toggle/);
   assert.match(html, /data-category-merge-form/);
   assert.match(html, />Car \/ Gas</);
   assert.match(html, />Car \/ Auto Loan</);
+  assert.match(html, />Car \/ Tolls</);
+  assert.match(html, /Merged into <b>Car \/ Gas/);
+  assert.match(html, /data-category-split/);
+  assert.match(html, />Split out</);
   assert.match(html, /TRANSPORTATION/);
   assert.match(html, /value="fixed" selected>Fixed/);
+  const categoryEditForms = [
+    ...html.matchAll(
+      /<form[^>]*data-category-edit-form[\s\S]*?<\/form>/g,
+    ),
+  ];
+  assert.ok(categoryEditForms.length > 0);
+  categoryEditForms.forEach(([form]) => {
+    assert.doesNotMatch(form, />Save</);
+  });
   assert.doesNotMatch(html, /data-classification-form/);
   assert.doesNotMatch(html, /name="fixed_category"/);
 });
@@ -875,15 +951,17 @@ test("transaction cleanup preloads raw values and leaves fuzzy rows unchecked", 
   assert.match(html, /data-cleanup-change="tags"/);
 });
 
-test("settings keeps exact automatic cleanup rules above one-time fuzzy edits", async () => {
-  const html = await render("settings", {
-    pageTitle: "Settings",
-    activePath: "/settings",
+test("Format Rules exposes exact and contains automatic cleanup rules", async () => {
+  const html = await render("format-rules", {
+    pageTitle: "Format Rules",
+    activePath: "/format-rules",
+    formatRulesSection: "rules",
     transactionRules: [
       {
         id: "cleanup_rule_apple",
         matcher: {
           field: "normalized_name",
+          mode: "contains",
           value: "AAPL SRV 0042",
           normalized_value: "aapl srv",
         },
@@ -902,7 +980,7 @@ test("settings keeps exact automatic cleanup rules above one-time fuzzy edits", 
   assert.match(html, /data-cleanup-rules/);
   assert.match(
     html,
-    /Transaction name exactly “AAPL SRV 0042”/,
+    /Transaction name contains “AAPL SRV 0042”/,
   );
   assert.match(
     html,
@@ -915,11 +993,12 @@ test("settings keeps exact automatic cleanup rules above one-time fuzzy edits", 
   assert.match(html, /data-cleanup-rule-edit/);
   assert.match(html, /data-cleanup-rule-delete/);
   assert.match(html, /data-cleanup-rule-toggle/);
-  assert.match(html, /data-cleanup-save-rule hidden/);
   assert.match(
     html,
-    /Automatic cleanup rules[\s\S]*One-time cleanup[\s\S]*data-cleanup-search/,
+    /href="\/format-rules" aria-current="page">Rules</,
   );
+  assert.doesNotMatch(html, /data-cleanup-search/);
+  assert.doesNotMatch(html, /One-time cleanup/);
 
   const matcherSelect = html.match(
     /<select[^>]*data-cleanup-rule-matcher-field[\s\S]*?<\/select>/,
@@ -927,7 +1006,15 @@ test("settings keeps exact automatic cleanup rules above one-time fuzzy edits", 
   assert.ok(matcherSelect);
   assert.match(matcherSelect, /value="normalized_merchant"/);
   assert.match(matcherSelect, /value="normalized_name"/);
-  assert.doesNotMatch(matcherSelect, /contains|regex|fuzzy/i);
+  const matcherModeSelect = html.match(
+    /<select[^>]*data-cleanup-rule-matcher-mode[\s\S]*?<\/select>/,
+  )?.[0];
+  assert.ok(matcherModeSelect);
+  assert.match(matcherModeSelect, /value="exact">Exact/);
+  assert.match(
+    matcherModeSelect,
+    /value="contains">Contains \(fuzzy\)/,
+  );
 });
 
 test("demo transaction pages follow cleanup-rule create, disable, and delete", async () => {
@@ -1158,7 +1245,7 @@ test("recurring view separates frequent spending and opens classification eviden
   );
 });
 
-test("shared header keeps Accounts in the user menu, not primary navigation", async () => {
+test("shared header keeps account tools in the user menu, not primary navigation", async () => {
   const html = await render("accounts", {
     pageTitle: "Accounts",
     activePath: "/accounts",
@@ -1177,6 +1264,10 @@ test("shared header keeps Accounts in the user menu, not primary navigation", as
     html,
     /href="\/accounts" aria-current="page"[\s\S]*?ph-bank[\s\S]*?Accounts/,
   );
+  assert.match(
+    html,
+    /href="\/format-rules"[\s\S]*?ph-magic-wand[\s\S]*?Format Rules/,
+  );
   const primaryNavigation =
     html.match(
       /<nav class="desktop-nav" aria-label="Primary navigation">([\s\S]*?)<\/nav>/,
@@ -1186,7 +1277,9 @@ test("shared header keeps Accounts in the user menu, not primary navigation", as
       /<nav class="mobile-nav" aria-label="Mobile navigation"[\s\S]*?>([\s\S]*?)<\/nav>/,
     )?.[1] ?? "";
   assert.doesNotMatch(primaryNavigation, />Accounts</);
+  assert.doesNotMatch(primaryNavigation, />Format Rules</);
   assert.doesNotMatch(mobileNavigation, />Accounts/);
+  assert.doesNotMatch(mobileNavigation, />Format Rules/);
   assert.doesNotMatch(html, /Francis/);
 });
 

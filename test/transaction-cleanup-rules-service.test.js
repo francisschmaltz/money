@@ -7,6 +7,7 @@ function storedRule(overrides = {}) {
   return {
     id: "cleanup_rule_1",
     match_field: "normalized_merchant",
+    match_mode: "exact",
     match_value: "AAPL SRV 0042",
     normalized_match_value: "aapl srv",
     display_name: "Apple Services",
@@ -20,7 +21,7 @@ function storedRule(overrides = {}) {
   };
 }
 
-test("cleanup rule service normalizes exact matchers and returns snake-case rules", async () => {
+test("cleanup rule service normalizes matchers and returns their mode", async () => {
   const calls = [];
   const jobs = [];
   const repository = {
@@ -31,6 +32,7 @@ test("cleanup rule service normalizes exact matchers and returns snake-case rule
     async createTransactionCleanupRule(workspaceId, input) {
       calls.push(["create", workspaceId, input]);
       return storedRule({
+        match_mode: input.matchMode,
         match_value: input.matchValue,
         normalized_match_value: input.normalizedMatchValue,
         display_name: input.displayName,
@@ -56,6 +58,7 @@ test("cleanup rule service normalizes exact matchers and returns snake-case rule
         id: "cleanup_rule_1",
         matcher: {
           field: "normalized_merchant",
+          mode: "exact",
           value: "AAPL SRV 0042",
           normalized_value: "aapl srv",
         },
@@ -76,6 +79,7 @@ test("cleanup rule service normalizes exact matchers and returns snake-case rule
     {
       matcher: {
         field: "normalized_merchant",
+        mode: "contains",
         value: "  AAPL SRV 0042  ",
       },
       changes: {
@@ -91,6 +95,7 @@ test("cleanup rule service normalizes exact matchers and returns snake-case rule
   assert.equal(created.created, true);
   assert.deepEqual(created.rule.matcher, {
     field: "normalized_merchant",
+    mode: "contains",
     value: "AAPL SRV 0042",
     normalized_value: "aapl srv",
   });
@@ -109,6 +114,7 @@ test("cleanup rule service normalizes exact matchers and returns snake-case rule
     "shared",
     {
       matchField: "normalized_merchant",
+      matchMode: "contains",
       matchValue: "AAPL SRV 0042",
       normalizedMatchValue: "aapl srv",
       displayName: "Apple Services",
@@ -197,6 +203,7 @@ test("cleanup rule service updates and deletes full rules", async () => {
       return storedRule({
         id: input.ruleId,
         match_field: input.matchField,
+        match_mode: input.matchMode,
         match_value: input.matchValue,
         normalized_match_value: input.normalizedMatchValue,
         display_name: input.displayName ?? null,
@@ -224,6 +231,7 @@ test("cleanup rule service updates and deletes full rules", async () => {
       rule_id: "cleanup.rule:2",
       matcher: {
         field: "normalized_name",
+        mode: "contains",
         value: "APPLE.COM/BILL 0042",
       },
       changes: { tags: ["Subscription"] },
@@ -233,6 +241,7 @@ test("cleanup rule service updates and deletes full rules", async () => {
   );
   assert.deepEqual(updated.rule.matcher, {
     field: "normalized_name",
+    mode: "contains",
     value: "APPLE.COM/BILL 0042",
     normalized_value: "apple com bill",
   });
@@ -254,6 +263,7 @@ test("cleanup rule service updates and deletes full rules", async () => {
     {
       ruleId: "cleanup.rule:2",
       matchField: "normalized_name",
+      matchMode: "contains",
       matchValue: "APPLE.COM/BILL 0042",
       normalizedMatchValue: "apple com bill",
       tags: ["Subscription"],
@@ -295,6 +305,28 @@ test("cleanup rule service rejects unsafe or ambiguous rules before repository w
       changes: { display_name: "Apple" },
     }),
     /matcher\.field is not supported/,
+  );
+  await assert.rejects(
+    service.createTransactionCleanupRule({
+      matcher: {
+        field: "normalized_merchant",
+        mode: "similar",
+        value: "Apple",
+      },
+      changes: { display_name: "Apple" },
+    }),
+    /matcher\.mode is not supported/,
+  );
+  await assert.rejects(
+    service.createTransactionCleanupRule({
+      matcher: {
+        field: "normalized_merchant",
+        mode: "contains",
+        value: "A",
+      },
+      changes: { display_name: "Apple" },
+    }),
+    /contains matchers require at least 3 normalized characters/,
   );
   await assert.rejects(
     service.createTransactionCleanupRule({
@@ -391,7 +423,7 @@ test("cleanup rule service converts duplicate matchers to a safe conflict", asyn
     (error) =>
       error.statusCode === 409 &&
       error.message ===
-        "A cleanup rule already uses this exact matcher" &&
+        "A cleanup rule already uses this matcher" &&
       !error.message.includes("database"),
   );
   await assert.rejects(
@@ -399,6 +431,6 @@ test("cleanup rule service converts duplicate matchers to a safe conflict", asyn
     (error) =>
       error.statusCode === 409 &&
       error.message ===
-        "A cleanup rule already uses this exact matcher",
+        "A cleanup rule already uses this matcher",
   );
 });

@@ -226,3 +226,37 @@ test("category merges carry exact versions and a nested new destination", async 
     userId: "user-admin",
   });
 });
+
+test("merged categories split out with their exact version", async () => {
+  let captured;
+  const service = createFinanceService({
+    repository: {
+      async splitSpendingCategory(workspaceId, input) {
+        captured = { workspaceId, ...input };
+        return {
+          id: "category-tolls",
+          name: "Tolls",
+          path: "Car / Tolls",
+          classification: "flexible",
+          version: 5,
+        };
+      },
+    },
+  });
+
+  const result = await service.splitSpendingCategory(
+    {
+      category_id: "category-tolls",
+      expected_version: 4,
+    },
+    { id: "user-admin" },
+  );
+
+  assert.equal(result.category.path, "Car / Tolls");
+  assert.deepEqual(captured, {
+    workspaceId: "shared",
+    categoryId: "category-tolls",
+    expectedVersion: 4,
+    userId: "user-admin",
+  });
+});

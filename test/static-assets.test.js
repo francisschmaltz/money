@@ -21,9 +21,9 @@ test("first-party asset revisions change with the current deployment", async () 
     path.resolve("app/views/partials/head.ejs"),
     "utf8",
   );
-  assert.match(head, /\/css\/money\.css\?v=25/);
+  assert.match(head, /\/css\/money\.css\?v=26/);
   assert.match(head, /\/js\/charts\.js\?v=5/);
-  assert.match(head, /\/js\/money\.js\?v=21/);
+  assert.match(head, /\/js\/money\.js\?v=22/);
 });
 
 test("dismissible notifications persist for the browser session", async () => {
@@ -141,6 +141,44 @@ test("transaction bulk editing sends only selected override fields", async () =>
   assert.match(bulkEdit, /\/api\/v1\/transactions\/batch-edit/);
   assert.match(bulkEdit, /transaction_ids: transactionIds/);
   assert.match(bulkEdit, /window\.location\.reload\(\)/);
+});
+
+test("a transaction detail category change uses one scoped batch override", async () => {
+  const money = await readFile(
+    path.resolve("app/public/js/money.js"),
+    "utf8",
+  );
+  const start = money.indexOf("function transactionCategoryOverride()");
+  const end = money.indexOf("function insightActions()", start);
+  const categoryOverride = money.slice(start, end);
+
+  assert.ok(start >= 0);
+  assert.ok(end > start);
+  assert.match(categoryOverride, /data-transaction-category-form/);
+  assert.match(
+    categoryOverride,
+    /transaction_ids: \[transactionId\]/,
+  );
+  assert.match(
+    categoryOverride,
+    /changes: \{ category_primary: category \}/,
+  );
+  assert.match(
+    categoryOverride,
+    /\/api\/v1\/transactions\/batch-edit/,
+  );
+});
+
+test("transaction selection controls stay hidden outside edit mode", async () => {
+  const money = await readFile(
+    path.resolve("app/public/css/money.css"),
+    "utf8",
+  );
+
+  assert.match(
+    money,
+    /\.transaction-select-control\[hidden\]\s*\{\s*display:\s*none;/,
+  );
 });
 
 test("future equity keeps the standard card spacing", async () => {

@@ -7,6 +7,10 @@ const migrationUrl = new URL(
   "../migrations/008_transaction_cleanup_rules.sql",
   import.meta.url,
 );
+const containsMigrationUrl = new URL(
+  "../migrations/021_cleanup_rule_contains.sql",
+  import.meta.url,
+);
 
 test("cleanup rule schema stores exact matchers and nullable changes", async () => {
   const migration = await readFile(fileURLToPath(migrationUrl), "utf8");
@@ -53,5 +57,37 @@ test("cleanup rule migration preserves explicit empty tag overrides", async () =
   assert.match(
     migration,
     /FROM transaction_tag_assignments assignment[\s\S]*ON CONFLICT \(workspace_id, transaction_id\) DO UPDATE SET\s+tags_overridden = true/,
+  );
+});
+
+test("cleanup rules support normalized contains with deterministic precedence", async () => {
+  const migration = await readFile(
+    fileURLToPath(containsMigrationUrl),
+    "utf8",
+  );
+
+  assert.match(
+    migration,
+    /ADD COLUMN match_mode text NOT NULL DEFAULT 'exact'/,
+  );
+  assert.match(
+    migration,
+    /match_mode IN \('exact', 'contains'\)/,
+  );
+  assert.match(
+    migration,
+    /UNIQUE \(\s*workspace_id,\s*match_field,\s*match_mode,\s*normalized_match_value\s*\)/,
+  );
+  assert.match(
+    migration,
+    /WHEN 'contains' THEN[\s\S]*strpos\([\s\S]*target_match_value[\s\S]*\) > 0/,
+  );
+  assert.match(
+    migration,
+    /\(rule\.match_mode = 'exact'\) DESC[\s\S]*length\(rule\.normalized_match_value\) DESC/,
+  );
+  assert.match(
+    migration,
+    /CREATE OR REPLACE VIEW transaction_effective_spending_categories/,
   );
 });

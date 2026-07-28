@@ -1120,33 +1120,136 @@
         }
       });
 
+    const categoryManager = document.querySelector(
+      "[data-category-manager]",
+    );
+    const categoryEditToggle = categoryManager?.querySelector(
+      "[data-category-edit-toggle]",
+    );
+    const categoryGlobalStatus = categoryManager?.querySelector(
+      "[data-category-global-status]",
+    );
+    const categoryEditForms = [
+      ...(categoryManager?.querySelectorAll(
+        "[data-category-edit-form]",
+      ) ?? []),
+    ];
+    const setCategoryEditing = (editing) => {
+      if (!categoryManager || !categoryEditToggle) return;
+      categoryManager.dataset.categoryEditing = String(editing);
+      categoryEditToggle.textContent = editing
+        ? "Save changes"
+        : "Edit categories";
+      categoryEditForms.forEach((form) => {
+        form.toggleAttribute("hidden", !editing);
+      });
+      if (!editing && categoryGlobalStatus) {
+        categoryGlobalStatus.textContent = "";
+      }
+    };
+    categoryEditForms.forEach((form) => {
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        categoryEditToggle?.click();
+      });
+    });
+    categoryEditToggle?.addEventListener("click", async () => {
+      const editing =
+        categoryManager?.dataset.categoryEditing === "true";
+      if (!editing) {
+        setCategoryEditing(true);
+        categoryEditForms[0]
+          ?.querySelector('input[name="name"]')
+          ?.focus();
+        return;
+      }
+      const changes = categoryEditForms.flatMap((form) => {
+        const values = new FormData(form);
+        const name = String(values.get("name") || "");
+        const classification = String(
+          values.get("classification") || "",
+        );
+        const parentCategoryId = String(
+          values.get("parent_category_id") || "",
+        );
+        if (
+          name === form.dataset.originalName &&
+          classification === form.dataset.originalClassification &&
+          parentCategoryId === form.dataset.originalParentId
+        ) {
+          return [];
+        }
+        return [{
+          form,
+          name,
+          classification,
+          parentCategoryId,
+        }];
+      });
+      if (!changes.length) {
+        setCategoryEditing(false);
+        return;
+      }
+      categoryEditToggle.setAttribute("disabled", "");
+      if (categoryGlobalStatus) {
+        categoryGlobalStatus.textContent =
+          `Saving ${changes.length} change${changes.length === 1 ? "" : "s"}…`;
+      }
+      try {
+        for (const change of changes) {
+          const row = change.form.closest("[data-category-row]");
+          const response = await requestJson(change.form.dataset.endpoint, {
+            method: "PATCH",
+            body: {
+              name: change.name,
+              classification: change.classification,
+              parent_category_id: change.parentCategoryId || null,
+              expected_version: Number(row?.dataset.categoryVersion),
+            },
+          });
+          change.form.dataset.originalName = change.name;
+          change.form.dataset.originalClassification =
+            change.classification;
+          change.form.dataset.originalParentId =
+            change.parentCategoryId;
+          if (row && response?.category?.version) {
+            row.dataset.categoryVersion =
+              String(response.category.version);
+          }
+        }
+        if (categoryGlobalStatus) {
+          categoryGlobalStatus.textContent = "Changes saved";
+        }
+        window.location.reload();
+      } catch (error) {
+        if (categoryGlobalStatus) {
+          categoryGlobalStatus.textContent = error.message;
+        }
+        categoryEditToggle.removeAttribute("disabled");
+      }
+    });
+
     document
-      .querySelectorAll("[data-category-edit-form]")
-      .forEach((form) => {
-        form.addEventListener("submit", async (event) => {
-          event.preventDefault();
-          const row = form.closest("[data-category-row]");
-          const status = form.querySelector("[data-save-status]");
-          const submit = form.querySelector('button[type="submit"]');
-          const values = new FormData(form);
-          submit?.setAttribute("disabled", "");
-          if (status) status.textContent = "Saving…";
+      .querySelectorAll("[data-category-split]")
+      .forEach((button) => {
+        button.addEventListener("click", async () => {
+          const row = button.closest("[data-category-merged-row]");
+          const status = row?.querySelector("[data-save-status]");
+          button.setAttribute("disabled", "");
+          if (status) status.textContent = "Splitting…";
           try {
-            await requestJson(form.dataset.endpoint, {
-              method: "PATCH",
+            await requestJson(button.dataset.endpoint, {
               body: {
-                name: values.get("name"),
-                classification: values.get("classification"),
-                parent_category_id:
-                  values.get("parent_category_id") || null,
-                expected_version: Number(row?.dataset.categoryVersion),
+                expected_version: Number(
+                  row?.dataset.categoryVersion,
+                ),
               },
             });
-            if (status) status.textContent = "Saved";
+            if (status) status.textContent = "Category restored";
             window.location.reload();
           } catch (error) {
             if (status) status.textContent = error.message;
-            submit?.removeAttribute("disabled");
+            button.removeAttribute("disabled");
           }
         });
       });
@@ -2293,6 +2396,64 @@
     updateSelection();
   }
 
+  function transactionCategoryOverride() {
+    const csrfToken =
+      document.querySelector('meta[name="csrf-token"]')?.content || "";
+    document
+      .querySelectorAll("[data-transaction-category-form]")
+      .forEach((form) => {
+        form.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          const transactionId = form.dataset.transactionId;
+          const category = form.querySelector(
+            'select[name="category_primary"]',
+          )?.value;
+          const submit = form.querySelector('button[type="submit"]');
+          const status = form.querySelector(
+            "[data-transaction-category-status]",
+          );
+          if (!transactionId || !category || !submit) return;
+          submit.disabled = true;
+          if (status) status.textContent = "Saving…";
+          try {
+            const response = await fetch(
+              "/api/v1/transactions/batch-edit",
+              {
+                method: "POST",
+                headers: {
+                  Accept: "application/json",
+                  "Content-Type": "application/json",
+                  "X-CSRF-Token": csrfToken,
+                },
+                body: JSON.stringify({
+                  transaction_ids: [transactionId],
+                  changes: { category_primary: category },
+                }),
+              },
+            );
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) {
+              throw new Error(
+                payload.message ||
+                  `Update failed with ${response.status}`,
+              );
+            }
+            if (status) {
+              status.textContent =
+                "Category saved for this transaction";
+            }
+            window.setTimeout(() => window.location.reload(), 350);
+          } catch (error) {
+            if (status) {
+              status.textContent =
+                error.message || "Couldn’t update the category";
+            }
+            submit.disabled = false;
+          }
+        });
+      });
+  }
+
   function insightActions() {
     const csrfToken =
       document.querySelector('meta[name="csrf-token"]')?.content || "";
@@ -2357,6 +2518,9 @@
     });
   }
 
+  const cleanupRulePrefillStorageKey =
+    "money.cleanup-rule-prefill.v1";
+
   function transactionCleanupRules() {
     const cleanupRoot = document.querySelector(
       "[data-transaction-cleanup]",
@@ -2380,6 +2544,9 @@
     const ruleIdInput = root.querySelector("[data-cleanup-rule-id]");
     const matcherField = root.querySelector(
       "[data-cleanup-rule-matcher-field]",
+    );
+    const matcherMode = root.querySelector(
+      "[data-cleanup-rule-matcher-mode]",
     );
     const matcherValue = root.querySelector(
       "[data-cleanup-rule-matcher-value]",
@@ -2431,6 +2598,8 @@
       rule.matcher?.field === "normalized_name"
         ? "Transaction name"
         : "Merchant";
+    const matcherModeLabel = (rule) =>
+      rule.matcher?.mode === "contains" ? "contains" : "exactly";
 
     const changeLabels = (rule) => {
       const changes = rule.changes || {};
@@ -2477,7 +2646,9 @@
       appendText(
         copy,
         "strong",
-        `${matcherLabel(rule)} exactly “${rule.matcher?.value || ""}”`,
+        `${matcherLabel(rule)} ${matcherModeLabel(rule)} “${
+          rule.matcher?.value || ""
+        }”`,
       );
       const changes = appendText(
         copy,
@@ -2613,6 +2784,12 @@
           rule?.matcher?.field ??
           prefill?.matcher?.field ??
           "normalized_merchant";
+      }
+      if (matcherMode) {
+        matcherMode.value =
+          rule?.matcher?.mode ??
+          prefill?.matcher?.mode ??
+          "exact";
       }
       if (matcherValue) {
         matcherValue.value =
@@ -2771,6 +2948,7 @@
             body: JSON.stringify({
               matcher: {
                 field: rule.matcher.field,
+                mode: rule.matcher.mode ?? "exact",
                 value: rule.matcher.value,
               },
               changes: rule.changes,
@@ -2824,7 +3002,7 @@
       const value = matcherValue?.value.trim();
       if (!value) {
         if (formStatus) {
-          formStatus.textContent = "Enter an exact name to match.";
+          formStatus.textContent = "Enter text to match.";
         }
         matcherValue?.focus();
         return;
@@ -2842,6 +3020,7 @@
           body: JSON.stringify({
             matcher: {
               field: matcherField?.value,
+              mode: matcherMode?.value,
               value,
             },
             changes,
@@ -2874,6 +3053,15 @@
     );
 
     renderRules();
+    try {
+      const pendingPrefill = window.sessionStorage.getItem(
+        cleanupRulePrefillStorageKey,
+      );
+      if (pendingPrefill) {
+        window.sessionStorage.removeItem(cleanupRulePrefillStorageKey);
+        openRuleDialog({ prefill: JSON.parse(pendingPrefill) });
+      }
+    } catch {}
   }
 
   function transactionCleanup() {
@@ -2881,6 +3069,7 @@
     if (!root) return;
 
     const searchForm = root.querySelector("[data-cleanup-search]");
+    if (!searchForm) return;
     const queryInput = root.querySelector("[data-cleanup-query]");
     const searchStatus = root.querySelector(
       "[data-cleanup-search-status]",
@@ -3237,11 +3426,25 @@
 
     saveAsRule?.addEventListener("click", () => {
       if (!lastAppliedRulePrefill) return;
-      root.dispatchEvent(
-        new CustomEvent("cleanup-rule-prefill", {
-          detail: lastAppliedRulePrefill,
-        }),
-      );
+      if (root.querySelector("[data-cleanup-rules]")) {
+        root.dispatchEvent(
+          new CustomEvent("cleanup-rule-prefill", {
+            detail: lastAppliedRulePrefill,
+          }),
+        );
+        return;
+      }
+      try {
+        window.sessionStorage.setItem(
+          cleanupRulePrefillStorageKey,
+          JSON.stringify(lastAppliedRulePrefill),
+        );
+        window.location.assign("/format-rules?new_rule=1");
+      } catch {
+        if (saveStatus) {
+          saveStatus.textContent = "Couldn’t open the rule editor";
+        }
+      }
     });
 
     root.addEventListener("cleanup-rule-saved", () => {
@@ -3920,6 +4123,7 @@
     appleCardImport();
     exportTransactions();
     transactionBulkEdit();
+    transactionCategoryOverride();
     insightActions();
     transactionCleanupRules();
     transactionCleanup();

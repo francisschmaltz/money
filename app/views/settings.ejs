@@ -46,7 +46,10 @@
             budget_line_count: 0,
             aliases: [],
           }));
-    const settingsCategoryPaths = settingsCategories.map(
+    const activeSettingsCategories = settingsCategories.filter(
+      (category) => category.status !== "merged"
+    );
+    const settingsCategoryPaths = activeSettingsCategories.map(
       (category) => category.path
     );
     const cleanup =
@@ -72,26 +75,6 @@
       cleanupSource?.category_primary,
       ...settingsCategoryPaths,
     ].filter(Boolean))];
-    const settingsTransactionRules =
-      typeof transactionRules !== "undefined" &&
-      Array.isArray(transactionRules)
-        ? transactionRules
-        : [];
-    const cleanupRuleMatcherLabel = (rule) =>
-      rule.matcher?.field === "normalized_name"
-        ? "Transaction name"
-        : "Merchant";
-    const cleanupRuleChanges = (rule) => [
-      rule.changes?.display_name
-        ? `Rename to ${rule.changes.display_name}`
-        : null,
-      rule.changes?.category_primary || null,
-      Object.hasOwn(rule.changes || {}, "tags")
-        ? rule.changes.tags.length
-          ? rule.changes.tags.join(" · ")
-          : "Clear tags"
-        : null,
-    ].filter(Boolean);
     const settingsAccounts =
       typeof accounts !== "undefined" ? accounts : [];
     const settingsManualAssets =
@@ -160,7 +143,6 @@
       <a href="#account-groups">Account groups</a>
       <a href="#manual-assets">Manual assets</a>
       <a href="#transaction-cleanup">Transaction cleanup</a>
-      <a href="#spending-categories">Spending categories</a>
       <a href="#insight-rules">Insight rules</a>
       <a href="#access">Access</a>
     </nav>
@@ -450,139 +432,10 @@
       <div class="settings-card__heading">
         <div>
           <h2>Transaction cleanup</h2>
-          <p>Automatically clean exact names, or make a one-time correction to transactions you select.</p>
+          <p>Find similar transactions and make a one-time correction. Automatic cleanup lives in Format Rules.</p>
         </div>
+        <a class="button button--secondary" href="/format-rules">Manage format rules</a>
       </div>
-
-      <section
-        class="cleanup-rules"
-        data-cleanup-rules
-        data-cleanup-rule-payload="<%= JSON.stringify(settingsTransactionRules) %>"
-        aria-labelledby="cleanup-rules-heading"
-      >
-        <div class="cleanup-rules__heading">
-          <div>
-            <h3 id="cleanup-rules-heading">Automatic cleanup rules</h3>
-            <p>Rules compare normalized names exactly. Similar-looking transactions are never swept in.</p>
-          </div>
-          <button class="button button--secondary" type="button" data-cleanup-rule-new>
-            <i class="ph ph-plus" aria-hidden="true"></i>
-            New rule
-          </button>
-        </div>
-
-        <p class="save-status cleanup-rules__status" role="status" data-cleanup-rule-status></p>
-        <div class="cleanup-rule-list" data-cleanup-rule-list>
-          <% settingsTransactionRules.forEach((rule) => {
-            const changeLabels = cleanupRuleChanges(rule);
-            const matchCount = Number(rule.matched_transaction_count) || 0;
-          %>
-            <article class="cleanup-rule-row <%= rule.enabled ? '' : 'cleanup-rule-row--disabled' %>" data-cleanup-rule="<%= rule.id %>">
-              <span class="cleanup-rule-row__icon"><i class="ph ph-magic-wand" aria-hidden="true"></i></span>
-              <span class="cleanup-rule-row__copy">
-                <strong><%= cleanupRuleMatcherLabel(rule) %> exactly “<%= rule.matcher?.value %>”</strong>
-                <span><i class="ph ph-arrow-right" aria-hidden="true"></i> <%= changeLabels.join(" · ") %></span>
-                <small><%= matchCount %> matching posted transaction<%= matchCount === 1 ? "" : "s" %></small>
-              </span>
-              <span class="cleanup-rule-row__actions">
-                <label class="cleanup-rule-toggle">
-                  <span class="sr-only"><%= rule.enabled ? "Disable" : "Enable" %> rule for <%= rule.matcher?.value %></span>
-                  <input class="switch" type="checkbox" data-cleanup-rule-toggle <%= rule.enabled ? "checked" : "" %>>
-                </label>
-                <button class="button button--ghost" type="button" data-cleanup-rule-edit>Edit</button>
-                <button class="button button--ghost danger-action" type="button" data-cleanup-rule-delete aria-label="Delete rule for <%= rule.matcher?.value %>">
-                  <i class="ph ph-trash" aria-hidden="true"></i>
-                </button>
-              </span>
-            </article>
-          <% }) %>
-        </div>
-        <div class="cleanup-rule-empty" data-cleanup-rule-empty <%= settingsTransactionRules.length ? "hidden" : "" %>>
-          <span class="empty-icon"><i class="ph ph-magic-wand" aria-hidden="true"></i></span>
-          <div>
-            <strong>No automatic rules yet</strong>
-            <p>Create one for a merchant or transaction name you clean up often.</p>
-          </div>
-        </div>
-        <dialog class="cleanup-rule-dialog" data-cleanup-rule-dialog aria-labelledby="cleanup-rule-dialog-title">
-          <form class="cleanup-rule-form" data-cleanup-rule-form>
-            <div class="cleanup-rule-dialog__heading">
-              <div>
-                <p class="eyebrow">Automatic cleanup</p>
-                <h3 id="cleanup-rule-dialog-title" data-cleanup-rule-dialog-title>New rule</h3>
-              </div>
-              <button class="icon-button" type="button" data-cleanup-rule-cancel aria-label="Close rule editor">
-                <i class="ph ph-x" aria-hidden="true"></i>
-              </button>
-            </div>
-            <input type="hidden" name="rule_id" data-cleanup-rule-id>
-
-            <div class="cleanup-rule-form__matcher">
-              <label>
-                <span>Match field</span>
-                <select name="matcher_field" data-cleanup-rule-matcher-field required>
-                  <option value="normalized_merchant">Merchant exactly</option>
-                  <option value="normalized_name">Transaction name exactly</option>
-                </select>
-              </label>
-              <label>
-                <span>Exact name</span>
-                <input name="matcher_value" type="text" maxlength="160" autocomplete="off" data-cleanup-rule-matcher-value required>
-              </label>
-              <small>Capitalization, punctuation, and extra spaces are normalized. The remaining text must match exactly.</small>
-            </div>
-
-            <fieldset>
-              <legend>Changes to apply</legend>
-              <label class="cleanup-edit-field">
-                <span class="cleanup-edit-field__toggle">
-                  <input type="checkbox" data-cleanup-rule-change="display_name">
-                  Rename merchant
-                </span>
-                <input name="display_name" type="text" maxlength="160" placeholder="Clean merchant name" data-cleanup-rule-display-name disabled>
-              </label>
-              <label class="cleanup-edit-field">
-                <span class="cleanup-edit-field__toggle">
-                  <input type="checkbox" data-cleanup-rule-change="category_primary">
-                  Set category
-                </span>
-                <select name="category_primary" data-cleanup-rule-category disabled>
-                  <% cleanupCategories.forEach((label) => { %>
-                    <option value="<%= label %>"><%= label %></option>
-                  <% }) %>
-                </select>
-              </label>
-              <label class="cleanup-edit-field">
-                <span class="cleanup-edit-field__toggle">
-                  <input type="checkbox" data-cleanup-rule-change="tags">
-                  Replace tags
-                </span>
-                <input name="tags" type="text" maxlength="400" placeholder="household, reimbursable" data-cleanup-rule-tags disabled>
-                <small>Comma-separated. Leave empty to clear tags.</small>
-              </label>
-            </fieldset>
-
-            <% if (cleanupTagOptions.length) { %>
-              <div class="cleanup-known-tags" aria-label="Existing tags">
-                <span>Existing tags</span>
-                <% cleanupTagOptions.forEach((tag) => { %>
-                  <button type="button" data-cleanup-rule-tag="<%= tag %>"><%= tag %></button>
-                <% }) %>
-              </div>
-            <% } %>
-
-            <label class="cleanup-rule-form__enabled">
-              <span><strong>Enabled</strong><small>Apply this rule to matching posted transactions.</small></span>
-              <input class="switch" name="enabled" type="checkbox" data-cleanup-rule-enabled checked>
-            </label>
-            <p class="save-status" role="status" data-cleanup-rule-form-status></p>
-            <div class="form-actions">
-              <button class="button button--ghost" type="button" data-cleanup-rule-cancel>Cancel</button>
-              <button class="button button--dark" type="submit" data-cleanup-rule-submit>Save rule</button>
-            </div>
-          </form>
-        </dialog>
-      </section>
 
       <div class="cleanup-one-time-heading">
         <h3>One-time cleanup</h3>
@@ -731,142 +584,6 @@
           </div>
         </section>
       </div>
-    </section>
-
-    <section id="spending-categories" class="card settings-card">
-      <div class="settings-card__heading">
-        <div>
-          <h2>Spending categories</h2>
-          <p>One category tree drives spending, budgets, filters, and insights. Fixed categories stay visible but are excluded from “spend less” findings.</p>
-        </div>
-      </div>
-
-      <form class="category-create-form" data-category-create-form>
-        <label>
-          <span>Name</span>
-          <input name="name" maxlength="100" placeholder="e.g. Car" required>
-        </label>
-        <label>
-          <span>Parent</span>
-          <select name="parent_category_id">
-            <option value="">Top level</option>
-            <% settingsCategories.forEach((category) => { %>
-              <option value="<%= category.id %>"><%= category.path %></option>
-            <% }) %>
-          </select>
-        </label>
-        <label>
-          <span>Classification</span>
-          <select name="classification">
-            <option value="flexible">Flexible</option>
-            <option value="fixed">Fixed</option>
-          </select>
-        </label>
-        <div class="form-actions">
-          <span class="save-status" role="status" data-save-status></span>
-          <button class="button button--dark" type="submit">Create category</button>
-        </div>
-      </form>
-
-      <div class="category-manager-list" data-category-manager-list>
-        <% settingsCategories.forEach((category) => { %>
-          <article
-            class="category-manager-row"
-            data-category-row
-            data-category-id="<%= category.id %>"
-            data-category-version="<%= category.version %>"
-            data-category-transaction-count="<%= category.transaction_count %>"
-            data-category-budget-count="<%= category.budget_line_count %>"
-          >
-            <label class="category-manager-row__select">
-              <input type="checkbox" data-category-select>
-              <span class="sr-only">Select <%= category.path %> for merging</span>
-            </label>
-            <span class="list-icon"><i class="ph ph-tag"></i></span>
-            <form
-              class="category-edit-form"
-              data-category-edit-form
-              data-endpoint="/api/v1/categories/<%= encodeURIComponent(category.id) %>"
-            >
-              <label>
-                <span class="sr-only">Category name</span>
-                <input name="name" maxlength="100" value="<%= category.name %>" required>
-              </label>
-              <label>
-                <span class="sr-only">Parent category</span>
-                <select name="parent_category_id">
-                  <option value="">Top level</option>
-                  <% settingsCategories.filter((candidate) => candidate.id !== category.id).forEach((candidate) => { %>
-                    <option value="<%= candidate.id %>" <%= candidate.id === category.parent_category_id ? "selected" : "" %>><%= candidate.path %></option>
-                  <% }) %>
-                </select>
-              </label>
-              <label>
-                <span class="sr-only">Spending classification</span>
-                <select name="classification">
-                  <option value="flexible" <%= category.classification === "flexible" ? "selected" : "" %>>Flexible</option>
-                  <option value="fixed" <%= category.classification === "fixed" ? "selected" : "" %>>Fixed</option>
-                </select>
-              </label>
-              <button class="button button--quiet" type="submit">Save</button>
-              <span class="save-status" role="status" data-save-status></span>
-            </form>
-            <div class="category-manager-row__meta">
-              <strong><%= category.path %></strong>
-              <small><%= category.transaction_count %> transaction<%= category.transaction_count === 1 ? "" : "s" %> · <%= category.budget_line_count %> budget line<%= category.budget_line_count === 1 ? "" : "s" %></small>
-              <% const sourceLabels = (category.aliases || []).map((alias) => alias.label).filter((label) => label !== category.path && label !== category.name); %>
-              <% if (sourceLabels.length) { %>
-                <details>
-                  <summary>Source and former labels</summary>
-                  <span><%= sourceLabels.join(" · ") %></span>
-                </details>
-              <% } %>
-            </div>
-          </article>
-        <% }) %>
-      </div>
-
-      <form class="category-merge-form" data-category-merge-form>
-        <div>
-          <h3>Merge selected categories</h3>
-          <p>The originals remain in the audit trail; old and future transactions resolve to the destination.</p>
-        </div>
-        <label>
-          <span>Destination</span>
-          <select name="destination_category_id" data-category-merge-destination>
-            <option value="__new__">Create a new destination</option>
-            <% settingsCategories.forEach((category) => { %>
-              <option value="<%= category.id %>"><%= category.path %></option>
-            <% }) %>
-          </select>
-        </label>
-        <div class="category-merge-form__new" data-category-merge-new>
-          <label>
-            <span>New name</span>
-            <input name="name" maxlength="100" placeholder="e.g. Gas" required>
-          </label>
-          <label>
-            <span>Parent</span>
-            <select name="parent_category_id">
-              <option value="">Top level</option>
-              <% settingsCategories.forEach((category) => { %>
-                <option value="<%= category.id %>"><%= category.path %></option>
-              <% }) %>
-            </select>
-          </label>
-          <label>
-            <span>Classification</span>
-            <select name="classification">
-              <option value="flexible">Flexible</option>
-              <option value="fixed">Fixed</option>
-            </select>
-          </label>
-        </div>
-        <div class="form-actions">
-          <span class="save-status" role="status" data-save-status></span>
-          <button class="button button--dark" type="submit">Merge selected</button>
-        </div>
-      </form>
     </section>
 
     <section id="insight-rules" class="card settings-card">

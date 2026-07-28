@@ -78,3 +78,47 @@ test("bulk selection checkboxes share one centerline", async ({ page }) => {
     }
   }
 });
+
+test("one transaction can change category without creating a rule", async ({
+  page,
+}) => {
+  let write;
+  await page.route(
+    "**/api/v1/transactions/batch-edit",
+    async (route) => {
+      write = route.request().postDataJSON();
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ updated_count: 1 }),
+      });
+    },
+  );
+  await page.goto("/transactions?transaction=txn_whole_foods");
+
+  const section = page.locator(".transaction-category-override");
+  const form = section.locator("[data-transaction-category-form]");
+  await expect(form).toBeVisible();
+  await expect(
+    section.getByText("No automatic cleanup rule is created"),
+  ).toBeVisible();
+  await form
+    .getByLabel("Spending category")
+    .selectOption({ label: "Dining" });
+  await Promise.all([
+    page.waitForRequest(
+      (request) =>
+        request.method() === "POST" &&
+        new URL(request.url()).pathname ===
+          "/api/v1/transactions/batch-edit",
+    ),
+    form
+      .getByRole("button", { name: "Save for this transaction" })
+      .click(),
+  ]);
+
+  expect(write).toEqual({
+    transaction_ids: ["txn_whole_foods"],
+    changes: { category_primary: "Dining" },
+  });
+});

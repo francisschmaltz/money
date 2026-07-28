@@ -1,0 +1,139 @@
+<div data-transaction-cleanup>
+  <section
+    class="card settings-card cleanup-rules"
+    data-cleanup-rules
+    data-cleanup-rule-payload="<%= JSON.stringify(settingsTransactionRules) %>"
+    aria-labelledby="cleanup-rules-heading"
+  >
+    <div class="cleanup-rules__heading">
+      <div>
+        <h2 id="cleanup-rules-heading">Automatic cleanup rules</h2>
+        <p>Match a normalized name exactly or by contained text. Exact rules always win over contains rules.</p>
+      </div>
+      <button class="button button--secondary" type="button" data-cleanup-rule-new>
+        <i class="ph ph-plus" aria-hidden="true"></i>
+        New rule
+      </button>
+    </div>
+
+    <p class="save-status cleanup-rules__status" role="status" data-cleanup-rule-status></p>
+    <div class="cleanup-rule-list" data-cleanup-rule-list>
+      <% settingsTransactionRules.forEach((rule) => {
+        const changeLabels = cleanupRuleChanges(rule);
+        const matchCount = Number(rule.matched_transaction_count) || 0;
+      %>
+        <article class="cleanup-rule-row <%= rule.enabled ? '' : 'cleanup-rule-row--disabled' %>" data-cleanup-rule="<%= rule.id %>">
+          <span class="cleanup-rule-row__icon"><i class="ph ph-magic-wand" aria-hidden="true"></i></span>
+          <span class="cleanup-rule-row__copy">
+            <strong><%= cleanupRuleMatcherLabel(rule) %> <%= cleanupRuleMatcherMode(rule) %> “<%= rule.matcher?.value %>”</strong>
+            <span><i class="ph ph-arrow-right" aria-hidden="true"></i> <%= changeLabels.join(" · ") %></span>
+            <small><%= matchCount %> matching posted transaction<%= matchCount === 1 ? "" : "s" %></small>
+          </span>
+          <span class="cleanup-rule-row__actions">
+            <label class="cleanup-rule-toggle">
+              <span class="sr-only"><%= rule.enabled ? "Disable" : "Enable" %> rule for <%= rule.matcher?.value %></span>
+              <input class="switch" type="checkbox" data-cleanup-rule-toggle <%= rule.enabled ? "checked" : "" %>>
+            </label>
+            <button class="button button--ghost" type="button" data-cleanup-rule-edit>Edit</button>
+            <button class="button button--ghost danger-action" type="button" data-cleanup-rule-delete aria-label="Delete rule for <%= rule.matcher?.value %>">
+              <i class="ph ph-trash" aria-hidden="true"></i>
+            </button>
+          </span>
+        </article>
+      <% }) %>
+    </div>
+    <div class="cleanup-rule-empty" data-cleanup-rule-empty <%= settingsTransactionRules.length ? "hidden" : "" %>>
+      <span class="empty-icon"><i class="ph ph-magic-wand" aria-hidden="true"></i></span>
+      <div>
+        <strong>No automatic rules yet</strong>
+        <p>Create one for a merchant or transaction name you clean up often.</p>
+      </div>
+    </div>
+
+    <dialog class="cleanup-rule-dialog" data-cleanup-rule-dialog aria-labelledby="cleanup-rule-dialog-title">
+      <form class="cleanup-rule-form" data-cleanup-rule-form>
+        <div class="cleanup-rule-dialog__heading">
+          <div>
+            <p class="eyebrow">Automatic cleanup</p>
+            <h3 id="cleanup-rule-dialog-title" data-cleanup-rule-dialog-title>New rule</h3>
+          </div>
+          <button class="icon-button" type="button" data-cleanup-rule-cancel aria-label="Close rule editor">
+            <i class="ph ph-x" aria-hidden="true"></i>
+          </button>
+        </div>
+        <input type="hidden" name="rule_id" data-cleanup-rule-id>
+
+        <div class="cleanup-rule-form__matcher">
+          <label>
+            <span>Match field</span>
+            <select name="matcher_field" data-cleanup-rule-matcher-field required>
+              <option value="normalized_merchant">Merchant</option>
+              <option value="normalized_name">Transaction name</option>
+            </select>
+          </label>
+          <label>
+            <span>Match type</span>
+            <select name="matcher_mode" data-cleanup-rule-matcher-mode required>
+              <option value="exact">Exact</option>
+              <option value="contains">Contains (fuzzy)</option>
+            </select>
+          </label>
+          <label>
+            <span>Match text</span>
+            <input name="matcher_value" type="text" maxlength="160" autocomplete="off" data-cleanup-rule-matcher-value required>
+          </label>
+          <small>Capitalization, punctuation, and extra spaces are normalized. Contains matches this text anywhere in the selected field; exact matches take priority.</small>
+        </div>
+
+        <fieldset>
+          <legend>Changes to apply</legend>
+          <label class="cleanup-edit-field">
+            <span class="cleanup-edit-field__toggle">
+              <input type="checkbox" data-cleanup-rule-change="display_name">
+              Rename merchant
+            </span>
+            <input name="display_name" type="text" maxlength="160" placeholder="Clean merchant name" data-cleanup-rule-display-name disabled>
+          </label>
+          <label class="cleanup-edit-field">
+            <span class="cleanup-edit-field__toggle">
+              <input type="checkbox" data-cleanup-rule-change="category_primary">
+              Set category
+            </span>
+            <select name="category_primary" data-cleanup-rule-category disabled>
+              <% cleanupCategories.forEach((label) => { %>
+                <option value="<%= label %>"><%= label %></option>
+              <% }) %>
+            </select>
+          </label>
+          <label class="cleanup-edit-field">
+            <span class="cleanup-edit-field__toggle">
+              <input type="checkbox" data-cleanup-rule-change="tags">
+              Replace tags
+            </span>
+            <input name="tags" type="text" maxlength="400" placeholder="household, reimbursable" data-cleanup-rule-tags disabled>
+            <small>Comma-separated. Leave empty to clear tags.</small>
+          </label>
+        </fieldset>
+
+        <% if (cleanupTagOptions.length) { %>
+          <div class="cleanup-known-tags" aria-label="Existing tags">
+            <span>Existing tags</span>
+            <% cleanupTagOptions.forEach((tag) => { %>
+              <button type="button" data-cleanup-rule-tag="<%= tag %>"><%= tag %></button>
+            <% }) %>
+          </div>
+        <% } %>
+
+        <label class="cleanup-rule-form__enabled">
+          <span><strong>Enabled</strong><small>Apply this rule to matching posted transactions.</small></span>
+          <input class="switch" name="enabled" type="checkbox" data-cleanup-rule-enabled checked>
+        </label>
+        <p class="save-status" role="status" data-cleanup-rule-form-status></p>
+        <div class="form-actions">
+          <button class="button button--ghost" type="button" data-cleanup-rule-cancel>Cancel</button>
+          <button class="button button--dark" type="submit" data-cleanup-rule-submit>Save rule</button>
+        </div>
+      </form>
+    </dialog>
+  </section>
+</div>

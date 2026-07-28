@@ -1394,6 +1394,25 @@ export function createApiRouter({
     },
   );
 
+  router.post(
+    "/api/v1/categories/:categoryId/split",
+    requireAdmin,
+    requireCsrf,
+    (request, response, next) => {
+      invokeWithActor(
+        financeService,
+        "splitSpendingCategory",
+        {
+          ...(request.body ?? {}),
+          category_id: request.params.categoryId,
+        },
+        request.user,
+        response,
+        next,
+      );
+    },
+  );
+
   router.put(
     "/api/v1/settings/insight-rules/:ruleId",
     requireAdmin,
@@ -1511,7 +1530,7 @@ function transactionCleanupRuleInput(body = {}) {
     typeof body.matcher !== "object" ||
     Array.isArray(body.matcher) ||
     Object.keys(body.matcher).some(
-      (key) => !["field", "value"].includes(key),
+      (key) => !["field", "mode", "value"].includes(key),
     ) ||
     !body.changes ||
     typeof body.changes !== "object" ||
@@ -1527,6 +1546,8 @@ function transactionCleanupRuleInput(body = {}) {
   if (!["normalized_merchant", "normalized_name"].includes(field)) {
     return null;
   }
+  const mode = body.matcher.mode ?? "exact";
+  if (!["exact", "contains"].includes(mode)) return null;
   if (typeof body.matcher.value !== "string") return null;
   const value = body.matcher.value.trim();
   if (!value || value.length > 160) return null;
@@ -1572,7 +1593,7 @@ function transactionCleanupRuleInput(body = {}) {
     return null;
   }
   return {
-    matcher: { field, value },
+    matcher: { field, mode, value },
     changes,
     ...(body.enabled === undefined ? {} : { enabled: body.enabled }),
   };

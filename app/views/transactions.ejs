@@ -86,8 +86,40 @@
             <div class="entity-detail-grid__wide"><dt>Provider transaction ID</dt><dd><code><%= selectedTransaction.providerTransactionId || "—" %></code></dd></div>
           </dl>
           <% if (viewer?.is_admin && selectedTransaction.status !== "pending") { %>
+            <%
+              const selectedCategory =
+                selectedTransaction.categoryValue ||
+                selectedTransaction.category;
+              const hasSelectedCategory = categories.some(
+                (category) => category.label === selectedCategory
+              );
+            %>
+            <section class="transaction-category-override" aria-labelledby="transaction-category-override-heading">
+              <div>
+                <h3 id="transaction-category-override-heading">Spending category</h3>
+                <p>Changes only this transaction. No automatic cleanup rule is created.</p>
+              </div>
+              <form
+                data-transaction-category-form
+                data-transaction-id="<%= selectedTransaction.id %>"
+              >
+                <label>
+                  <span class="sr-only">Spending category</span>
+                  <select name="category_primary" required>
+                    <% if (!hasSelectedCategory) { %>
+                      <option value="<%= selectedCategory %>" selected><%= selectedCategory %></option>
+                    <% } %>
+                    <% categories.forEach((category) => { %>
+                      <option value="<%= category.label %>" <%= category.label === selectedCategory ? "selected" : "" %>><%= category.label %></option>
+                    <% }) %>
+                  </select>
+                </label>
+                <button class="button button--secondary" type="submit">Save for this transaction</button>
+                <span class="form-status" role="status" data-transaction-category-status></span>
+              </form>
+            </section>
             <a class="selected-detail__link" href="/settings?transaction=<%= encodeURIComponent(selectedTransaction.id) %>#transaction-cleanup">
-              Clean up name, category &amp; tags <i class="ph ph-arrow-up-right" aria-hidden="true"></i>
+              Edit similar transactions or create a rule <i class="ph ph-arrow-up-right" aria-hidden="true"></i>
             </a>
           <% } %>
           <% if (
@@ -385,7 +417,7 @@
             Select all posted on this page
           </label>
           <strong data-bulk-selected-count>0 selected</strong>
-          <span class="transaction-selection-bar__limit">Up to 100 at once</span>
+          <span class="transaction-selection-bar__limit">Up to 100 · one-time edits only</span>
           <button class="button button--dark" type="button" data-bulk-edit-open disabled>Edit selected</button>
           <button class="button button--ghost" type="button" data-bulk-select-cancel>Cancel</button>
         </div>
@@ -412,9 +444,9 @@
           <form class="transaction-bulk-dialog__panel" data-bulk-edit-form>
             <header class="transaction-bulk-dialog__heading">
               <div>
-                <p class="card-kicker">Bulk edit</p>
+                <p class="card-kicker">One-time edit</p>
                 <h2 id="transaction-bulk-heading">Edit <span data-bulk-dialog-count>0</span> transactions</h2>
-                <p>Only checked fields are overridden. Amount, account, and provider dates stay untouched.</p>
+                <p>Only checked fields change on the selected transactions. No automatic cleanup rule is created; provider data stays untouched.</p>
               </div>
               <button class="icon-button" type="button" data-bulk-edit-close aria-label="Close bulk editor">
                 <i class="ph ph-x" aria-hidden="true"></i>
@@ -438,8 +470,8 @@
                   Category
                 </span>
                 <select disabled data-bulk-category>
-                  <% categories.forEach((category) => { const categoryValue = category.value ?? category.label; %>
-                    <option value="<%= categoryValue %>"><%= category.label %></option>
+                  <% categories.forEach((category) => { %>
+                    <option value="<%= category.label %>"><%= category.label %></option>
                   <% }) %>
                 </select>
               </label>
