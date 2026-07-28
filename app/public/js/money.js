@@ -1865,6 +1865,254 @@
     });
   }
 
+  function transactionBulkEdit() {
+    const root = document.querySelector("[data-bulk-transactions]");
+    if (!root) return;
+
+    const start = root.querySelector("[data-bulk-select-start]");
+    const selectionBar = root.querySelector("[data-bulk-selection-bar]");
+    const selectAll = root.querySelector("[data-bulk-select-all]");
+    const selectedCount = root.querySelector("[data-bulk-selected-count]");
+    const openEditor = root.querySelector("[data-bulk-edit-open]");
+    const dialog = root.querySelector("[data-bulk-edit-dialog]");
+    const form = root.querySelector("[data-bulk-edit-form]");
+    const dialogCount = root.querySelector("[data-bulk-dialog-count]");
+    const submit = root.querySelector("[data-bulk-edit-submit]");
+    const status = root.querySelector("[data-bulk-edit-status]");
+    const rows = [...root.querySelectorAll("[data-bulk-transaction-row]")];
+    const inputs = rows
+      .map((row) => row.querySelector("[data-bulk-transaction-select]"))
+      .filter(Boolean);
+    const editableInputs = inputs.filter((input) => !input.disabled);
+    const toggles = [
+      ...root.querySelectorAll("[data-bulk-change]"),
+    ];
+    const csrfToken =
+      document.querySelector('meta[name="csrf-token"]')?.content || "";
+    let selectionMode = false;
+
+    const selectedInputs = () =>
+      editableInputs.filter((input) => input.checked);
+
+    const updateSubmit = () => {
+      if (!submit) return;
+      submit.disabled =
+        selectedInputs().length === 0 ||
+        !toggles.some((toggle) => toggle.checked);
+    };
+
+    const updateSelection = () => {
+      const count = selectedInputs().length;
+      if (selectedCount) {
+        selectedCount.textContent = `${count} selected`;
+      }
+      if (dialogCount) dialogCount.textContent = String(count);
+      if (openEditor) {
+        openEditor.disabled = count === 0;
+        openEditor.textContent =
+          count === 0 ? "Edit selected" : `Edit ${count} selected`;
+      }
+      if (selectAll) {
+        selectAll.checked =
+          editableInputs.length > 0 && count === editableInputs.length;
+        selectAll.indeterminate =
+          count > 0 && count < editableInputs.length;
+      }
+      updateSubmit();
+    };
+
+    const setSelectionMode = (active) => {
+      selectionMode = active;
+      root.toggleAttribute("data-bulk-selection-mode", active);
+      if (start) start.hidden = active;
+      if (selectionBar) selectionBar.hidden = !active;
+      rows.forEach((row) => {
+        const control = row.querySelector(".transaction-select-control");
+        if (control) control.hidden = !active;
+      });
+      if (!active) {
+        editableInputs.forEach((input) => {
+          input.checked = false;
+        });
+        if (dialog?.open) dialog.close();
+      }
+      updateSelection();
+    };
+
+    const fieldForToggle = (toggle) => {
+      const fields = {
+        display_name: root.querySelector("[data-bulk-display-name]"),
+        category_primary: root.querySelector("[data-bulk-category]"),
+        tags: root.querySelector("[data-bulk-tags]"),
+        excluded_from_spending: root.querySelector(
+          "[data-bulk-excluded]",
+        ),
+        is_fixed: root.querySelector("[data-bulk-fixed]"),
+      };
+      return fields[toggle.dataset.bulkChange];
+    };
+
+    toggles.forEach((toggle) => {
+      const sync = () => {
+        const field = fieldForToggle(toggle);
+        if (field) field.disabled = !toggle.checked;
+        updateSubmit();
+      };
+      toggle.addEventListener("change", sync);
+      sync();
+    });
+
+    start?.addEventListener("click", () => {
+      setSelectionMode(true);
+      editableInputs[0]?.focus();
+    });
+
+    root
+      .querySelector("[data-bulk-select-cancel]")
+      ?.addEventListener("click", () => setSelectionMode(false));
+
+    selectAll?.addEventListener("change", () => {
+      editableInputs.forEach((input) => {
+        input.checked = selectAll.checked;
+      });
+      updateSelection();
+    });
+
+    inputs.forEach((input) =>
+      input.addEventListener("change", updateSelection),
+    );
+
+    rows.forEach((row) => {
+      row.querySelector(".transaction-row")?.addEventListener(
+        "click",
+        (event) => {
+          if (!selectionMode) return;
+          event.preventDefault();
+          const input = row.querySelector(
+            "[data-bulk-transaction-select]",
+          );
+          if (!input || input.disabled) return;
+          input.checked = !input.checked;
+          updateSelection();
+        },
+      );
+    });
+
+    openEditor?.addEventListener("click", () => {
+      if (!selectedInputs().length || !dialog) return;
+      if (status) status.textContent = "";
+      updateSelection();
+      dialog.showModal();
+      toggles[0]?.focus();
+    });
+
+    root.querySelectorAll("[data-bulk-edit-close]").forEach((button) => {
+      button.addEventListener("click", () => dialog?.close());
+    });
+    dialog?.addEventListener("click", (event) => {
+      if (event.target === dialog) dialog.close();
+    });
+
+    form?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const transactionIds = selectedInputs().map((input) => input.value);
+      const changes = {};
+      if (
+        root.querySelector('[data-bulk-change="display_name"]')?.checked
+      ) {
+        changes.display_name =
+          root.querySelector("[data-bulk-display-name]")?.value.trim() ||
+          null;
+      }
+      if (
+        root.querySelector('[data-bulk-change="category_primary"]')
+          ?.checked
+      ) {
+        const category =
+          root.querySelector("[data-bulk-category]")?.value || "";
+        if (!category) {
+          if (status) status.textContent = "Choose a category.";
+          return;
+        }
+        changes.category_primary = category;
+      }
+      if (root.querySelector('[data-bulk-change="tags"]')?.checked) {
+        changes.tags = [
+          ...new Map(
+            (
+              root.querySelector("[data-bulk-tags]")?.value || ""
+            )
+              .split(",")
+              .map((tag) => tag.trim())
+              .filter(Boolean)
+              .map((tag) => [tag.toLowerCase(), tag]),
+          ).values(),
+        ];
+      }
+      if (
+        root.querySelector(
+          '[data-bulk-change="excluded_from_spending"]',
+        )?.checked
+      ) {
+        changes.excluded_from_spending =
+          root.querySelector("[data-bulk-excluded]")?.value === "true";
+      }
+      if (root.querySelector('[data-bulk-change="is_fixed"]')?.checked) {
+        changes.is_fixed =
+          root.querySelector("[data-bulk-fixed]")?.value === "true";
+      }
+      if (!transactionIds.length || !Object.keys(changes).length) {
+        if (status) {
+          status.textContent =
+            "Select transactions and at least one field.";
+        }
+        return;
+      }
+
+      submit.disabled = true;
+      if (status) status.textContent = "Saving changes…";
+      try {
+        const response = await fetch(
+          "/api/v1/transactions/batch-edit",
+          {
+            method: "POST",
+            headers: {
+              Accept: "application/json",
+              "Content-Type": "application/json",
+              "X-CSRF-Token": csrfToken,
+            },
+            body: JSON.stringify({
+              transaction_ids: transactionIds,
+              changes,
+            }),
+          },
+        );
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(
+            payload.message ||
+              `Update failed with ${response.status}`,
+          );
+        }
+        const count = payload.updated_count ?? transactionIds.length;
+        if (status) {
+          status.textContent = `${count} transaction${
+            count === 1 ? "" : "s"
+          } updated`;
+        }
+        window.setTimeout(() => window.location.reload(), 500);
+      } catch (error) {
+        if (status) {
+          status.textContent =
+            error.message || "Couldn’t update transactions";
+        }
+        updateSubmit();
+      }
+    });
+
+    updateSelection();
+  }
+
   function insightActions() {
     const csrfToken =
       document.querySelector('meta[name="csrf-token"]')?.content || "";
@@ -3327,6 +3575,103 @@
     });
   }
 
+  function detailDialogs() {
+    const dialogs = [
+      ...document.querySelectorAll("[data-detail-dialog]"),
+    ];
+    const links = [
+      ...document.querySelectorAll("[data-detail-dialog-link]"),
+    ];
+    const scrollStorageKey = "money.detail-scroll.v1";
+
+    links.forEach((link) => {
+      link.addEventListener("click", (event) => {
+        if (
+          event.defaultPrevented ||
+          event.button !== 0 ||
+          event.metaKey ||
+          event.ctrlKey ||
+          event.shiftKey ||
+          event.altKey
+        ) {
+          return;
+        }
+        const destination = new URL(link.href, window.location.origin);
+        if (
+          destination.origin !== window.location.origin ||
+          destination.pathname !== window.location.pathname
+        ) {
+          return;
+        }
+        try {
+          window.sessionStorage.setItem(
+            scrollStorageKey,
+            JSON.stringify({
+              pathname: destination.pathname,
+              scrollY: window.scrollY,
+              savedAt: Date.now(),
+            }),
+          );
+        } catch {
+          // Scroll restoration is a convenience; the dialog still works.
+        }
+      });
+    });
+
+    if (!dialogs.length) return;
+
+    try {
+      const saved = JSON.parse(
+        window.sessionStorage.getItem(scrollStorageKey) || "null",
+      );
+      window.sessionStorage.removeItem(scrollStorageKey);
+      if (
+        saved?.pathname === window.location.pathname &&
+        Number.isFinite(saved.scrollY) &&
+        Date.now() - Number(saved.savedAt) < 30_000
+      ) {
+        window.scrollTo({ top: saved.scrollY, behavior: "auto" });
+      }
+    } catch {
+      // Ignore unavailable or malformed session storage.
+    }
+
+    dialogs.forEach((dialog) => {
+      const selectedLink = document.querySelector(
+        '[data-detail-dialog-link][aria-current="true"]',
+      );
+      const closeButton = dialog.querySelector(
+        "[data-detail-dialog-close]",
+      );
+
+      closeButton?.addEventListener("click", () => dialog.close());
+      dialog.addEventListener("click", (event) => {
+        if (event.target === dialog) dialog.close();
+      });
+      dialog.addEventListener("close", () => {
+        const queryKey = dialog.dataset.detailQueryKey;
+        if (queryKey) {
+          const url = new URL(window.location.href);
+          url.searchParams.delete(queryKey);
+          window.history.replaceState(
+            null,
+            "",
+            `${url.pathname}${url.search}${url.hash}`,
+          );
+        }
+        selectedLink?.focus();
+      });
+
+      if (
+        dialog.dataset.detailAutoOpen !== undefined &&
+        !dialog.open
+      ) {
+        dialog.showModal();
+        closeButton?.focus();
+      }
+    });
+  }
+
   function initialize() {
     localDateTimes();
     accountAliases();
@@ -3340,11 +3685,13 @@
     plaidLink();
     appleCardImport();
     exportTransactions();
+    transactionBulkEdit();
     insightActions();
     transactionCleanupRules();
     transactionCleanup();
     creditScoreTracking();
     planningForms();
+    detailDialogs();
   }
 
   if (document.readyState === "loading") {

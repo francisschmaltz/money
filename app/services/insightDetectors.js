@@ -7,6 +7,7 @@ import {
   shiftDateOnly,
 } from "./analytics.js";
 import { stableFindingId, stableFindingKey } from "./ids.js";
+import { isCashSecurity } from "./investmentSecurities.js";
 
 export function detectWeeklyInsights(
   transactions,
@@ -758,6 +759,7 @@ export function detectInvestmentInsights({
 
   for (const holding of portfolio.holdings) {
     if (!concentrationEnabled) break;
+    if (isCashSecurity(holding)) continue;
     if (holding.allocation_basis_points <= concentrationBasisPoints) continue;
     findings.push(
       genericFinding({
@@ -1402,7 +1404,9 @@ function valueAtOrBefore(series, date) {
 
 function holdingValueChanges(snapshots, currency) {
   const included = snapshots.filter(
-    (snapshot) => snapshot.currency_code === currency,
+    (snapshot) =>
+      snapshot.currency_code === currency &&
+      !isCashSecurity(snapshot),
   );
   if (!included.length) return [];
   const globalDates = [...new Set(included.map((snapshot) => snapshot.snapshot_on))].sort();

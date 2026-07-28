@@ -3,6 +3,7 @@ import { currencyFractionDigits } from "../currency.js";
 import {
   canonicalTransactionCategory,
 } from "../services/transactionCategories.js";
+import { canonicalSecurityType } from "../services/investmentSecurities.js";
 
 export function amountToMinor(amount, currency = "USD") {
   if (amount == null || !Number.isFinite(Number(amount))) return null;
@@ -127,7 +128,7 @@ export function normalizePlaidSecurity(security) {
     provider_security_id: security.security_id,
     name: security.name ?? security.ticker_symbol ?? "Security",
     ticker_symbol: security.ticker_symbol ?? null,
-    security_type: security.type ?? null,
+    security_type: canonicalSecurityType(security),
     close_price_minor: amountToMinor(security.close_price, currency),
     close_price_as_of: security.close_price_as_of ?? null,
     currency_code: currency,

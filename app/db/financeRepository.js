@@ -3790,6 +3790,11 @@ export class PgFinanceRepository {
       "categoryPrimary",
     );
     const hasTags = Object.hasOwn(changes, "tags");
+    const hasExcludedFromSpending = Object.hasOwn(
+      changes,
+      "excludedFromSpending",
+    );
+    const hasIsFixed = Object.hasOwn(changes, "isFixed");
     const normalizedTags = hasTags
       ? [
           ...new Map(
@@ -3890,6 +3895,52 @@ export class PgFinanceRepository {
             JSON.stringify(overrideRows),
             changes.categoryPrimary,
             userId,
+          ],
+        );
+      }
+
+      if (hasExcludedFromSpending || hasIsFixed) {
+        const overrideRows = ids.map((transactionId) => ({
+          id: randomUUID(),
+          transaction_id: transactionId,
+        }));
+        await client.query(
+          `
+            INSERT INTO categorization_overrides (
+              id, workspace_id, transaction_id,
+              excluded_from_spending, is_fixed, created_by
+            )
+            SELECT
+              row.id, $1, row.transaction_id, $3, $4, $5
+            FROM jsonb_to_recordset($2::jsonb) AS row(
+              id text,
+              transaction_id text
+            )
+            ON CONFLICT (workspace_id, transaction_id)
+              WHERE transaction_id IS NOT NULL
+            DO UPDATE SET
+              excluded_from_spending = CASE
+                WHEN $6::boolean
+                  THEN EXCLUDED.excluded_from_spending
+                ELSE categorization_overrides.excluded_from_spending
+              END,
+              is_fixed = CASE
+                WHEN $7::boolean
+                  THEN EXCLUDED.is_fixed
+                ELSE categorization_overrides.is_fixed
+              END,
+              updated_at = now()
+          `,
+          [
+            workspaceId,
+            JSON.stringify(overrideRows),
+            hasExcludedFromSpending
+              ? changes.excludedFromSpending
+              : null,
+            hasIsFixed ? changes.isFixed : null,
+            userId,
+            hasExcludedFromSpending,
+            hasIsFixed,
           ],
         );
       }
@@ -4228,6 +4279,7 @@ export class PgFinanceRepository {
           s.*,
           sec.name,
           sec.ticker_symbol,
+          sec.security_type,
           a.type AS account_type,
           a.subtype AS account_subtype,
           a.is_liability,
@@ -4252,6 +4304,7 @@ export class PgFinanceRepository {
       security_id: row.security_id,
       name: row.name,
       ticker_symbol: row.ticker_symbol,
+      security_type: row.security_type,
       snapshot_on: String(row.snapshot_on),
       value_minor: integer(row.value_minor),
       quantity: Number(row.quantity),
@@ -5556,6 +5609,7 @@ function mapTransaction(row) {
   const providerAmountMinor = integer(row.amount_minor);
   return {
     id: row.id,
+    provider_transaction_id: row.provider_transaction_id ?? null,
     account_id: row.account_id,
     account_name: row.account_name,
     account_mask: row.account_mask,

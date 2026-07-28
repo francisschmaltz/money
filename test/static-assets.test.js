@@ -21,9 +21,9 @@ test("first-party asset revisions change with the current deployment", async () 
     path.resolve("app/views/partials/head.ejs"),
     "utf8",
   );
-  assert.match(head, /\/css\/money\.css\?v=21/);
+  assert.match(head, /\/css\/money\.css\?v=24/);
   assert.match(head, /\/js\/charts\.js\?v=5/);
-  assert.match(head, /\/js\/money\.js\?v=17/);
+  assert.match(head, /\/js\/money\.js\?v=19/);
 });
 
 test("manual asset entry accepts formatted money and refreshes saved production data", async () => {
@@ -91,6 +91,50 @@ test("page centering reserves a stable scrollbar gutter", async () => {
   assert.match(
     money,
     /html\s*\{[^}]*scrollbar-gutter:\s*stable;/,
+  );
+});
+
+test("entity detail dialogs open natively and clear their selection URL on close", async () => {
+  const money = await readFile(
+    path.resolve("app/public/js/money.js"),
+    "utf8",
+  );
+
+  assert.match(money, /function detailDialogs\(\)/);
+  assert.match(money, /dialog\.showModal\(\)/);
+  assert.match(money, /url\.searchParams\.delete\(queryKey\)/);
+  assert.match(money, /selectedLink\?\.focus\(\)/);
+});
+
+test("transaction bulk editing sends only selected override fields", async () => {
+  const money = await readFile(
+    path.resolve("app/public/js/money.js"),
+    "utf8",
+  );
+  const start = money.indexOf("function transactionBulkEdit()");
+  const end = money.indexOf("function insightActions()", start);
+  const bulkEdit = money.slice(start, end);
+
+  assert.ok(start >= 0);
+  assert.ok(end > start);
+  assert.match(bulkEdit, /data-bulk-transaction-select/);
+  assert.match(bulkEdit, /data-bulk-change/);
+  assert.match(bulkEdit, /excluded_from_spending/);
+  assert.match(bulkEdit, /is_fixed/);
+  assert.match(bulkEdit, /\/api\/v1\/transactions\/batch-edit/);
+  assert.match(bulkEdit, /transaction_ids: transactionIds/);
+  assert.match(bulkEdit, /window\.location\.reload\(\)/);
+});
+
+test("future equity keeps the standard card spacing", async () => {
+  const money = await readFile(
+    path.resolve("app/public/css/money.css"),
+    "utf8",
+  );
+
+  assert.match(
+    money,
+    /\.future-equity-card\s*\{[^}]*margin-top:\s*18px;/,
   );
 });
 

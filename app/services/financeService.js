@@ -27,6 +27,10 @@ import {
   normalizeTransactionName,
 } from "../providers/plaidNormalizer.js";
 import {
+  cashCurrencyCode,
+  isCashSecurity,
+} from "./investmentSecurities.js";
+import {
   buildCreditScoreSummary,
   CREDIT_SCORE_PRESETS,
 } from "./creditScoreTracking.js";
@@ -1245,6 +1249,10 @@ export class FinanceService {
       "category_primary",
       "categoryPrimary",
       "tags",
+      "excluded_from_spending",
+      "excludedFromSpending",
+      "is_fixed",
+      "isFixed",
     ]);
     if (
       Object.keys(rawChanges).some(
@@ -1278,6 +1286,24 @@ export class FinanceService {
     if (Object.hasOwn(rawChanges, "tags")) {
       changes.tags = validateTransactionTags(rawChanges.tags);
     }
+    for (const [snakeCase, camelCase] of [
+      ["excluded_from_spending", "excludedFromSpending"],
+      ["is_fixed", "isFixed"],
+    ]) {
+      if (
+        !Object.hasOwn(rawChanges, snakeCase) &&
+        !Object.hasOwn(rawChanges, camelCase)
+      ) {
+        continue;
+      }
+      const value = Object.hasOwn(rawChanges, snakeCase)
+        ? rawChanges[snakeCase]
+        : rawChanges[camelCase];
+      if (typeof value !== "boolean") {
+        throw new TypeError(`${snakeCase} must be a boolean`);
+      }
+      changes[camelCase] = value;
+    }
     if (!Object.keys(changes).length) {
       throw new TypeError("At least one transaction change is required");
     }
@@ -1299,7 +1325,11 @@ export class FinanceService {
         "One or more posted transactions could not be found",
       );
     }
-    if (Object.hasOwn(changes, "categoryPrimary")) {
+    if (
+      Object.hasOwn(changes, "categoryPrimary") ||
+      Object.hasOwn(changes, "excludedFromSpending") ||
+      Object.hasOwn(changes, "isFixed")
+    ) {
       await this.#enqueueRecompute();
     }
     return {
@@ -2087,14 +2117,17 @@ export class FinanceService {
           scope: query.scope ?? "all",
         }),
       ]);
+      const webHoldings = portfolio.data.holdings.map(webHolding);
       return {
         ...base,
         overview: webOverview(overview.data),
-        holdings: portfolio.data.holdings.map(webHolding),
-        allocation: portfolio.data.holdings.map((holding) => ({
-          label: holding.ticker_symbol ?? holding.name,
-          value: holding.allocation_basis_points / 100,
-        })),
+        holdings: webHoldings,
+        allocation: webHoldings
+          .filter((holding) => holding.value.amount_minor > 0)
+          .map((holding) => ({
+            label: holding.symbol,
+            value: holding.allocation,
+          })),
         portfolioSeries: portfolio.data.series.map(
           (point) => point.value.amount_minor,
         ),
@@ -2359,6 +2392,8 @@ function transactionCard(transaction) {
     transaction.name;
   return {
     id: transaction.id,
+    provider_transaction_id:
+      transaction.provider_transaction_id ?? null,
     date: transaction.posted_on,
     authorized_at: transaction.authorized_at,
     authorized_on: transaction.authorized_on,
@@ -2389,6 +2424,12 @@ function transactionCard(transaction) {
       transaction.split_category_line_count ?? 0,
     ),
     pending: transaction.pending,
+    cardholder_name: transaction.cardholder_name ?? null,
+    source_transaction_type:
+      transaction.source_transaction_type ?? null,
+    payment_channel: transaction.payment_channel ?? null,
+    original_transaction_id:
+      transaction.original_transaction_id ?? null,
     excluded_from_spending: Boolean(transaction.excluded_from_spending),
     is_fixed: Boolean(transaction.is_fixed),
     split_version: Number(transaction.split_version ?? 0),
@@ -2847,10 +2888,10 @@ function validateTransactionIds(value) {
   if (
     !Array.isArray(value) ||
     value.length < 1 ||
-    value.length > 50
+    value.length > 100
   ) {
     throw new TypeError(
-      "transaction_ids must contain between 1 and 50 IDs",
+      "transaction_ids must contain between 1 and 100 IDs",
     );
   }
   const ids = value.map((id) => requiredId(id, "transaction_id"));
@@ -3351,6 +3392,8 @@ function webTransaction(transaction) {
   const dateIso = transactionDateOnly(transaction, dateTime);
   return {
     id: transaction.id,
+    providerTransactionId:
+      transaction.provider_transaction_id ?? null,
     merchant: transaction.merchant ?? transaction.description,
     displayName:
       transaction.display_name ??
@@ -3361,8 +3404,12 @@ function webTransaction(transaction) {
     tags: Array.isArray(transaction.tags) ? transaction.tags : [],
     category,
     categoryValue,
+    detailedCategoryValue:
+      transaction.detailed_category ?? null,
     account: transaction.account.name,
     accountId: transaction.account.id,
+    accountMask: transaction.account.mask ?? null,
+    institution: transaction.account.institution ?? null,
     amount: transaction.amount,
     providerAmount:
       transaction.provider_amount ?? transaction.amount,
@@ -3375,7 +3422,17 @@ function webTransaction(transaction) {
     date: formatShortDate(dateIso, { year: true }),
     dateIso,
     dateTime,
+    authorizedAt: transaction.authorized_at ?? null,
+    authorizedOn: transaction.authorized_on ?? null,
+    postedAt: transaction.posted_at ?? null,
+    postedOn: transaction.date ?? dateIso,
     status: transaction.pending ? "pending" : "posted",
+    cardholderName: transaction.cardholder_name ?? null,
+    sourceTransactionType:
+      transaction.source_transaction_type ?? null,
+    paymentChannel: transaction.payment_channel ?? null,
+    originalTransactionId:
+      transaction.original_transaction_id ?? null,
     excludedFromSpending: transaction.excluded_from_spending,
     isFixed: transaction.is_fixed,
     splitVersion: Number(transaction.split_version ?? 0),
@@ -3471,13 +3528,33 @@ function webRecurring(stream) {
 }
 
 function webHolding(holding) {
+  const isCash = isCashSecurity(holding);
+  const cashCurrency =
+    cashCurrencyCode(holding) ?? holding.value?.currency ?? "USD";
+  const selectionKey = holding.ticker_symbol ?? holding.name;
   return {
-    symbol: holding.ticker_symbol ?? holding.name,
-    name: holding.name,
+    id: holding.id,
+    securityId: holding.security_id,
+    accountId: holding.account_id ?? null,
+    account: holding.account_name ?? null,
+    selectionKey,
+    symbol: isCash ? "Cash" : selectionKey,
+    badge: isCash
+      ? cashCurrency === "USD"
+        ? "$"
+        : cashCurrency
+      : selectionKey.slice(0, 4),
+    name: isCash ? `${cashCurrency} balance` : holding.name,
+    isCash,
+    securityType: holding.security_type ?? null,
+    balanceGroup: holding.balance_group ?? null,
     value: holding.value,
+    costBasis: holding.cost_basis ?? null,
+    price: holding.price ?? null,
+    priceAsOf: holding.price_as_of ?? null,
     allocation: holding.allocation_basis_points / 100,
     change: 0,
-    shares: String(holding.quantity ?? "—"),
+    shares: isCash ? null : String(holding.quantity ?? "—"),
   };
 }
 

@@ -192,12 +192,12 @@ const categories = [
 ];
 
 const holdings = [
-  { symbol: "VTI", name: "Vanguard Total Stock Market ETF", value: usd(3827442), allocation: 31, change: 2.4, shares: "14.82", scope: "trading" },
-  { symbol: "VXUS", name: "Vanguard Total International Stock ETF", value: usd(2455810), allocation: 20, change: 1.1, shares: "38.41", scope: "trading" },
-  { symbol: "VMFXX", name: "Vanguard Federal Money Market", value: usd(59689), allocation: 0.5, change: 0.1, shares: "596.89", scope: "trading" },
-  { symbol: "BND", name: "Vanguard Total Bond Market ETF", value: usd(2061884), allocation: 17, change: -0.3, shares: "27.95", scope: "retirement" },
-  { symbol: "AAPL", name: "Apple Inc.", value: usd(1790441), allocation: 14, change: 3.8, shares: "8.46", scope: "retirement" },
-  { symbol: "Other", name: "Retirement target-date funds", value: usd(2172283), allocation: 17.5, change: 0.7, shares: "—", scope: "retirement" },
+  { id: "holding_vti", securityId: "security_vti", symbol: "VTI", name: "Vanguard Total Stock Market ETF", account: "Brokerage", securityType: "equity", value: usd(3827442), costBasis: usd(3050400), price: usd(258262), priceAsOf: "2026-07-26", allocation: 31, change: 2.4, shares: "14.82", scope: "trading" },
+  { id: "holding_vxus", securityId: "security_vxus", symbol: "VXUS", name: "Vanguard Total International Stock ETF", account: "Brokerage", securityType: "equity", value: usd(2455810), costBasis: usd(1943400), price: usd(63937), priceAsOf: "2026-07-26", allocation: 20, change: 1.1, shares: "38.41", scope: "trading" },
+  { id: "holding_vmfxx", securityId: "security_vmfxx", symbol: "VMFXX", name: "Vanguard Federal Money Market", account: "Brokerage", securityType: "cash", value: usd(59689), costBasis: usd(59689), price: usd(100), priceAsOf: "2026-07-26", allocation: 0.5, change: 0.1, shares: "596.89", scope: "trading" },
+  { id: "holding_bnd", securityId: "security_bnd", symbol: "BND", name: "Vanguard Total Bond Market ETF", account: "Roth IRA", securityType: "fixed_income", value: usd(2061884), costBasis: usd(1640000), price: usd(73770), priceAsOf: "2026-07-26", allocation: 17, change: -0.3, shares: "27.95", scope: "retirement" },
+  { id: "holding_aapl", securityId: "security_aapl", symbol: "AAPL", name: "Apple Inc.", account: "Roth IRA", securityType: "equity", value: usd(1790441), costBasis: usd(1435000), price: usd(211636), priceAsOf: "2026-07-26", allocation: 14, change: 3.8, shares: "8.46", scope: "retirement" },
+  { id: "holding_target", securityId: "security_target", symbol: "Other", name: "Retirement target-date funds", account: "401(k)", securityType: "mixed", value: usd(2172283), costBasis: usd(1745400), price: null, priceAsOf: "2026-07-26", allocation: 17.5, change: 0.7, shares: "—", scope: "retirement" },
 ];
 
 export function buildDemoModel() {
@@ -1093,7 +1093,69 @@ function demoServiceTransactionForWeb(transaction, demo) {
       transaction.account_id ??
       stored?.accountId ??
       null,
+    accountMask:
+      transaction.account?.mask ??
+      transaction.account_mask ??
+      stored?.accountMask ??
+      null,
+    institution:
+      transaction.account?.institution ??
+      transaction.institution_name ??
+      stored?.institution ??
+      null,
     amount: transaction.amount ?? stored?.amount,
+    providerAmount:
+      transaction.provider_amount ??
+      stored?.providerAmount ??
+      transaction.amount ??
+      stored?.amount,
+    providerTransactionId:
+      transaction.provider_transaction_id ??
+      stored?.providerTransactionId ??
+      null,
+    detailedCategoryValue:
+      transaction.category_detailed ??
+      stored?.detailedCategoryValue ??
+      null,
+    authorizedAt:
+      transaction.authorized_at ??
+      stored?.authorizedAt ??
+      null,
+    authorizedOn:
+      transaction.authorized_on ??
+      stored?.authorizedOn ??
+      null,
+    postedAt:
+      transaction.posted_at ??
+      stored?.postedAt ??
+      null,
+    postedOn:
+      transaction.posted_on ??
+      stored?.postedOn ??
+      dateIso,
+    paymentChannel:
+      transaction.payment_channel ??
+      stored?.paymentChannel ??
+      null,
+    sourceTransactionType:
+      transaction.source_transaction_type ??
+      stored?.sourceTransactionType ??
+      null,
+    cardholderName:
+      transaction.cardholder_name ??
+      stored?.cardholderName ??
+      null,
+    originalTransactionId:
+      transaction.original_transaction_id ??
+      stored?.originalTransactionId ??
+      null,
+    excludedFromSpending:
+      Boolean(
+        transaction.excluded_from_spending ??
+        stored?.excludedFromSpending,
+      ),
+    isFixed:
+      Boolean(transaction.is_fixed ?? stored?.isFixed),
     icon: stored?.icon ?? "ph-receipt",
     status:
       transaction.pending === true ||

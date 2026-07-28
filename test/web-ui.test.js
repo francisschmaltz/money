@@ -75,7 +75,7 @@ test("Plaid OAuth callback renders a resumable authenticated return page", async
   assert.match(response.text, /data-page="plaid-oauth"/);
   assert.match(response.text, /data-plaid-oauth-return/);
   assert.match(response.text, /Returning to Plaid/);
-  assert.match(response.text, /\/js\/money\.js\?v=17/);
+  assert.match(response.text, /\/js\/money\.js\?v=19/);
   assert.doesNotMatch(response.text, /data-search-dialog/);
 });
 
@@ -284,6 +284,44 @@ test("transactions puts detailed spending analysis before the ledger", async () 
   assert.match(feeFilteredHtml, /Personal Loan Interest/);
 });
 
+test("transaction ledger supports selecting rows and choosing bulk overrides", async () => {
+  const html = await render("transactions", {
+    pageTitle: "Transactions",
+    activePath: "/transactions",
+  });
+
+  assert.match(html, /data-bulk-select-start/);
+  assert.match(html, /> Select &amp; edit/);
+  assert.match(html, /data-bulk-selection-bar hidden/);
+  assert.match(html, /data-bulk-transaction-select/);
+  assert.match(html, /data-bulk-edit-dialog/);
+  assert.match(html, /Fields to override/);
+  for (const field of [
+    "display_name",
+    "category_primary",
+    "tags",
+    "excluded_from_spending",
+    "is_fixed",
+  ]) {
+    assert.match(
+      html,
+      new RegExp(`data-bulk-change="${field}"`),
+    );
+  }
+  assert.match(
+    html,
+    /Amount, account, and provider dates stay untouched/,
+  );
+
+  const memberHtml = await render("transactions", {
+    pageTitle: "Transactions",
+    activePath: "/transactions",
+    viewer: { ...demo.viewer, is_admin: false },
+  });
+  assert.doesNotMatch(memberHtml, /data-bulk-select-start/);
+  assert.doesNotMatch(memberHtml, /data-bulk-edit-dialog/);
+});
+
 test("selected transactions link administrators to Settings cleanup", async () => {
   const html = await render("transactions", {
     pageTitle: "Transactions",
@@ -296,6 +334,15 @@ test("selected transactions link administrators to Settings cleanup", async () =
     /href="\/settings\?transaction=txn_whole_foods#transaction-cleanup"/,
   );
   assert.match(html, /Clean up name, category &amp; tags/);
+  assert.match(
+    html,
+    /<dialog[\s\S]*data-detail-query-key="transaction"/,
+  );
+  assert.match(html, /data-detail-auto-open/);
+  assert.match(html, /<dt>Original merchant<\/dt><dd>WHOLE FOODS MKT #1024<\/dd>/);
+  assert.match(html, /<dt>Statement description<\/dt><dd>WHOLE FOODS MKT #1024<\/dd>/);
+  assert.match(html, /data-detail-dialog-close aria-label="Close transaction details"/);
+  assert.match(html, /data-detail-dialog-link/);
   assert.doesNotMatch(html, /data-transaction-classification/);
 });
 
@@ -512,6 +559,31 @@ test("portfolio exposes all, trading, and retirement views while preserving peri
   );
 });
 
+test("selected holdings open a detail dialog with position facts", async () => {
+  const selectedHolding = demo.holdings[0];
+  const html = await render("portfolio", {
+    pageTitle: "Portfolio",
+    activePath: "/portfolio",
+    query: { period: "1m", scope: "all", holding: selectedHolding.symbol },
+    selectedHolding,
+  });
+
+  assert.match(
+    html,
+    /<dialog[\s\S]*data-detail-query-key="holding"/,
+  );
+  assert.match(html, /data-detail-auto-open/);
+  assert.match(html, /<dt>Account<\/dt><dd>Brokerage<\/dd>/);
+  assert.match(html, /<dt>Shares<\/dt><dd>14\.82<\/dd>/);
+  assert.match(html, /<dt>Cost basis<\/dt><dd>\$30,504\.00<\/dd>/);
+  assert.match(html, /<dt>Holding ID<\/dt><dd><code>holding_vti<\/code>/);
+  assert.match(
+    html,
+    /data-detail-dialog-link\s+aria-current="true"/,
+  );
+  assert.doesNotMatch(html, /<section class="card selected-detail"/);
+});
+
 test("portfolio renders future equity only when Plaid exposes a positive value", async () => {
   const portfolioData = {
     scope: "trading",
@@ -542,6 +614,10 @@ test("portfolio renders future equity only when Plaid exposes a positive value",
           name: "Acme Corp.",
           ticker_symbol: "ACME",
           unvested_quantity: 4.25,
+          estimated_share_price: {
+            amount_minor: 100_000,
+            currency: "USD",
+          },
           value: {
             amount_minor: 425_000,
             currency: "USD",
@@ -557,13 +633,20 @@ test("portfolio renders future equity only when Plaid exposes a positive value",
     activePath: "/portfolio",
     query: { period: "1m", scope: "trading" },
     portfolioData,
+    allocation: [{ label: "CUR:USD", value: 100 }],
   });
 
   assert.match(html, /id="future-equity-heading">Future equity</);
   assert.match(html, /aria-label="Unvested equity holdings"/);
   assert.match(html, /Company stock plan/);
   assert.match(html, />\s*4\.25\s*</);
+  assert.match(html, /Estimated share price/);
+  assert.match(html, /\$1,000\.00/);
   assert.match(html, /\$4,250\.00/);
+  assert.match(
+    html,
+    /allocation-chart__center"><strong>1<\/strong><span>holdings<\/span>/,
+  );
   assert.match(
     html,
     /Estimated at the provider’s reported price\. Not included in current portfolio value\./,

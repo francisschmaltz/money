@@ -1,3 +1,8 @@
+import {
+  canonicalSecurityType,
+  isCashSecurity,
+} from "./investmentSecurities.js";
+
 const DAY_MS = 86_400_000;
 
 export const BALANCE_GROUPS = Object.freeze([
@@ -908,9 +913,11 @@ export function buildPortfolioSummary({
   const holdingsResult = holdingSplits.map(({ holding, split }) => ({
     id: holding.id,
     security_id: holding.security_id,
+    account_id: holding.account_id,
+    account_name: holding.account_name ?? null,
     name: holding.name,
     ticker_symbol: holding.ticker_symbol,
-    security_type: holding.security_type,
+    security_type: canonicalSecurityType(holding),
     balance_group: holding.balance_group ?? null,
     value: money(split.current_value_minor, currency),
     cost_basis:
@@ -921,6 +928,11 @@ export function buildPortfolioSummary({
     quantity: split.observed
       ? holding.vested_quantity ?? null
       : holding.quantity,
+    price:
+      Number.isSafeInteger(holding.price_minor) &&
+      holding.price_minor > 0
+        ? money(holding.price_minor, currency)
+        : null,
     allocation_basis_points:
       total === 0
         ? 0
@@ -940,6 +952,11 @@ export function buildPortfolioSummary({
       name: holding.name,
       ticker_symbol: holding.ticker_symbol,
       unvested_quantity: split.unvested_quantity,
+      estimated_share_price:
+        Number.isSafeInteger(holding.price_minor) &&
+        holding.price_minor > 0
+          ? money(holding.price_minor, currency)
+          : null,
       value: money(split.future_value_minor, currency),
       observed_at: holding.as_of ?? null,
       valuation_basis: split.valuation_basis,
@@ -955,7 +972,8 @@ export function buildPortfolioSummary({
 
   const allocationGroups = new Map();
   for (const { holding, split } of holdingSplits) {
-    const key = holding.security_type ?? "other";
+    if (split.current_value_minor <= 0) continue;
+    const key = canonicalSecurityType(holding) ?? "other";
     allocationGroups.set(
       key,
       (allocationGroups.get(key) ?? 0) +
@@ -1060,11 +1078,13 @@ export function buildPortfolioSummary({
     Boolean(first) &&
     differenceInDays(first.timestamp, dateOnly(now)) >= 7 &&
     hasContinuousSnapshotCoverage(series) &&
-    includedHoldings.every(
-      (holding) =>
-        holding.close_price_as_of != null &&
-        differenceInDays(holding.close_price_as_of, dateOnly(now)) <= 3,
-    ) &&
+    includedHoldings
+      .filter((holding) => !isCashSecurity(holding))
+      .every(
+        (holding) =>
+          holding.close_price_as_of != null &&
+          differenceInDays(holding.close_price_as_of, dateOnly(now)) <= 3,
+      ) &&
     !vestingPerformanceUnreliable;
   const estimatedGain =
     completeHistory && first
@@ -1080,12 +1100,16 @@ export function buildPortfolioSummary({
   const warnings = [];
   if (!series.length) warnings.push("Portfolio history begins after the first local snapshot.");
   if (
-    includedHoldings.some((holding) => holding.cost_basis_minor == null)
+    includedHoldings.some(
+      (holding) =>
+        !isCashSecurity(holding) && holding.cost_basis_minor == null,
+    )
   ) {
     warnings.push("Some holdings are missing cost basis.");
   }
   if (
     includedHoldings.some((holding) => {
+      if (isCashSecurity(holding)) return false;
       if (!holding.close_price_as_of) return true;
       return differenceInDays(holding.close_price_as_of, dateOnly(now)) > 3;
     })

@@ -488,6 +488,8 @@ test("transaction cleanup routes enforce admin mutations and preserve omitted ch
       changes: {
         display_name: "  Whole Foods  ",
         tags: ["Groceries", "Reimbursable"],
+        excluded_from_spending: true,
+        is_fixed: false,
       },
     })
     .expect(200);
@@ -514,6 +516,8 @@ test("transaction cleanup routes enforce admin mutations and preserve omitted ch
         changes: {
           display_name: "Whole Foods",
           tags: ["Groceries", "Reimbursable"],
+          excluded_from_spending: true,
+          is_fixed: false,
         },
       },
       actor,
@@ -557,7 +561,7 @@ test("transaction cleanup routes reject empty searches and malformed batches", a
     .post("/api/v1/transactions/batch-edit")
     .send({
       transaction_ids: Array.from(
-        { length: 51 },
+        { length: 101 },
         (_, index) => `txn_${index}`,
       ),
       changes: { tags: [] },

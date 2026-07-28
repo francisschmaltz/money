@@ -1317,7 +1317,7 @@ function transactionBatchEditInput(body = {}) {
   if (
     !Array.isArray(body.transaction_ids) ||
     body.transaction_ids.length < 1 ||
-    body.transaction_ids.length > 50 ||
+    body.transaction_ids.length > 100 ||
     !body.changes ||
     typeof body.changes !== "object" ||
     Array.isArray(body.changes)
@@ -1356,6 +1356,11 @@ function transactionBatchEditInput(body = {}) {
     const value = rawValue.trim();
     if (!value || value.length > 100) return null;
     changes.category_primary = value;
+  }
+  for (const field of ["excluded_from_spending", "is_fixed"]) {
+    if (!Object.hasOwn(body.changes, field)) continue;
+    if (typeof body.changes[field] !== "boolean") return null;
+    changes[field] = body.changes[field];
   }
 
   if (Object.hasOwn(body.changes, "tags")) {

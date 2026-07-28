@@ -515,6 +515,9 @@ const transactions = [
     date: "2026-07-25",
     merchant: "Whole Foods Market",
     description: "Whole Foods Market",
+    raw_merchant: "WHOLE FOODS MKT #1024",
+    raw_name: "WHOLE FOODS MKT #1024",
+    display_name: "Whole Foods Market",
     category: "Groceries",
     account: {
       id: "account_checking",
@@ -583,8 +586,8 @@ const DEMO_TRANSACTION_CLEANUP_RULES = Object.freeze([
     id: "cleanup_rule_demo_whole_foods",
     matcher: {
       field: "normalized_merchant",
-      value: "Whole Foods Market",
-      normalized_value: "whole foods market",
+      value: "WHOLE FOODS MKT #1024",
+      normalized_value: "whole foods mkt",
     },
     changes: {
       display_name: "Whole Foods Market",
@@ -1635,11 +1638,15 @@ export class DemoFinanceService {
         Number(options.holdingsLimit ?? options.holdings_limit) || 50,
       ),
     );
+    const accountCards = this.#accountCards();
     const accountGroups = new Map(
-      this.#accountCards().map((account) => [
+      accountCards.map((account) => [
         account.id,
         account.balance_group,
       ]),
+    );
+    const accountNames = new Map(
+      accountCards.map((account) => [account.id, account.name]),
     );
     const enriched = portfolioHoldings.map((holding) => ({
       ...holding,
@@ -1698,6 +1705,8 @@ export class DemoFinanceService {
     const holdingCards = scoped.slice(0, holdingsLimit).map((holding) => ({
       id: holding.id,
       security_id: holding.security_id,
+      account_id: holding.account_id,
+      account_name: accountNames.get(holding.account_id) ?? null,
       name: holding.name,
       ticker_symbol: holding.ticker_symbol,
       symbol: holding.ticker_symbol,
@@ -1708,6 +1717,10 @@ export class DemoFinanceService {
         Math.round(holding.start_value_minor * 0.82),
       ),
       quantity: holding.quantity,
+      price:
+        holding.quantity > 0
+          ? money(Math.round(holding.value_minor / holding.quantity))
+          : null,
       allocation_basis_points:
         total === 0
           ? 0
@@ -2150,7 +2163,7 @@ export class DemoFinanceService {
     if (
       !Array.isArray(transactionIds) ||
       transactionIds.length === 0 ||
-      transactionIds.length > 50 ||
+      transactionIds.length > 100 ||
       new Set(transactionIds).size !== transactionIds.length ||
       !changes ||
       typeof changes !== "object" ||
@@ -2182,6 +2195,8 @@ export class DemoFinanceService {
       "display_name",
       "category_primary",
       "tags",
+      "excluded_from_spending",
+      "is_fixed",
     ].filter((field) => Object.hasOwn(changes, field));
     if (recognizedChanges.length === 0) {
       const error = new TypeError("At least one change is required");
@@ -2201,6 +2216,16 @@ export class DemoFinanceService {
         new Set(tags).size !== tags.length
       ) {
         const error = new TypeError("tags must be unique, nonblank strings");
+        error.statusCode = 400;
+        throw error;
+      }
+    }
+    for (const field of ["excluded_from_spending", "is_fixed"]) {
+      if (
+        Object.hasOwn(changes, field) &&
+        typeof changes[field] !== "boolean"
+      ) {
+        const error = new TypeError(`${field} must be a boolean`);
         error.statusCode = 400;
         throw error;
       }
@@ -2237,6 +2262,15 @@ export class DemoFinanceService {
         for (const tag of tags) {
           this.#availableTransactionTags.add(tag);
         }
+      }
+      if (Object.hasOwn(changes, "excluded_from_spending")) {
+        manual.add("excluded_from_spending");
+        transaction.excluded_from_spending =
+          changes.excluded_from_spending;
+      }
+      if (Object.hasOwn(changes, "is_fixed")) {
+        manual.add("is_fixed");
+        transaction.is_fixed = changes.is_fixed;
       }
     }
     this.#refreshTransactionCleanupRuleApplications();

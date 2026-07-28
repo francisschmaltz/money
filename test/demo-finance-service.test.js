@@ -210,8 +210,8 @@ test("demo transaction matching exposes raw facts and ranked editable rows", asy
 
   assert.equal(result.query, "apple");
   assert.equal(result.anchor.id, "txn_whole_foods");
-  assert.equal(result.anchor.raw_merchant, "Whole Foods Market");
-  assert.equal(result.anchor.raw_name, "Whole Foods Market");
+  assert.equal(result.anchor.raw_merchant, "WHOLE FOODS MKT #1024");
+  assert.equal(result.anchor.raw_name, "WHOLE FOODS MKT #1024");
   assert.equal(result.anchor.preselected, true);
   assert.deepEqual(
     result.matches.map((match) => match.id),
@@ -234,6 +234,8 @@ test("demo batch edits are atomic and immediately affect transactions and search
       display_name: "Household purchase",
       category_primary: "Household",
       tags: ["Reimbursable", "Shared"],
+      excluded_from_spending: true,
+      is_fixed: true,
     },
   });
 
@@ -251,6 +253,8 @@ test("demo batch edits are atomic and immediately affect transactions and search
       (transaction) =>
         transaction.display_name === "Household purchase" &&
         transaction.category_primary === "Household" &&
+        transaction.excluded_from_spending === true &&
+        transaction.is_fixed === true &&
         transaction.raw_merchant !== "Household purchase",
     ),
   );
@@ -296,7 +300,7 @@ test("demo batch edits are atomic and immediately affect transactions and search
   await assert.rejects(
     freshService.batchEditTransactions({
       transaction_ids: Array.from(
-        { length: 51 },
+        { length: 101 },
         (_, index) => `txn_${index}`,
       ),
       changes: { tags: [] },

@@ -37,6 +37,8 @@
     const externalCashFlow = livePortfolio?.external_cash_flow;
     const selectedPeriod = livePortfolio?.period?.name || query.period || "1m";
     const futureEquity = livePortfolio?.future_equity || null;
+    const activeHolding =
+      typeof selectedHolding !== "undefined" ? selectedHolding : null;
   %>
   <main class="page-shell">
     <%- include("partials/page-heading", {
@@ -46,19 +48,6 @@
       actionHref: "/insights#investments",
       actionIcon: "ph-sparkle"
     }) %>
-
-    <% if (typeof selectedHolding !== "undefined" && selectedHolding) { %>
-      <section class="card selected-detail" aria-labelledby="selected-holding-heading">
-        <b class="ticker"><%= selectedHolding.symbol.slice(0, 4) %></b>
-        <div>
-          <p class="card-kicker">Selected holding</p>
-          <h2 id="selected-holding-heading"><%= selectedHolding.symbol %></h2>
-          <p><%= selectedHolding.name %> · <%= selectedHolding.allocation %>% of <%= portfolioScopeLabels[selectedScope].toLowerCase() %></p>
-        </div>
-        <strong><%= formatMoney(selectedHolding.value) %></strong>
-        <a class="icon-button" href="/portfolio?period=<%= selectedPeriod %>&amp;scope=<%= selectedScope %>" aria-label="Close holding details"><i class="ph ph-x"></i></a>
-      </section>
-    <% } %>
 
     <nav class="portfolio-scope-tabs" aria-label="Investment account scope">
       <% [["all", "All"], ["trading", "Trading"], ["retirement", "Retirement"]].forEach(([scope, label]) => { %>
@@ -118,7 +107,7 @@
             aria-label="Portfolio allocation by holding"
             role="img"
           ></canvas>
-          <div class="allocation-chart__center"><strong><%= holdings.length %></strong><span>holdings</span></div>
+          <div class="allocation-chart__center"><strong><%= allocation.length %></strong><span>holdings</span></div>
         </div>
         <div class="allocation-legend">
           <% allocation.slice(0, 5).forEach((item, index) => { %>
@@ -156,6 +145,10 @@
                 </strong>
               </span>
               <span>
+                <small>Estimated share price</small>
+                <strong><%= holding.estimated_share_price ? formatMoney(holding.estimated_share_price) : "—" %></strong>
+              </span>
+              <span>
                 <small>Current-price value</small>
                 <strong><%= formatMoney(holding.value) %></strong>
               </span>
@@ -176,8 +169,14 @@
           <span>Holding</span><span>Value</span><span>Allocation</span><span>Selected period</span>
         </div>
         <% holdings.forEach((holding) => { %>
-          <a class="holdings-row" role="row" href="/portfolio?period=<%= selectedPeriod %>&amp;scope=<%= selectedScope %>&amp;holding=<%= encodeURIComponent(holding.symbol) %>">
-            <span><b class="ticker"><%= holding.symbol.slice(0, 4) %></b><span><strong><%= holding.symbol %></strong><small><%= holding.name %></small></span></span>
+          <a
+            class="holdings-row"
+            role="row"
+            href="/portfolio?period=<%= selectedPeriod %>&amp;scope=<%= selectedScope %>&amp;holding=<%= encodeURIComponent(holding.selectionKey || holding.symbol) %>"
+            data-detail-dialog-link
+            aria-current="<%= activeHolding && (activeHolding.selectionKey || activeHolding.symbol) === (holding.selectionKey || holding.symbol) ? "true" : "false" %>"
+          >
+            <span><b class="ticker"><%= holding.badge || holding.symbol.slice(0, 4) %></b><span><strong><%= holding.symbol %></strong><small><%= holding.name %></small></span></span>
             <strong><%= formatMoney(holding.value) %></strong>
             <span><%= holding.allocation %>%</span>
             <% if (livePortfolio) { %>
@@ -193,5 +192,44 @@
       </div>
       <p class="card-note"><i class="ph ph-info"></i> <%= livePortfolio?.warnings?.[0] || "Performance is estimated from local snapshots and excludes external cash flows when complete." %></p>
     </section>
+
+    <% if (activeHolding) { %>
+      <dialog
+        class="entity-detail-dialog"
+        data-detail-dialog
+        data-detail-auto-open
+        data-detail-query-key="holding"
+        aria-labelledby="selected-holding-heading"
+      >
+        <div class="entity-detail-dialog__panel">
+          <section class="selected-detail entity-detail-dialog__summary">
+            <b class="ticker"><%= selectedHolding.badge || selectedHolding.symbol.slice(0, 4) %></b>
+            <div>
+              <p class="card-kicker"><%= selectedHolding.isCash ? "Cash balance" : "Holding details" %></p>
+              <h2 id="selected-holding-heading"><%= selectedHolding.symbol %></h2>
+              <p><%= selectedHolding.name %></p>
+            </div>
+            <strong><%= formatMoney(selectedHolding.value) %></strong>
+            <button class="icon-button" type="button" data-detail-dialog-close aria-label="Close holding details"><i class="ph ph-x" aria-hidden="true"></i></button>
+          </section>
+
+          <div class="entity-detail-dialog__body">
+            <dl class="entity-detail-grid">
+              <div><dt>Account</dt><dd><%= selectedHolding.account || "—" %></dd></div>
+              <div><dt>Security type</dt><dd><%= selectedHolding.securityType || (selectedHolding.isCash ? "cash" : "—") %></dd></div>
+              <div><dt>Shares</dt><dd><%= selectedHolding.shares ?? "—" %></dd></div>
+              <div><dt>Allocation</dt><dd><%= selectedHolding.allocation %>% of <%= portfolioScopeLabels[selectedScope].toLowerCase() %></dd></div>
+              <div><dt>Current price</dt><dd><%= selectedHolding.price ? formatMoney(selectedHolding.price) : "—" %></dd></div>
+              <div><dt>Price as of</dt><dd><%= selectedHolding.priceAsOf || "—" %></dd></div>
+              <div><dt>Cost basis</dt><dd><%= selectedHolding.costBasis ? formatMoney(selectedHolding.costBasis) : "—" %></dd></div>
+              <div><dt>Current value</dt><dd><%= formatMoney(selectedHolding.value) %></dd></div>
+              <div class="entity-detail-grid__wide"><dt>Holding ID</dt><dd><code><%= selectedHolding.id || "—" %></code></dd></div>
+              <div class="entity-detail-grid__wide"><dt>Security ID</dt><dd><code><%= selectedHolding.securityId || "—" %></code></dd></div>
+            </dl>
+            <p class="entity-detail-dialog__note"><i class="ph ph-info" aria-hidden="true"></i> Values come from the latest synced holding and may be delayed.</p>
+          </div>
+        </div>
+      </dialog>
+    <% } %>
   </main>
   <%- include("partials/footer") %>

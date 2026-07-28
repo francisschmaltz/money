@@ -441,6 +441,120 @@ h3 {
   font-weight: 650;
 }
 
+.entity-detail-dialog {
+  width: min(calc(100% - 32px), 680px);
+  max-height: calc(100vh - 48px);
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: 17px;
+  background: transparent;
+  box-shadow: 0 28px 100px rgba(16, 16, 16, 0.28);
+  color: var(--ink);
+}
+
+.entity-detail-dialog--transaction {
+  width: min(calc(100% - 32px), 820px);
+}
+
+.entity-detail-dialog::backdrop {
+  background: rgba(20, 20, 20, 0.42);
+  backdrop-filter: blur(3px);
+}
+
+.entity-detail-dialog__panel {
+  display: flex;
+  max-height: calc(100vh - 48px);
+  flex-direction: column;
+  background: var(--surface);
+}
+
+.entity-detail-dialog__summary {
+  flex: 0 1 auto;
+  padding: 20px 22px;
+  margin: 0;
+  overflow-y: auto;
+  border-bottom: 1px solid var(--line);
+}
+
+.entity-detail-dialog--transaction .entity-detail-dialog__summary {
+  align-items: flex-start;
+}
+
+.entity-detail-dialog--transaction .entity-detail-dialog__summary > strong {
+  padding-top: 25px;
+}
+
+.entity-detail-dialog__body {
+  padding: 20px 22px 22px;
+  overflow-y: auto;
+}
+
+.entity-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0;
+  margin: 0;
+  border-top: 1px solid var(--line);
+}
+
+.entity-detail-grid--transaction {
+  margin-top: 18px;
+}
+
+.entity-detail-grid > div {
+  min-width: 0;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.entity-detail-grid > div:nth-child(odd):not(.entity-detail-grid__wide) {
+  padding-right: 18px;
+}
+
+.entity-detail-grid > div:nth-child(even) {
+  padding-left: 18px;
+  border-left: 1px solid var(--line);
+}
+
+.entity-detail-grid .entity-detail-grid__wide {
+  grid-column: 1 / -1;
+}
+
+.entity-detail-grid dt {
+  margin-bottom: 3px;
+  color: var(--ink-faint);
+  font-size: 0.68rem;
+  font-weight: 720;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.entity-detail-grid dd {
+  overflow-wrap: anywhere;
+  font-size: 0.8rem;
+  font-weight: 650;
+}
+
+.entity-detail-grid code {
+  font-size: 0.72rem;
+  font-weight: 500;
+}
+
+.entity-detail-dialog__note {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  padding-top: 16px;
+  color: var(--ink-soft);
+  font-size: 0.74rem;
+}
+
+.holdings-row[aria-current="true"],
+.transaction-row[aria-current="true"] {
+  background: color-mix(in srgb, var(--green) 8%, transparent);
+}
+
 .button {
   min-height: 40px;
   display: inline-flex;
@@ -1444,6 +1558,182 @@ h3 {
   min-height: 72px;
 }
 
+.transaction-list-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+[data-bulk-select-start][hidden] {
+  display: none;
+}
+
+.transaction-select-row {
+  display: contents;
+}
+
+.transaction-select-control {
+  align-items: center;
+  justify-content: center;
+  min-height: 72px;
+  cursor: pointer;
+}
+
+.transaction-select-control input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--green-dark);
+}
+
+[data-bulk-selection-mode] .transaction-select-row {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  align-items: stretch;
+  border-top: 1px solid var(--line);
+}
+
+[data-bulk-selection-mode] .transaction-select-row .transaction-row {
+  border-top: 0;
+}
+
+[data-bulk-selection-mode] .transaction-select-row:has(input:checked) {
+  background: color-mix(in srgb, var(--green) 8%, transparent);
+}
+
+[data-bulk-selection-mode] .transaction-row {
+  cursor: pointer;
+}
+
+[data-bulk-selection-mode]
+  .transaction-select-row[data-transaction-status="pending"] {
+  opacity: 0.58;
+}
+
+.transaction-selection-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 12px;
+  margin-top: 14px;
+  border: 1px solid color-mix(in srgb, var(--green) 28%, var(--line));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--green) 7%, var(--surface));
+}
+
+.transaction-selection-bar[hidden] {
+  display: none;
+}
+
+.transaction-selection-bar > label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--ink-soft);
+  font-size: 0.76rem;
+  font-weight: 650;
+}
+
+.transaction-selection-bar > label input {
+  width: 17px;
+  height: 17px;
+  accent-color: var(--green-dark);
+}
+
+.transaction-selection-bar > strong {
+  margin-left: auto;
+  font-size: 0.78rem;
+}
+
+.transaction-selection-bar__limit {
+  color: var(--ink-faint);
+  font-size: 0.7rem;
+}
+
+.transaction-bulk-dialog {
+  width: min(calc(100% - 32px), 680px);
+  max-height: calc(100vh - 48px);
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: 17px;
+  background: transparent;
+  box-shadow: 0 28px 100px rgba(16, 16, 16, 0.28);
+  color: var(--ink);
+}
+
+.transaction-bulk-dialog::backdrop {
+  background: rgba(20, 20, 20, 0.42);
+  backdrop-filter: blur(3px);
+}
+
+.transaction-bulk-dialog__panel {
+  display: flex;
+  max-height: calc(100vh - 48px);
+  flex-direction: column;
+  background: var(--surface);
+}
+
+.transaction-bulk-dialog__heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 20px 22px;
+  border-bottom: 1px solid var(--line);
+}
+
+.transaction-bulk-dialog__heading h2 {
+  font-size: 1.15rem;
+}
+
+.transaction-bulk-dialog__heading p:last-child {
+  max-width: 520px;
+  margin-top: 4px;
+  color: var(--ink-soft);
+  font-size: 0.76rem;
+}
+
+.transaction-bulk-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 16px;
+  min-width: 0;
+  padding: 18px 22px 22px;
+  overflow-y: auto;
+  border: 0;
+}
+
+.transaction-bulk-fields legend {
+  float: left;
+  width: 100%;
+  grid-column: 1 / -1;
+  font-size: 0.82rem;
+  font-weight: 720;
+}
+
+.transaction-bulk-fields .cleanup-edit-field:last-child {
+  grid-column: 1 / -1;
+}
+
+.transaction-bulk-dialog__footer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 22px;
+  border-top: 1px solid var(--line);
+  background: var(--surface-muted);
+}
+
+.transaction-bulk-dialog__footer .form-status {
+  margin-right: auto;
+}
+
+.transaction-bulk-dialog__footer > div {
+  display: flex;
+  gap: 8px;
+}
+
 .pagination {
   display: flex;
   align-items: center;
@@ -1631,6 +1921,7 @@ h3 {
 .allocation-legend span:nth-child(5) i { background: #2764ae; }
 
 .future-equity-card {
+  margin-top: 18px;
   padding: 27px 28px;
 }
 
@@ -1648,7 +1939,7 @@ h3 {
 
 .future-equity-row {
   display: grid;
-  grid-template-columns: minmax(280px, 1.5fr) minmax(150px, 0.7fr) minmax(150px, 0.7fr);
+  grid-template-columns: minmax(280px, 1.5fr) repeat(3, minmax(140px, 0.65fr));
   align-items: center;
   gap: 18px;
   min-height: 72px;
@@ -4316,6 +4607,33 @@ kbd {
     justify-content: flex-start;
   }
 
+  .entity-detail-dialog {
+    width: calc(100% - 20px);
+    max-height: calc(100vh - 20px);
+  }
+
+  .entity-detail-dialog__panel {
+    max-height: calc(100vh - 20px);
+  }
+
+  .entity-detail-dialog__summary,
+  .entity-detail-dialog__body {
+    padding: 17px;
+  }
+
+  .entity-detail-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .entity-detail-grid > div,
+  .entity-detail-grid > div:nth-child(odd):not(.entity-detail-grid__wide),
+  .entity-detail-grid > div:nth-child(even) {
+    grid-column: 1;
+    padding-right: 0;
+    padding-left: 0;
+    border-left: 0;
+  }
+
   .selected-detail--insight {
     grid-template-columns: minmax(0, 1fr) 38px;
   }
@@ -4493,6 +4811,54 @@ kbd {
 
   .transaction-row__meta span {
     display: none;
+  }
+
+  .transaction-list-actions {
+    width: 100%;
+  }
+
+  .transaction-list-actions .button {
+    flex: 1 1 auto;
+  }
+
+  .transaction-selection-bar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .transaction-selection-bar > strong {
+    margin-left: 0;
+  }
+
+  .transaction-selection-bar .button {
+    width: 100%;
+  }
+
+  .transaction-bulk-dialog {
+    width: min(calc(100% - 20px), 680px);
+    max-height: calc(100vh - 20px);
+  }
+
+  .transaction-bulk-dialog__panel {
+    max-height: calc(100vh - 20px);
+  }
+
+  .transaction-bulk-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .transaction-bulk-fields .cleanup-edit-field:last-child {
+    grid-column: 1;
+  }
+
+  .transaction-bulk-dialog__footer {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .transaction-bulk-dialog__footer > div {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
   }
 
   .insight-summary {

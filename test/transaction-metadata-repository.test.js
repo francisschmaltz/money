@@ -152,6 +152,8 @@ test("batch metadata edits lock exact posted rows and refresh search once", asyn
       displayName: "Whole Foods",
       categoryPrimary: "Groceries",
       tags: ["Household", "Reimbursable"],
+      excludedFromSpending: true,
+      isFixed: false,
     },
     userId: "user-1",
   });
@@ -173,6 +175,19 @@ test("batch metadata edits lock exact posted rows and refresh search once", asyn
       call.sql.includes("INSERT INTO categorization_overrides"),
     ),
   );
+  const classificationOverride = db.calls.find(
+    (call) =>
+      call.sql.includes("INSERT INTO categorization_overrides") &&
+      call.sql.includes("excluded_from_spending = CASE"),
+  );
+  assert.ok(classificationOverride);
+  assert.deepEqual(classificationOverride.params.slice(2), [
+    true,
+    false,
+    "user-1",
+    true,
+    true,
+  ]);
   assert.ok(
     db.calls.some((call) =>
       call.sql.includes("INSERT INTO transaction_tags"),

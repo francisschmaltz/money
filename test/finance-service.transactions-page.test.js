@@ -288,6 +288,12 @@ test("transactions page presents provider categories and dates as human text", a
     result.transactions[0].accountId,
     "account-checking",
   );
+  assert.equal(result.transactions[0].accountMask, "1234");
+  assert.equal(result.transactions[0].institution, "Test Bank");
+  assert.equal(
+    result.transactions[0].detailedCategoryValue,
+    "FOOD_AND_DRINK_RESTAURANT",
+  );
   assert.equal(result.transactions[0].date, "Jul 27, 2026");
   assert.deepEqual(
     result.categories

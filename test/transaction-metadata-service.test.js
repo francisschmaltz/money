@@ -167,12 +167,18 @@ test("one batch service call preserves omitted fields and recomputes only for ca
 
   await service.batchEditTransactions({
     transaction_ids: ["transaction-1"],
-    changes: { category_primary: "Fees & interest" },
+    changes: {
+      category_primary: "Fees & interest",
+      excluded_from_spending: true,
+      is_fixed: false,
+    },
   });
   assert.equal(
     calls[1].input.changes.categoryPrimary,
     "Fees & Interest",
   );
+  assert.equal(calls[1].input.changes.excludedFromSpending, true);
+  assert.equal(calls[1].input.changes.isFixed, false);
   assert.equal(jobs.length, 1);
 
   await assert.rejects(

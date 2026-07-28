@@ -4,8 +4,36 @@
     if (query?.[key]) transactionDetailQuery.set(key, String(query[key]));
   }
   transactionDetailQuery.set("transaction", transaction.id);
+  const isSelectedTransaction =
+    typeof selectedTransaction !== "undefined" &&
+    selectedTransaction?.id === transaction.id;
+  const canBulkSelect =
+    typeof selectable !== "undefined" &&
+    selectable &&
+    viewer?.is_admin;
 %>
-<a class="transaction-row" href="/transactions?<%= transactionDetailQuery.toString() %>">
+<% if (canBulkSelect) { %>
+<div
+  class="transaction-select-row"
+  data-bulk-transaction-row
+  data-transaction-status="<%= transaction.status %>"
+>
+  <label class="transaction-select-control" hidden>
+    <input
+      type="checkbox"
+      value="<%= transaction.id %>"
+      data-bulk-transaction-select
+      <%= transaction.status === "pending" ? "disabled" : "" %>
+    >
+    <span class="sr-only">Select <%= transaction.merchant %></span>
+  </label>
+<% } %>
+<a
+  class="transaction-row"
+  href="/transactions?<%= transactionDetailQuery.toString() %>"
+  data-detail-dialog-link
+  aria-current="<%= isSelectedTransaction ? "true" : "false" %>"
+>
   <span class="list-icon" aria-hidden="true"><i class="ph <%= transaction.icon %>"></i></span>
   <span class="transaction-row__main">
     <strong><%= transaction.merchant %></strong>
@@ -23,3 +51,6 @@
     <span><%- include("transaction-date", { transaction }) %><% if (transaction.status === "pending") { %> · Pending<% } %></span>
   </span>
 </a>
+<% if (canBulkSelect) { %>
+</div>
+<% } %>

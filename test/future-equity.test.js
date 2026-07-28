@@ -149,6 +149,7 @@ test("portfolio totals and concentration use vested value while future equity st
     security_id: "security-regular",
     name: "Index fund",
     ticker_symbol: "INDEX",
+    security_type: "fund",
     quantity: 1,
     vested_quantity: null,
     value_minor: 90_000,
@@ -194,6 +195,14 @@ test("portfolio totals and concentration use vested value while future equity st
   assert.equal(portfolio.future_equity.holdings.length, 1);
   assert.equal(portfolio.future_equity.holdings[0].account_name, "Company stock plan");
   assert.deepEqual(
+    portfolio.future_equity.holdings[0].estimated_share_price,
+    { amount_minor: 10_000, currency: "USD" },
+  );
+  assert.deepEqual(
+    portfolio.allocation.map((entry) => entry.label),
+    ["fund", "equity"],
+  );
+  assert.deepEqual(
     portfolio.holdings.map((entry) => entry.allocation_basis_points),
     [1_000, 9_000],
   );
@@ -216,6 +225,29 @@ test("portfolio totals and concentration use vested value while future equity st
         finding.title.startsWith("ACME "),
     ),
     false,
+  );
+
+  const futureOnlyGrant = buildPortfolioSummary({
+    holdings: [
+      holding({
+        vested_quantity: 0,
+        vested_value_minor: 0,
+      }),
+      regular,
+    ],
+    snapshots: [],
+    currency: "USD",
+    now: NOW,
+  });
+  assert.deepEqual(
+    futureOnlyGrant.holdings.map(
+      (entry) => entry.allocation_basis_points,
+    ),
+    [0, 10_000],
+  );
+  assert.deepEqual(
+    futureOnlyGrant.allocation.map((entry) => entry.label),
+    ["fund"],
   );
 });
 
