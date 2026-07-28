@@ -5,6 +5,14 @@ import {
   buildCreditScoreSummary,
   CREDIT_SCORE_PRESETS,
 } from "../services/creditScoreTracking.js";
+import {
+  buildCashFlow,
+  buildSpendingSummary,
+} from "../services/analytics.js";
+import {
+  normalizeTransactionSort,
+  resolveTransactionPeriod,
+} from "../services/financeService.js";
 
 const usd = (amountMinor) => ({ amount_minor: amountMinor, currency: "USD" });
 
@@ -24,6 +32,7 @@ const SEARCH_ENTITY_OPTIONS = Object.freeze([
   { value: "manual_asset", label: "Assets" },
   { value: "insight", label: "Insights" },
 ]);
+const DEMO_TRANSACTION_TODAY = "2026-07-26";
 
 export function formatMoney(value, { sign = false } = {}) {
   return (
@@ -803,8 +812,13 @@ async function demoPageModel(
         : null;
     const categoryTransactions =
       splitProjection?.transactions ?? currentTransactions;
+    const periodSelection = resolveTransactionPeriod(
+      query,
+      new Date(`${DEMO_TRANSACTION_TODAY}T12:00:00.000Z`),
+    );
+    const sort = normalizeTransactionSort(query.sort);
     const normalized = String(query.q ?? "").trim().toLowerCase();
-    const filtered = categoryTransactions.filter(
+    const matchingTransactions = categoryTransactions.filter(
       (transaction) =>
         (!normalized ||
           `${transaction.merchant} ${transaction.category} ${transaction.account}`
@@ -821,15 +835,27 @@ async function demoPageModel(
               account.name === transaction.account,
           )),
     );
-    const selectedCategory = demo.categories.find(
-      (category) => category.label === query.category,
-    );
+    const filtered = matchingTransactions
+      .filter(
+        (transaction) =>
+          demoTransactionDate(transaction) >=
+            periodSelection.period.start_on &&
+          demoTransactionDate(transaction) <
+            periodSelection.period.end_on,
+      )
+      .sort((left, right) =>
+        compareDemoTransactions(left, right, sort),
+      );
     return {
       transactions: filtered,
       transactionPageInfo: { has_more: false, next_cursor: null },
-      ...(selectedCategory
-        ? demoCategorySpendingModel(selectedCategory, demo)
-        : {}),
+      transactionPeriod: periodSelection.name,
+      transactionSort: sort,
+      ...demoTimelineSpendingModel(
+        matchingTransactions,
+        periodSelection.period,
+        demo,
+      ),
       selectedTransaction:
         filtered.find(
           (transaction) => transaction.id === query.transaction,
@@ -968,67 +994,173 @@ async function demoPageModel(
   return {};
 }
 
-function demoCategorySpendingModel(category, demo) {
-  const currentMinor = category.amount.amount_minor;
-  const overallCurrentMinor = demo.spendingDetails.total.amount_minor;
-  const previousMinor = Math.round(
-    demo.spendingDetails.previousTotal.amount_minor *
-      (overallCurrentMinor ? currentMinor / overallCurrentMinor : 0),
+function demoTransactionDate(transaction) {
+  const value = transaction.dateIso ?? transaction.date;
+  const match = String(value ?? "").match(/^\d{4}-\d{2}-\d{2}/);
+  return match?.[0] ?? "0000-00-00";
+}
+
+function shiftDemoDate(value, days) {
+  const date = new Date(`${value}T00:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+function compareDemoTransactions(left, right, sort) {
+  const newestFirst =
+    demoTransactionDate(right).localeCompare(demoTransactionDate(left)) ||
+    String(right.id).localeCompare(String(left.id));
+  if (sort === "merchant" || sort === "category") {
+    const field = sort;
+    return (
+      String(left[field] ?? "").localeCompare(
+        String(right[field] ?? ""),
+        undefined,
+        { sensitivity: "base" },
+      ) || newestFirst
+    );
+  }
+  if (sort === "cost") {
+    return (
+      Math.abs(Number(right.amount?.amount_minor ?? 0)) -
+        Math.abs(Number(left.amount?.amount_minor ?? 0)) ||
+      newestFirst
+    );
+  }
+  return newestFirst;
+}
+
+function demoTimelineSpendingModel(transactions, period, demo) {
+  const duration = Math.max(
+    1,
+    Math.round(
+      (new Date(`${period.end_on}T00:00:00.000Z`) -
+        new Date(`${period.start_on}T00:00:00.000Z`)) /
+        86_400_000,
+    ),
   );
-  const changeMinor = currentMinor - previousMinor;
-  const percentBasisPoints =
-    previousMinor === 0
-      ? null
-      : Math.round((changeMinor / previousMinor) * 10_000);
-  const trendDirection =
-    changeMinor > 0 ? "up" : changeMinor < 0 ? "down" : "flat";
-  const scaledSeries = scaleSeries(
-    demo.spendingDetails.seriesValues,
-    currentMinor,
-  );
+  const previousPeriod = {
+    start_on: shiftDemoDate(period.start_on, -duration),
+    end_on: period.start_on,
+  };
+  const analyticsTransactions = transactions.map((transaction) => ({
+    id: transaction.id,
+    posted_on: demoTransactionDate(transaction),
+    merchant_name: transaction.merchant,
+    category_primary: transaction.category,
+    category_detailed: transaction.category,
+    amount_minor: Number(transaction.amount?.amount_minor ?? 0),
+    currency_code: transaction.amount?.currency ?? "USD",
+    pending: transaction.status === "pending",
+    excluded_from_spending: Boolean(
+      transaction.excludedFromSpending,
+    ),
+  }));
+  const cashFlow = buildCashFlow({
+    transactions: analyticsTransactions,
+    period,
+    interval: duration > 120 ? "month" : duration > 31 ? "week" : "day",
+    currency: "USD",
+  });
+  const spending = buildSpendingSummary({
+    transactions: analyticsTransactions,
+    currentPeriod: period,
+    previousPeriod,
+    groupBy: "category",
+    currency: "USD",
+  });
+  const series = sampleDemoSeries(spending.series, 90);
+  const transactionCount = spending.transaction_count;
   return {
     overview: {
       ...demo.overview,
-      income: usd(0),
-      spending: category.amount,
-      cashFlow: usd(-currentMinor),
+      income: cashFlow.income,
+      spending: cashFlow.spending,
+      cashFlow: cashFlow.net,
     },
     spendingDetails: {
-      ...demo.spendingDetails,
-      total: category.amount,
-      previousTotal: usd(previousMinor),
-      change: usd(changeMinor),
-      trendDirection,
-      trendLabel:
-        percentBasisPoints == null
-          ? `${formatMoney(category.amount)} from no prior spending`
-          : trendDirection === "flat"
-            ? "No change from the prior period"
-            : `${(Math.abs(percentBasisPoints) / 100).toFixed(1)}% ${
-                trendDirection === "up" ? "more" : "less"
-              } than the prior period`,
-      transactionCount: category.count,
+      total: spending.total,
+      previousTotal: spending.previous_total,
+      change: spending.trend.amount,
+      trendDirection: spending.trend.direction,
+      trendLabel: demoSpendingTrendLabel(spending.trend),
+      transactionCount,
       averageTransaction: usd(
-        category.count
-          ? Math.round(currentMinor / category.count)
+        transactionCount
+          ? Math.round(
+              spending.total.amount_minor / transactionCount,
+            )
           : 0,
       ),
-      categories: [{ ...category, percent: 100 }],
-      seriesValues: scaledSeries,
+      periodLabel: demoPeriodLabel(period),
+      previousPeriodLabel: demoPeriodLabel(previousPeriod),
+      categories: spending.segments.map((segment) => {
+        const fixture = demo.categories.find(
+          (category) => category.label === segment.label,
+        );
+        return {
+          value: segment.label,
+          label: segment.label,
+          amount: segment.amount,
+          previousAmount: segment.previous_amount,
+          percent: segment.share_basis_points / 100,
+          count: segment.count,
+          color: fixture?.color ?? "#666666",
+          icon: fixture?.icon ?? "ph-receipt",
+        };
+      }),
+      seriesLabels: series.map((point) =>
+        demoShortDate(point.timestamp),
+      ),
+      seriesValues: series.map(
+        (point) => point.value.amount_minor,
+      ),
     },
   };
 }
 
-function scaleSeries(values, targetTotal) {
-  const sourceTotal = values.reduce((sum, value) => sum + value, 0);
-  if (!values.length || sourceTotal === 0) return values.map(() => 0);
-  let assigned = 0;
-  return values.map((value, index) => {
-    if (index === values.length - 1) return targetTotal - assigned;
-    const scaled = Math.round((value / sourceTotal) * targetTotal);
-    assigned += scaled;
-    return scaled;
-  });
+function demoSpendingTrendLabel(trend) {
+  if (trend.percent_basis_points == null) {
+    return trend.amount.amount_minor === 0
+      ? "No change from the prior period"
+      : "New spending versus the prior period";
+  }
+  if (trend.percent_basis_points === 0) {
+    return "No change from the prior period";
+  }
+  return `${(Math.abs(trend.percent_basis_points) / 100).toFixed(1)}% ${
+    trend.percent_basis_points > 0 ? "more" : "less"
+  } than the prior period`;
+}
+
+function demoShortDate(value, { year = false } = {}) {
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    ...(year ? { year: "numeric" } : {}),
+    timeZone: "UTC",
+  }).format(new Date(`${value}T00:00:00.000Z`));
+}
+
+function demoPeriodLabel(period) {
+  return `${demoShortDate(period.start_on, { year: true })}–${demoShortDate(
+    shiftDemoDate(period.end_on, -1),
+    { year: true },
+  )}`;
+}
+
+function sampleDemoSeries(series, maximum) {
+  if (series.length <= maximum) return series;
+  const lastIndex = series.length - 1;
+  const indexes = new Set([0, lastIndex]);
+  for (let index = 1; index < maximum - 1; index += 1) {
+    indexes.add(
+      Math.round((index * lastIndex) / (maximum - 1)),
+    );
+  }
+  return [...indexes]
+    .sort((left, right) => left - right)
+    .map((index) => series[index]);
 }
 
 function firstQueryValue(value) {

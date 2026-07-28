@@ -337,6 +337,69 @@ test("transactions puts detailed spending analysis before the ledger", async () 
   assert.match(feeFilteredHtml, /Personal Loan Interest/);
 });
 
+test("transactions exposes every timeline and preserves sorting in links", async () => {
+  const html = await render("transactions", {
+    pageTitle: "Transactions",
+    activePath: "/transactions",
+    query: {
+      period: "365",
+      sort: "merchant",
+    },
+    transactionPageInfo: {
+      has_more: true,
+      next_cursor: "next-page",
+    },
+  });
+
+  for (const label of [
+    "This Month",
+    "Past 30 Days",
+    "Past 90 Days",
+    "Past 365 Days",
+    "This Year",
+    "Last Year",
+  ]) {
+    assert.match(html, new RegExp(`>${label}<`));
+  }
+  assert.match(
+    html,
+    /<option value="365" selected>Past 365 Days<\/option>/,
+  );
+  assert.match(
+    html,
+    /<option value="merchant" selected>Merchant \(A–Z\)<\/option>/,
+  );
+  assert.match(
+    html,
+    /href="\/transactions\?period=365&amp;sort=merchant&amp;category=Housing"/,
+  );
+  assert.match(
+    html,
+    /href="\/transactions\?period=365&amp;sort=merchant&amp;transaction=txn_whole_foods"/,
+  );
+  assert.match(
+    html,
+    /href="\/transactions\?period=365&amp;sort=merchant&amp;cursor=next-page"/,
+  );
+
+  const normalized = await render("transactions", {
+    pageTitle: "Transactions",
+    activePath: "/transactions",
+    query: {
+      period: "garbage",
+      sort: "garbage",
+    },
+  });
+  assert.match(
+    normalized,
+    /<option value="month" selected>This Month<\/option>/,
+  );
+  assert.match(
+    normalized,
+    /<option value="date" selected>Date \(newest first\)<\/option>/,
+  );
+});
+
 test("transaction ledger supports selecting rows and choosing bulk overrides", async () => {
   const html = await render("transactions", {
     pageTitle: "Transactions",

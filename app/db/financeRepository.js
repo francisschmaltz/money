@@ -20,6 +20,12 @@ const MANUAL_ASSET_TYPES = new Set([
   "collectible",
   "other",
 ]);
+const TRANSACTION_SORTS = new Set([
+  "date",
+  "merchant",
+  "category",
+  "cost",
+]);
 const RETIREMENT_SUBTYPES = new Set([
   "401a",
   "401k",
@@ -69,17 +75,76 @@ function dateValue(value) {
   return value == null ? null : new Date(value).toISOString();
 }
 
-function encodeCursor(row) {
+function transactionSort(value) {
+  const normalized = String(value ?? "date").trim().toLowerCase();
+  return TRANSACTION_SORTS.has(normalized) ? normalized : "date";
+}
+
+function transactionCursorKey(row, sort) {
+  if (sort === "merchant") {
+    return String(
+      row.transaction_sort_merchant ??
+        row.display_name ??
+        row.merchant_name ??
+        row.name ??
+        "",
+    ).toLowerCase();
+  }
+  if (sort === "category") {
+    return String(
+      row.transaction_sort_category ??
+        row.split_category ??
+        row.effective_category_primary ??
+        row.category_primary ??
+        "",
+    ).toLowerCase();
+  }
+  if (sort === "cost") {
+    const raw = String(
+      row.transaction_sort_cost ??
+        row.split_category_amount_minor ??
+        row.amount_minor ??
+        0,
+    );
+    return raw.startsWith("-") ? raw.slice(1) : raw;
+  }
+  return String(row.posted_on);
+}
+
+function encodeCursor(row, sort = "date") {
+  const normalizedSort = transactionSort(sort);
   return Buffer.from(
-    JSON.stringify({ posted_on: row.posted_on, id: row.id }),
+    JSON.stringify({
+      sort: normalizedSort,
+      key: transactionCursorKey(row, normalizedSort),
+      posted_on: String(row.posted_on),
+      id: row.id,
+    }),
   ).toString("base64url");
 }
 
-function decodeCursor(cursor) {
+function decodeCursor(cursor, sort = "date") {
   if (!cursor) return null;
   try {
     const value = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
+    const expectedSort = transactionSort(sort);
     if (
+      value.sort == null &&
+      expectedSort === "date" &&
+      typeof value.posted_on === "string" &&
+      typeof value.id === "string"
+    ) {
+      return {
+        sort: "date",
+        key: value.posted_on,
+        posted_on: value.posted_on,
+        id: value.id,
+      };
+    }
+    if (
+      value.sort !== expectedSort ||
+      !TRANSACTION_SORTS.has(value.sort) ||
+      typeof value.key !== "string" ||
       typeof value.posted_on !== "string" ||
       typeof value.id !== "string"
     ) {
@@ -3026,15 +3091,63 @@ export class PgFinanceRepository {
       status = "all",
       minAmountMinor = null,
       maxAmountMinor = null,
+      sort = "date",
       limit = 50,
       cursor = null,
       activeAccountsOnly = false,
     } = {},
   ) {
     const boundedLimit = Math.max(1, Math.min(100, Number(limit) || 50));
-    const decoded = decodeCursor(cursor);
+    const normalizedSort = transactionSort(sort);
+    const decoded = decodeCursor(cursor, normalizedSort);
+    const sortConfig = {
+      date: {
+        cursor: `
+          ($8::text IS NULL OR
+            (posted_on, id) < ($9::date, $10::text))
+        `,
+        order: "posted_on DESC, id DESC",
+      },
+      merchant: {
+        cursor: `
+          ($8::text IS NULL
+            OR transaction_sort_merchant > $8
+            OR (
+              transaction_sort_merchant = $8
+              AND (posted_on, id) < ($9::date, $10::text)
+            ))
+        `,
+        order:
+          "transaction_sort_merchant ASC, posted_on DESC, id DESC",
+      },
+      category: {
+        cursor: `
+          ($8::text IS NULL
+            OR transaction_sort_category > $8
+            OR (
+              transaction_sort_category = $8
+              AND (posted_on, id) < ($9::date, $10::text)
+            ))
+        `,
+        order:
+          "transaction_sort_category ASC, posted_on DESC, id DESC",
+      },
+      cost: {
+        cursor: `
+          ($8::text IS NULL
+            OR transaction_sort_cost < $8::bigint
+            OR (
+              transaction_sort_cost = $8::bigint
+              AND (posted_on, id) < ($9::date, $10::text)
+            ))
+        `,
+        order:
+          "transaction_sort_cost DESC, posted_on DESC, id DESC",
+      },
+    }[normalizedSort];
     const result = await this.#pool.query(
       `
+        WITH transaction_page AS (
         SELECT
           t.*,
           a.name AS account_name,
@@ -3044,12 +3157,33 @@ export class PgFinanceRepository {
             metadata.display_name,
             cleanup_rule.display_name
           ) AS display_name,
+          lower(
+            COALESCE(
+              metadata.display_name,
+              cleanup_rule.display_name,
+              t.merchant_name,
+              t.name,
+              ''
+            )
+          ) AS transaction_sort_merchant,
           effective_tags.tags,
           effective_category.category_id,
           COALESCE(
             effective_category.category_name,
             effective_category.source_category_label
           ) AS effective_category_primary,
+          lower(
+            COALESCE(
+              category_split.category,
+              effective_category.category_name,
+              effective_category.source_category_label,
+              t.category_primary,
+              ''
+            )
+          ) AS transaction_sort_category,
+          abs(
+            COALESCE(category_split.amount_minor, t.amount_minor)
+          ) AS transaction_sort_cost,
           category_split.category AS split_category,
           category_split.category_id AS split_category_id,
           category_split.amount_minor AS split_category_amount_minor,
@@ -3244,24 +3378,24 @@ export class PgFinanceRepository {
           )
           AND ($6::boolean OR t.pending = false)
           AND (
-            $11::text = 'all'
-            OR ($11 = 'pending' AND t.pending = true)
-            OR ($11 = 'posted' AND t.pending = false)
-          )
-          AND (
-            $12::bigint IS NULL
-            OR abs(
-              COALESCE(category_split.amount_minor, t.amount_minor)
-            ) >= $12
+            $12::text = 'all'
+            OR ($12 = 'pending' AND t.pending = true)
+            OR ($12 = 'posted' AND t.pending = false)
           )
           AND (
             $13::bigint IS NULL
             OR abs(
               COALESCE(category_split.amount_minor, t.amount_minor)
-            ) <= $13
+            ) >= $13
           )
           AND (
-            $14::boolean = false
+            $14::bigint IS NULL
+            OR abs(
+              COALESCE(category_split.amount_minor, t.amount_minor)
+            ) <= $14
+          )
+          AND (
+            $15::boolean = false
             OR (a.active = true AND i.status <> 'removed')
           )
           AND (
@@ -3314,12 +3448,12 @@ export class PgFinanceRepository {
                 )
             )
           )
-          AND (
-            $8::date IS NULL
-            OR (t.posted_on, t.id) < ($8::date, $9::text)
-          )
-        ORDER BY t.posted_on DESC, t.id DESC
-        LIMIT $10
+        )
+        SELECT *
+        FROM transaction_page
+        WHERE ${sortConfig.cursor}
+        ORDER BY ${sortConfig.order}
+        LIMIT $11
       `,
       [
         workspaceId,
@@ -3329,6 +3463,7 @@ export class PgFinanceRepository {
         category,
         includePending,
         search?.trim() || null,
+        decoded?.key ?? null,
         decoded?.posted_on ?? null,
         decoded?.id ?? null,
         boundedLimit + 1,
@@ -3344,7 +3479,9 @@ export class PgFinanceRepository {
       transactions: rows.map(mapTransaction),
       pageInfo: {
         has_more: hasMore,
-        next_cursor: hasMore ? encodeCursor(rows.at(-1)) : null,
+        next_cursor: hasMore
+          ? encodeCursor(rows.at(-1), normalizedSort)
+          : null,
       },
     };
   }

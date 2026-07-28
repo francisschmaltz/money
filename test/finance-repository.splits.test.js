@@ -68,9 +68,9 @@ test("transaction category and text filters include split categories", async () 
         /abs\( COALESCE\(category_split\.amount_minor, t\.amount_minor\) \)/g,
       ) ?? []
     ).length,
-    2,
+    3,
   );
-  assert.deepEqual(db.calls[0].params.slice(11, 13), [1_000, 5_000]);
+  assert.deepEqual(db.calls[0].params.slice(12, 14), [1_000, 5_000]);
 });
 
 test("category-filtered transactions expose one split aggregate without replacing provider data", async () => {
@@ -186,5 +186,116 @@ test("finance repository returns the parent split version with transactions", as
   assert.equal(
     result.transactions[0].is_split_category_projection,
     false,
+  );
+});
+
+test("transaction sorting uses stable keys and sort-aware cursors", async () => {
+  const cases = [
+    {
+      sort: "date",
+      order: /ORDER BY posted_on DESC, id DESC/,
+      key: "2026-07-26",
+    },
+    {
+      sort: "merchant",
+      order:
+        /ORDER BY transaction_sort_merchant ASC, posted_on DESC, id DESC/,
+      key: "alpha market",
+    },
+    {
+      sort: "category",
+      order:
+        /ORDER BY transaction_sort_category ASC, posted_on DESC, id DESC/,
+      key: "groceries",
+    },
+    {
+      sort: "cost",
+      order:
+        /ORDER BY transaction_sort_cost DESC, posted_on DESC, id DESC/,
+      key: "5000",
+    },
+  ];
+
+  for (const expected of cases) {
+    const db = fakePool([
+      {
+        id: "transaction-1",
+        posted_on: "2026-07-26",
+        amount_minor: "-5000",
+        currency_code: "USD",
+        transaction_sort_merchant: "alpha market",
+        transaction_sort_category: "groceries",
+        transaction_sort_cost: "5000",
+      },
+      {
+        id: "transaction-2",
+        posted_on: "2026-07-25",
+        amount_minor: "-4000",
+        currency_code: "USD",
+        transaction_sort_merchant: "zulu market",
+        transaction_sort_category: "travel",
+        transaction_sort_cost: "4000",
+      },
+    ]);
+    const repository = new PgFinanceRepository(db.pool);
+
+    const first = await repository.listTransactions("shared", {
+      sort: expected.sort,
+      limit: 1,
+    });
+    const cursor = JSON.parse(
+      Buffer.from(
+        first.pageInfo.next_cursor,
+        "base64url",
+      ).toString("utf8"),
+    );
+
+    assert.match(db.calls[0].sql, expected.order);
+    assert.equal(cursor.sort, expected.sort);
+    assert.equal(cursor.key, expected.key);
+    assert.equal(cursor.posted_on, "2026-07-26");
+    assert.equal(cursor.id, "transaction-1");
+
+    await repository.listTransactions("shared", {
+      sort: expected.sort,
+      cursor: first.pageInfo.next_cursor,
+      limit: 1,
+    });
+    assert.deepEqual(
+      db.calls[1].params.slice(7, 10),
+      [expected.key, "2026-07-26", "transaction-1"],
+    );
+  }
+});
+
+test("transaction cursors cannot be reused with another sort", async () => {
+  const db = fakePool([
+    {
+      id: "transaction-1",
+      posted_on: "2026-07-26",
+      amount_minor: "-5000",
+      currency_code: "USD",
+      transaction_sort_merchant: "alpha market",
+    },
+    {
+      id: "transaction-2",
+      posted_on: "2026-07-25",
+      amount_minor: "-4000",
+      currency_code: "USD",
+      transaction_sort_merchant: "beta market",
+    },
+  ]);
+  const repository = new PgFinanceRepository(db.pool);
+  const first = await repository.listTransactions("shared", {
+    sort: "merchant",
+    limit: 1,
+  });
+
+  await assert.rejects(
+    repository.listTransactions("shared", {
+      sort: "category",
+      cursor: first.pageInfo.next_cursor,
+    }),
+    /Invalid transaction cursor/,
   );
 });

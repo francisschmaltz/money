@@ -79,6 +79,51 @@ test("bulk selection checkboxes share one centerline", async ({ page }) => {
   }
 });
 
+test("transaction timelines and sort choices change the ledger", async ({
+  page,
+}) => {
+  await page.goto("/transactions?period=365&sort=merchant");
+  await expect(page.getByLabel("Timeline")).toHaveValue("365");
+  await expect(page.getByLabel("Sort")).toHaveValue("merchant");
+
+  const merchants = await page
+    .locator(".transaction-row__main strong")
+    .allTextContents();
+  expect(merchants.length).toBeGreaterThan(1);
+  expect(merchants).toEqual(
+    [...merchants].sort((left, right) =>
+      left.localeCompare(right, undefined, { sensitivity: "base" }),
+    ),
+  );
+
+  await page.goto("/transactions?period=this-year&sort=category");
+  const categories = (
+    await page
+      .locator(".transaction-row__main > span")
+      .allTextContents()
+  ).map((value) => value.split("·", 1)[0].trim());
+  expect(categories).toEqual(
+    [...categories].sort((left, right) =>
+      left.localeCompare(right, undefined, { sensitivity: "base" }),
+    ),
+  );
+
+  await page.goto("/transactions?period=90&sort=cost");
+  await expect(
+    page.locator(".transaction-row__main strong").first(),
+  ).toHaveText("Acme Payroll");
+
+  await page.goto("/transactions?period=last-year&sort=date");
+  await expect(page.getByLabel("Timeline")).toHaveValue("last-year");
+  await expect(page.locator(".transaction-row")).toHaveCount(0);
+  await expect(
+    page.getByText("No transactions match these filters."),
+  ).toBeVisible();
+  await expect(
+    page.locator(".ledger-summary").getByText("$0.00"),
+  ).toHaveCount(3);
+});
+
 test("one transaction can change category without creating a rule", async ({
   page,
 }) => {

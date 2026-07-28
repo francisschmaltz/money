@@ -165,6 +165,7 @@ test("transactions page builds detailed spending from one complete filtered anal
     category: "Dining",
     status: "all",
     includePending: true,
+    sort: "date",
     limit: 100,
     cursor: "ledger-page-1",
   });
@@ -237,6 +238,141 @@ test("transactions page builds detailed spending from one complete filtered anal
     ),
     false,
   );
+});
+
+test("transactions page resolves every timeline and normalizes sort", async () => {
+  const cases = [
+    {
+      query: { period: "month", sort: "cost" },
+      name: "month",
+      startOn: "2025-01-01",
+      endOn: "2025-01-02",
+      sort: "cost",
+    },
+    {
+      query: { period: "30", sort: "merchant" },
+      name: "30",
+      startOn: "2024-12-03",
+      endOn: "2025-01-02",
+      sort: "merchant",
+    },
+    {
+      query: { period: "90", sort: "category" },
+      name: "90",
+      startOn: "2024-10-04",
+      endOn: "2025-01-02",
+      sort: "category",
+    },
+    {
+      query: { period: "365" },
+      name: "365",
+      startOn: "2024-01-03",
+      endOn: "2025-01-02",
+      sort: "date",
+    },
+    {
+      query: { period: "this-year" },
+      name: "this-year",
+      startOn: "2025-01-01",
+      endOn: "2025-01-02",
+      sort: "date",
+    },
+    {
+      query: { period: "last-year" },
+      name: "last-year",
+      startOn: "2024-01-01",
+      endOn: "2025-01-01",
+      sort: "date",
+    },
+    {
+      query: { period: "nonsense", sort: "nonsense" },
+      name: "month",
+      startOn: "2025-01-01",
+      endOn: "2025-01-02",
+      sort: "date",
+    },
+  ];
+
+  for (const expected of cases) {
+    const ledgerCalls = [];
+    const repository = {
+      async getDataFreshness() {
+        return FRESHNESS;
+      },
+      async listTransactions(_workspaceId, options) {
+        ledgerCalls.push(options);
+        return {
+          transactions: [],
+          pageInfo: { has_more: false, next_cursor: null },
+        };
+      },
+      async getTransactionsForPeriod() {
+        return [];
+      },
+      async listAccounts() {
+        return [];
+      },
+      async listTransactionCategories() {
+        return [];
+      },
+    };
+    const service = createFinanceService({
+      repository,
+      now: () => new Date("2025-01-01T20:00:00.000Z"),
+    });
+
+    const result = await service.getPageData("transactions", {
+      query: expected.query,
+    });
+
+    assert.equal(ledgerCalls.length, 1);
+    assert.equal(ledgerCalls[0].startOn, expected.startOn);
+    assert.equal(ledgerCalls[0].endOn, expected.endOn);
+    assert.equal(ledgerCalls[0].sort, expected.sort);
+    assert.equal(result.transactionPeriod, expected.name);
+    assert.equal(result.transactionSort, expected.sort);
+  }
+});
+
+test("custom transaction dates override named timelines", async () => {
+  let ledgerOptions;
+  const repository = {
+    async getDataFreshness() {
+      return FRESHNESS;
+    },
+    async listTransactions(_workspaceId, options) {
+      ledgerOptions = options;
+      return {
+        transactions: [],
+        pageInfo: { has_more: false, next_cursor: null },
+      };
+    },
+    async getTransactionsForPeriod() {
+      return [];
+    },
+    async listAccounts() {
+      return [];
+    },
+    async listTransactionCategories() {
+      return [];
+    },
+  };
+  const service = createFinanceService({
+    repository,
+    now: () => new Date("2026-07-28T20:00:00.000Z"),
+  });
+
+  const result = await service.getPageData("transactions", {
+    query: {
+      period: "last-year",
+      start: "2024-02-01",
+      end: "2024-03-01",
+    },
+  });
+
+  assert.equal(ledgerOptions.startOn, "2024-02-01");
+  assert.equal(ledgerOptions.endOn, "2024-03-01");
+  assert.equal(result.transactionPeriod, "custom");
 });
 
 test("transactions page presents provider categories and dates as human text", async () => {

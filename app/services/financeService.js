@@ -47,6 +47,13 @@ const CATEGORY_COLORS = [
   "#666666",
 ];
 
+const TRANSACTION_SORTS = new Set([
+  "date",
+  "merchant",
+  "category",
+  "cost",
+]);
+
 export class FinanceService {
   #repository;
   #jobQueue;
@@ -484,6 +491,7 @@ export class FinanceService {
       options.minAmountMinor ?? options.min_amount_minor;
     const maxAmountMinor =
       options.maxAmountMinor ?? options.max_amount_minor;
+    const sort = normalizeTransactionSort(options.sort);
     const repositoryOptions = {
       ...(search ? { search } : {}),
       ...(startOn ? { startOn } : {}),
@@ -496,6 +504,7 @@ export class FinanceService {
         booleanOption(options.includePending, true),
       ...(minAmountMinor !== undefined ? { minAmountMinor } : {}),
       ...(maxAmountMinor !== undefined ? { maxAmountMinor } : {}),
+      ...(options.sort != null ? { sort } : {}),
       limit: bounded(options.limit, 50, 100),
       ...(options.cursor ? { cursor: options.cursor } : {}),
     };
@@ -521,6 +530,7 @@ export class FinanceService {
           status: repositoryOptions.status,
           min_amount_minor: minAmountMinor ?? null,
           max_amount_minor: maxAmountMinor ?? null,
+          sort,
         },
         transactions,
         page_info: page.pageInfo,
@@ -2341,25 +2351,9 @@ export class FinanceService {
         typeof this.#repository.listTransactionSplits === "function";
       const requestedCategory =
         query.category_id ?? query.category ?? null;
-      const periods =
-        query.start && query.end
-          ? resolvePeriod(
-              "custom",
-              query.start,
-              query.end,
-              this.#now(),
-            )
-          : query.period === "90"
-            ? {
-                start_on: shiftDateOnly(this.#now(), -89),
-                end_on: shiftDateOnly(this.#now(), 1),
-              }
-            : query.period === "30"
-              ? {
-                  start_on: shiftDateOnly(this.#now(), -29),
-                  end_on: shiftDateOnly(this.#now(), 1),
-                }
-              : resolvePeriod("month", null, null, this.#now());
+      const periodSelection = resolveTransactionPeriod(query, this.#now());
+      const periods = periodSelection.period;
+      const sort = normalizeTransactionSort(query.sort);
       const duration = daysBetween(
         periods.start_on,
         periods.end_on,
@@ -2385,6 +2379,7 @@ export class FinanceService {
             category: requestedCategory,
             accountId: query.account,
             cursor: query.cursor,
+            sort,
             limit: 100,
           }),
           this.#repository.getTransactionsForPeriod(
@@ -2468,6 +2463,8 @@ export class FinanceService {
               label: category.path,
             }))
           : transactionCategoryOptions(observedCategories),
+        transactionPeriod: periodSelection.name,
+        transactionSort: sort,
         selectedTransaction: selectedLedgerTransaction
           ? webTransaction(selectedLedgerTransaction)
           : selectedTransaction
@@ -3221,6 +3218,69 @@ function resolvePeriod(name, startOn, endOn, now) {
   const month = periodForMonth(now).current;
   month.end_on = earlierDate(month.end_on, shiftDateOnly(now, 1));
   return month;
+}
+
+export function normalizeTransactionSort(value) {
+  const normalized = String(value ?? "date").trim().toLowerCase();
+  return TRANSACTION_SORTS.has(normalized) ? normalized : "date";
+}
+
+export function resolveTransactionPeriod(query, now) {
+  if (query.start && query.end) {
+    return {
+      name: "custom",
+      period: resolvePeriod(
+        "custom",
+        query.start,
+        query.end,
+        now,
+      ),
+    };
+  }
+
+  const name = new Set([
+    "month",
+    "30",
+    "90",
+    "365",
+    "this-year",
+    "last-year",
+  ]).has(query.period)
+    ? query.period
+    : "month";
+  const endOn = shiftDateOnly(now, 1);
+  if (name === "30" || name === "90" || name === "365") {
+    return {
+      name,
+      period: {
+        start_on: shiftDateOnly(now, -(Number(name) - 1)),
+        end_on: endOn,
+      },
+    };
+  }
+  const currentYear = Number(dateOnly(now).slice(0, 4));
+  if (name === "this-year") {
+    return {
+      name,
+      period: {
+        start_on: `${currentYear}-01-01`,
+        end_on: endOn,
+      },
+    };
+  }
+  if (name === "last-year") {
+    return {
+      name,
+      period: {
+        start_on: `${currentYear - 1}-01-01`,
+        end_on: `${currentYear}-01-01`,
+      },
+    };
+  }
+  return {
+    name,
+    period: resolvePeriod("month", null, null, now),
+  };
 }
 
 function dashboardHistoryPeriod(value, now) {

@@ -1,4 +1,20 @@
 <%- include("partials/head", { pageTitle }) %>
+<%
+  const selectedTransactionPeriod =
+    typeof transactionPeriod !== "undefined"
+      ? transactionPeriod
+      : query.start && query.end
+        ? "custom"
+        : ["month", "30", "90", "365", "this-year", "last-year"].includes(query.period)
+          ? query.period
+          : "month";
+  const selectedTransactionSort =
+    typeof transactionSort !== "undefined"
+      ? transactionSort
+      : ["date", "merchant", "category", "cost"].includes(query.sort)
+        ? query.sort
+        : "date";
+%>
 <body data-page="transactions">
   <%- include("partials/site-header", { activePath, viewer }) %>
   <main class="page-shell">
@@ -16,11 +32,14 @@
         <i class="ph ph-magnifying-glass"></i>
         <input type="search" name="q" value="<%= query.q || '' %>" placeholder="Merchant or description">
       </label>
-      <select name="period" aria-label="Period">
-        <option value="month" <%= !query.start && !query.end && (!query.period || query.period === "month") ? "selected" : "" %>>This month</option>
-        <option value="30" <%= query.period === "30" ? "selected" : "" %>>Last 30 days</option>
-        <option value="90" <%= query.period === "90" ? "selected" : "" %>>Last 90 days</option>
-        <% if (query.start && query.end) { %>
+      <select name="period" aria-label="Timeline">
+        <option value="month" <%= selectedTransactionPeriod === "month" ? "selected" : "" %>>This Month</option>
+        <option value="30" <%= selectedTransactionPeriod === "30" ? "selected" : "" %>>Past 30 Days</option>
+        <option value="90" <%= selectedTransactionPeriod === "90" ? "selected" : "" %>>Past 90 Days</option>
+        <option value="365" <%= selectedTransactionPeriod === "365" ? "selected" : "" %>>Past 365 Days</option>
+        <option value="this-year" <%= selectedTransactionPeriod === "this-year" ? "selected" : "" %>>This Year</option>
+        <option value="last-year" <%= selectedTransactionPeriod === "last-year" ? "selected" : "" %>>Last Year</option>
+        <% if (selectedTransactionPeriod === "custom") { %>
           <option value="custom" selected>Custom dates</option>
         <% } %>
       </select>
@@ -35,6 +54,12 @@
       <select name="account" aria-label="Account">
         <option value="">All accounts</option>
         <% accounts.forEach((account) => { %><option value="<%= account.id %>" data-account-display-name="<%= account.id %>" data-account-provider-name="<%= account.name %>" <%= query.account === account.id ? "selected" : "" %>><%= account.name %></option><% }) %>
+      </select>
+      <select name="sort" aria-label="Sort">
+        <option value="date" <%= selectedTransactionSort === "date" ? "selected" : "" %>>Date (newest first)</option>
+        <option value="merchant" <%= selectedTransactionSort === "merchant" ? "selected" : "" %>>Merchant (A–Z)</option>
+        <option value="category" <%= selectedTransactionSort === "category" ? "selected" : "" %>>Category (A–Z)</option>
+        <option value="cost" <%= selectedTransactionSort === "cost" ? "selected" : "" %>>Cost (highest first)</option>
       </select>
       <button class="button button--dark" type="submit">Apply</button>
       <a class="button button--ghost" href="/transactions">Clear</a>
@@ -366,6 +391,9 @@
                   ...(query.end ? { end: query.end } : {}),
                   ...(query.q ? { q: query.q } : {}),
                   ...(query.account ? { account: query.account } : {}),
+                  ...(selectedTransactionSort !== "date"
+                    ? { sort: selectedTransactionSort }
+                    : {}),
                   category: category.value ?? category.label,
                 });
               %>
@@ -433,7 +461,7 @@
       <div class="pagination">
         <span>Showing <%= transactions.length %> transactions</span>
         <% if (typeof transactionPageInfo !== "undefined" && transactionPageInfo?.has_more && transactionPageInfo.next_cursor) { %>
-          <a class="button button--secondary" href="/transactions?<%= new URLSearchParams({ ...query, cursor: transactionPageInfo.next_cursor }).toString() %>">Next page</a>
+          <a class="button button--secondary" href="/transactions?<%= new URLSearchParams({ ...query, sort: selectedTransactionSort, cursor: transactionPageInfo.next_cursor }).toString() %>">Next page</a>
         <% } else { %>
           <button type="button" class="button button--secondary" disabled>End of results</button>
         <% } %>
