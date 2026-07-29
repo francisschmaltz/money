@@ -315,6 +315,7 @@ export class PgPlanningRepository {
           SELECT jsonb_agg(
             jsonb_build_object(
               'id', funding.id,
+              'goal_id', funding.goal_id,
               'source', funding.source,
               'cadence', funding.cadence,
               'amount_minor', funding.amount_minor,
@@ -2593,7 +2594,12 @@ function mapGoal(row) {
     allocations,
     recorded_allocations: recordedAllocations,
     spending,
-    schedules: (row.schedules ?? []).map(mapSchedule),
+    schedules: (row.schedules ?? []).map((schedule) =>
+      mapSchedule({
+        ...schedule,
+        goal_id: schedule.goal_id ?? row.id,
+      }),
+    ),
     archived_at: dateValue(row.archived_at),
     archive_outcome: row.archive_outcome ?? null,
     created_at: dateValue(row.created_at),

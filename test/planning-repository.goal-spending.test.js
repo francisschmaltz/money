@@ -123,6 +123,46 @@ test("goal reads spill source overruns across the remaining funding", async () =
   );
 });
 
+test("goal reads keep the parent ID on funding schedules", async () => {
+  const db = transactionalPool(async () => ({
+    rows: [
+      {
+        id: "goal-trip",
+        name: "Family trip",
+        target_amount_minor: "5000",
+        currency_code: "USD",
+        target_on: null,
+        status: "active",
+        version: "4",
+        recorded_allocations: [],
+        spending: [],
+        schedules: [
+          {
+            id: "schedule-trip",
+            source: "cash",
+            cadence: "biweekly_friday",
+            amount_minor: "100",
+            monthly_day: null,
+            anchor_on: "2026-07-31",
+            next_run_on: "2026-07-31",
+            status: "active",
+            version: "1",
+          },
+        ],
+      },
+    ],
+  }));
+  const repository = new PgPlanningRepository(db.pool);
+
+  const [goal] = await repository.listGoals("shared");
+
+  assert.equal(goal.schedules[0].goal_id, "goal-trip");
+  assert.match(
+    db.calls[0].sql,
+    /'goal_id', funding\.goal_id/,
+  );
+});
+
 test("transaction goal-spending reads expose the optimistic parent version", async () => {
   let queryNumber = 0;
   const db = transactionalPool(async (sql) => {

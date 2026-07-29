@@ -299,6 +299,75 @@ test("planning reads emit the five version-compatible card kinds", async () => {
   }
 });
 
+test("Safe to Spend cards accept production-shaped goal schedules", async () => {
+  const service = new PlanningService({
+    repository: {
+      async listGoals() {
+        return [
+          {
+            id: "goal-trip",
+            name: "Family trip",
+            purpose: "vacation",
+            target_amount_minor: 500_000,
+            currency_code: "USD",
+            target_on: "2026-08-01",
+            status: "active",
+            version: 1,
+            allocations: [],
+            recorded_allocations: [],
+            spending: [],
+            schedules: [
+              {
+                id: "schedule-trip",
+                goal_id: "goal-trip",
+                source: "cash",
+                cadence: "biweekly_friday",
+                amount_minor: 10_000,
+                monthly_day: null,
+                anchor_on: "2026-07-31",
+                next_run_on: "2026-07-31",
+                status: "active",
+                version: 1,
+              },
+            ],
+            archived_at: null,
+            archive_outcome: null,
+            created_at: "2026-07-01T12:00:00.000Z",
+            updated_at: "2026-07-01T12:00:00.000Z",
+          },
+        ];
+      },
+      async getWorkspaceTimezone() {
+        return "America/Los_Angeles";
+      },
+    },
+    financeRepository: {
+      async listAccounts() {
+        return [];
+      },
+      async listRecurringStreams() {
+        return [];
+      },
+      async getDataFreshness() {
+        return {
+          data_as_of: "2026-07-27T18:48:00.000Z",
+          partial: false,
+        };
+      },
+    },
+    now: () => new Date("2026-07-27T20:00:00.000Z"),
+  });
+  const tools = registry("read", service);
+
+  const result = await tools.get("get_safe_to_spend").handler({});
+
+  assert.equal(result.isError, undefined);
+  assert.equal(
+    result.structuredContent.data.goals[0].schedules[0].goal_id,
+    "goal-trip",
+  );
+});
+
 test("budget and split writes use exact versions and replay completed receipts", async () => {
   const tools = registry("plan:write");
   const budgetRead = await tools
