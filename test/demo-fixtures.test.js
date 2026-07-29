@@ -6,6 +6,7 @@ import {
   buildDefaultAccounts,
   buildDefaultBudgetActuals,
   buildDefaultBudgetDefaults,
+  buildDefaultRecurringPayments,
   buildDefaultTransactions,
 } from "../app/demo/defaultScenario.js";
 import { buildDemoModel } from "../app/demo/webFixtures.js";
@@ -129,6 +130,12 @@ test("planning totals and budget actuals use the canonical defaults", async () =
   const actualTotal = [
     ...buildDefaultBudgetActuals().values(),
   ].reduce((sum, value) => sum + value, 0);
+  const expectedBills = buildDefaultRecurringPayments()
+    .filter((stream) => stream.type === "bill")
+    .reduce(
+      (sum, stream) => sum + stream.expected_amount.amount_minor,
+      0,
+    );
 
   assert.equal(
     safeToSpend.data.liquid_cash.amount_minor,
@@ -141,6 +148,17 @@ test("planning totals and budget actuals use the canonical defaults", async () =
   assert.equal(
     safeToSpend.data.taxable_brokerage_value.amount_minor,
     accountTotals.taxable_investment,
+  );
+  assert.equal(
+    safeToSpend.data.expected_bills.amount_minor,
+    expectedBills,
+  );
+  assert.equal(
+    safeToSpend.data.safe_to_spend.amount_minor,
+    safeToSpend.data.liquid_cash.amount_minor -
+      safeToSpend.data.current_card_liabilities.amount_minor -
+      expectedBills -
+      safeToSpend.data.cash_goal_earmarks.amount_minor,
   );
   assert.equal(
     budget.data.planned_total.amount_minor,

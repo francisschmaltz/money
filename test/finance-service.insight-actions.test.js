@@ -343,7 +343,146 @@ test("manual recurring classification clears automatic source ownership", async 
     updated: true,
     stream_id: "stream-1",
     type: "bill",
+    recompute_queued: false,
   });
+});
+
+test("transaction recurring patterns validate spending, persist actor intent, and queue recomputation", async () => {
+  const calls = [];
+  const repository = {
+    async getTransaction() {
+      return {
+        id: "transaction-1",
+        pending: false,
+        amount_minor: -8_500,
+        excluded_from_spending: false,
+      };
+    },
+    async getTransactionRecurringContext() {
+      return { account_active: true };
+    },
+    async upsertRecurringPatternRule(
+      workspaceId,
+      transactionId,
+      options,
+    ) {
+      calls.push(["upsert", workspaceId, transactionId, options]);
+      return {
+        id: "pattern-1",
+        stream_id: "stream-1",
+        stream_type: options.type,
+        cadence: options.cadence,
+      };
+    },
+    async deactivateRecurringPatternRule(
+      workspaceId,
+      transactionId,
+      options,
+    ) {
+      calls.push(["remove", workspaceId, transactionId, options]);
+      return { id: "pattern-1" };
+    },
+  };
+  const jobQueue = {
+    async enqueue(type, payload, options) {
+      calls.push(["queue", type, payload, options]);
+      return { id: "job-1" };
+    },
+  };
+  const service = createFinanceService({ repository, jobQueue });
+
+  const saved = await service.upsertTransactionRecurringPattern(
+    {
+      transaction_id: "transaction-1",
+      type: "bill",
+      cadence: "monthly",
+    },
+    { id: "user-1" },
+  );
+  const removed = await service.removeTransactionRecurringPattern(
+    { transaction_id: "transaction-1" },
+    { id: "user-1" },
+  );
+
+  assert.deepEqual(saved, {
+    updated: true,
+    pattern: {
+      id: "pattern-1",
+      stream_id: "stream-1",
+      type: "bill",
+      cadence: "monthly",
+      source: "manual",
+    },
+    recompute_queued: true,
+  });
+  assert.deepEqual(removed, {
+    updated: true,
+    removed: true,
+    pattern_id: "pattern-1",
+    recompute_queued: true,
+  });
+  assert.deepEqual(calls, [
+    [
+      "upsert",
+      "shared",
+      "transaction-1",
+      {
+        type: "bill",
+        cadence: "monthly",
+        actorId: "user-1",
+      },
+    ],
+    [
+      "queue",
+      "finance.detect_recurring",
+      { workspaceId: "shared" },
+      { dedupeKey: "shared" },
+    ],
+    [
+      "remove",
+      "shared",
+      "transaction-1",
+      { actorId: "user-1" },
+    ],
+    [
+      "queue",
+      "finance.detect_recurring",
+      { workspaceId: "shared" },
+      { dedupeKey: "shared" },
+    ],
+  ]);
+});
+
+test("transaction recurring patterns reject ineligible rows before persistence", async () => {
+  let wrote = false;
+  const service = createFinanceService({
+    repository: {
+      async getTransaction() {
+        return {
+          id: "income-1",
+          pending: false,
+          amount_minor: 5_000,
+          excluded_from_spending: false,
+        };
+      },
+      async getTransactionRecurringContext() {
+        return { account_active: true };
+      },
+      async upsertRecurringPatternRule() {
+        wrote = true;
+      },
+    },
+  });
+
+  await assert.rejects(
+    service.upsertTransactionRecurringPattern({
+      transaction_id: "income-1",
+      type: "subscription",
+      cadence: "monthly",
+    }),
+    /require a spending transaction/,
+  );
+  assert.equal(wrote, false);
 });
 
 test("bulk insight actions transition once and rebuild search once", async () => {

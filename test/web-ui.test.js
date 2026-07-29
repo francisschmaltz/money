@@ -106,7 +106,7 @@ test("Plaid OAuth callback renders a resumable authenticated return page", async
   assert.match(response.text, /data-page="plaid-oauth"/);
   assert.match(response.text, /data-plaid-oauth-return/);
   assert.match(response.text, /Returning to Plaid/);
-  assert.match(response.text, /\/js\/money\.js\?v=28/);
+  assert.match(response.text, /\/js\/money\.js\?v=29/);
   assert.doesNotMatch(response.text, /data-search-dialog/);
 });
 
@@ -213,7 +213,7 @@ test("dashboard defaults to cash and exposes four truthful balance views", async
   assert.equal(metricPayload.short_term.action_href, "/credit");
   assert.equal(
     metricPayload.short_term.description,
-    "Cash balance − credit-card debt",
+    "Cash and brokerage balance − credit-card debt",
   );
   assert.equal(metricPayload.retirement.label, "Retirement");
   assert.deepEqual(
@@ -475,6 +475,15 @@ test("selected transactions expose notes and one-time organization", async () =>
   assert.match(html, /maxlength="2000"/);
   assert.match(html, /data-transaction-organize-form/);
   assert.match(html, /data-transaction-organize-category/);
+  assert.match(html, /data-transaction-recurring-form/);
+  assert.match(
+    html,
+    /data-endpoint="\/api\/v1\/transactions\/txn_whole_foods\/recurring-pattern"/,
+  );
+  assert.match(html, /<h3 id="transaction-recurring-heading">Recurring pattern<\/h3>/);
+  assert.match(html, /<option value="subscription"/);
+  assert.match(html, /<option value="bill"/);
+  assert.match(html, /<option value="monthly"/);
   assert.match(html, /name="budget_month_offset"/);
   assert.match(html, /Apply to Plan month/);
   assert.match(html, /June 2026 · Previous month/);
@@ -501,6 +510,14 @@ test("selected transactions expose notes and one-time organization", async () =>
   assert.match(html, /data-detail-dialog-close aria-label="Close transaction details"/);
   assert.match(html, /data-detail-dialog-link/);
   assert.doesNotMatch(html, /data-transaction-classification/);
+
+  const memberHtml = await render("transactions", {
+    pageTitle: "Transactions",
+    activePath: "/transactions",
+    selectedTransaction: demo.transactions[0],
+    viewer: { ...demo.viewer, is_admin: false },
+  });
+  assert.doesNotMatch(memberHtml, /data-transaction-recurring-form/);
 });
 
 test("transactions visibly mark a manually overridden Plan month", async () => {
@@ -527,6 +544,36 @@ test("transactions visibly mark a manually overridden Plan month", async () => {
     html,
     /<dt>Plan month<\/dt><dd>June 2026 · Manually applied<\/dd>/,
   );
+});
+
+test("manual recurring patterns render editable type, cadence, and removal", async () => {
+  const html = await render("transactions", {
+    pageTitle: "Transactions",
+    activePath: "/transactions",
+    selectedTransaction: {
+      ...demo.transactions[0],
+      recurringPattern: {
+        eligible: true,
+        manual: true,
+        patternId: "pattern-1",
+        streamId: "stream-1",
+        type: "bill",
+        cadence: "quarterly",
+        cadenceSuggested: false,
+      },
+    },
+  });
+
+  assert.match(
+    html,
+    /<option value="bill" selected>Bill<\/option>/,
+  );
+  assert.match(
+    html,
+    /<option value="quarterly" selected>Quarterly<\/option>/,
+  );
+  assert.match(html, /data-remove-recurring-pattern/);
+  assert.match(html, /Save pattern/);
 });
 
 test("transaction split editing preserves custom categories and hides unsupported currencies", async () => {
@@ -651,6 +698,10 @@ test("accounts show inventory with local rename and disclosed Settings controls"
   assert.match(html, /\$108,307\.21/);
   assert.match(html, /Short-term worth/);
   assert.match(html, /\$105,492\.58/);
+  assert.match(
+    html,
+    /Cash and brokerage balance − credit-card debt/,
+  );
   assert.match(html, /Trading investments/);
   assert.match(html, /Retirement investments/);
   assert.match(html, /Manually tracked assets/);
@@ -766,6 +817,11 @@ test("portfolio exposes all, trading, and retirement views while preserving peri
   assert.match(
     html,
     /href="\/portfolio\?period=1y&amp;scope=retirement" aria-current="page"/,
+  );
+  assert.match(html, /aria-label="Portfolio timeframe"/);
+  assert.doesNotMatch(
+    html,
+    /<span>Selected period<\/span>/,
   );
 
   const legacy = await render("portfolio", {
@@ -891,7 +947,10 @@ test("settings exposes account grouping and manual asset CRUD controls", async (
   assert.match(html, /data-account-group-form/);
   assert.match(html, /id="account-account_checking"/);
   assert.match(html, /value="taxable_investment"/);
-  assert.match(html, /Cash balance minus credit-card debt/);
+  assert.match(
+    html,
+    /Cash and brokerage balance − credit-card debt/,
+  );
   assert.match(html, /data-manual-asset-create/);
   assert.match(html, /data-manual-asset-edit/);
   assert.match(

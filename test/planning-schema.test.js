@@ -26,6 +26,13 @@ const hierarchicalBudgetMigration = fs.readFileSync(
   new URL("../migrations/025_hierarchical_budgets.sql", import.meta.url),
   "utf8",
 );
+const spendingTreatmentMigration = fs.readFileSync(
+  new URL(
+    "../migrations/029_effective_spending_treatment.sql",
+    import.meta.url,
+  ),
+  "utf8",
+);
 
 test("family planning migration persists every durable planning record", () => {
   for (const table of [
@@ -197,6 +204,25 @@ test("provider transaction changes invalidate goal spending and restore archived
   assert.match(
     goalSpendMigration,
     /status = 'active',\s+archived_at = NULL/,
+  );
+});
+
+test("effective spending treatment preserves explicit override precedence", () => {
+  assert.match(
+    spendingTreatmentMigration,
+    /CREATE VIEW transaction_effective_spending_treatments/,
+  );
+  assert.match(
+    spendingTreatmentMigration,
+    /COALESCE\(\s*transaction_override\.excluded_from_spending,\s*merchant_override\.excluded_from_spending,\s*original_transaction_override\.excluded_from_spending,\s*original_merchant_override\.excluded_from_spending,\s*original_transaction\.excluded_from_spending,\s*t\.excluded_from_spending\s*\)/,
+  );
+  assert.doesNotMatch(
+    spendingTreatmentMigration,
+    /UPDATE\s+transactions/,
+  );
+  assert.doesNotMatch(
+    spendingTreatmentMigration,
+    /invalidate_goal_transaction_spends/,
   );
 });
 

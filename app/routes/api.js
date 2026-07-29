@@ -1480,6 +1480,44 @@ export function createApiRouter({
     },
   );
 
+  router.put(
+    "/api/v1/transactions/:transactionId/recurring-pattern",
+    requireAdmin,
+    requireCsrf,
+    (request, response, next) => {
+      invokeWithActor(
+        financeService,
+        "upsertTransactionRecurringPattern",
+        {
+          transaction_id: request.params.transactionId,
+          type: stringValue(request.body?.type, 40),
+          cadence: stringValue(request.body?.cadence, 40),
+        },
+        request.user,
+        response,
+        next,
+      );
+    },
+  );
+
+  router.delete(
+    "/api/v1/transactions/:transactionId/recurring-pattern",
+    requireAdmin,
+    requireCsrf,
+    (request, response, next) => {
+      invokeWithActor(
+        financeService,
+        "removeTransactionRecurringPattern",
+        {
+          transaction_id: request.params.transactionId,
+        },
+        request.user,
+        response,
+        next,
+      );
+    },
+  );
+
   router.get(
     "/api/v1/categories",
     requireAdmin,

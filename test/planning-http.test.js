@@ -226,7 +226,15 @@ test("Dashboard and Plan render one identical Safe to Spend card without a link"
   assert.ok(safeCard(dashboard.text));
   assert.equal(safeCard(dashboard.text), safeCard(plan.text));
   assert.match(dashboard.text, /<h2 id="safe-to-spend-heading">Safe to Spend<\/h2>/);
-  assert.match(dashboard.text, /class="display-money">\$34,563\.17<\/p>/);
+  assert.match(dashboard.text, /class="display-money">\$33,734\.73<\/p>/);
+  assert.match(
+    safeCard(dashboard.text),
+    /Liquid cash[\s\S]*Credit card balances[\s\S]*Expected bills[\s\S]*Goals/,
+  );
+  assert.match(
+    safeCard(dashboard.text),
+    /How Safe to Spend is calculated[\s\S]*Bill amounts and dates are estimates based on recurring history/,
+  );
   assert.doesNotMatch(
     safeCard(dashboard.text),
     /Available after cards and cash-backed goals|Open the family plan|Cash details|quiet-link/,

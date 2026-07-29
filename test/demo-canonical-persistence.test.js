@@ -149,6 +149,54 @@ test("every rendered recurring item is editable and classification persists afte
   assert.equal(freshAdobe.type, "subscription");
 });
 
+test("manual transaction patterns persist in transaction and recurring views until removed", async () => {
+  const service = createDemoFinanceService();
+  const transactionId = "txn_whole_foods";
+
+  const saved = await service.upsertTransactionRecurringPattern(
+    {
+      transaction_id: transactionId,
+      type: "bill",
+      cadence: "monthly",
+    },
+    { id: "demo-user" },
+  );
+  assert.equal(saved.pattern.type, "bill");
+  assert.equal(saved.pattern.cadence, "monthly");
+
+  const transactionPage = await request(demoApp(service))
+    .get(
+      `/transactions?period=365&transaction=${transactionId}`,
+    )
+    .expect(200);
+  assert.match(transactionPage.text, /data-manual="true"/);
+  assert.match(
+    transactionPage.text,
+    /<option value="bill" selected>Bill<\/option>/,
+  );
+  assert.match(
+    transactionPage.text,
+    /<option value="monthly" selected>Monthly<\/option>/,
+  );
+
+  const recurringPage = await request(demoApp(service))
+    .get("/recurring")
+    .expect(200);
+  const bills = recurringPage.text.slice(
+    recurringPage.text.indexOf('id="bills-heading"'),
+  );
+  assert.match(bills, /Whole Foods/);
+
+  await service.removeTransactionRecurringPattern(
+    { transaction_id: transactionId },
+    { id: "demo-user" },
+  );
+  const afterRemoval = await request(demoApp(service))
+    .get("/recurring")
+    .expect(200);
+  assert.doesNotMatch(afterRemoval.text, /Whole Foods/);
+});
+
 test("web and service portfolio holdings come from the same records", async () => {
   const service = createDemoFinanceService();
   const model = buildDemoModel();

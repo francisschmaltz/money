@@ -10,6 +10,7 @@ import {
   modelPlanningScenario,
   nextBiweeklyFridayDueOn,
   nextMonthlyDueOn,
+  projectExpectedBills,
 } from "../app/services/planningAnalytics.js";
 
 const account = (
@@ -64,6 +65,162 @@ test("Safe to Spend excludes brokerage, ignores card overpayments, and may be ne
       (entry) => entry.code === "safe_to_spend_negative",
     ),
   );
+});
+
+test("Safe to Spend subtracts bills expected in the next 30 days but not subscriptions", () => {
+  const snapshot = buildPlanningSnapshot({
+    accounts: [account("checking", "cash", 1_000_000)],
+    recurringStreams: [
+      {
+        id: "rent",
+        stream_type: "bill",
+        status: "active",
+        cadence: "monthly",
+        expected_amount_minor: 500_000,
+        currency_code: "USD",
+        next_expected_on: "2026-08-01",
+      },
+      {
+        id: "streaming",
+        stream_type: "subscription",
+        status: "active",
+        cadence: "monthly",
+        expected_amount_minor: 2_000,
+        currency_code: "USD",
+        next_expected_on: "2026-08-02",
+      },
+    ],
+    asOf: "2026-07-28",
+  });
+
+  assert.equal(snapshot.expected_bills.amount_minor, 500_000);
+  assert.equal(snapshot.expected_bill_occurrence_count, 1);
+  assert.equal(snapshot.expected_bills_through_on, "2026-08-27");
+  assert.equal(snapshot.excluded_expected_bill_count, 0);
+  assert.equal(snapshot.safe_to_spend.amount_minor, 500_000);
+  assert.match(snapshot.formula, /bills expected in the next 30 days/i);
+});
+
+test("expected bills include repeated and overdue occurrences while exposing unusable estimates", () => {
+  const projection = projectExpectedBills({
+    asOf: "2026-07-28",
+    recurringStreams: [
+      {
+        stream_type: "bill",
+        status: "active",
+        cadence: "weekly",
+        expected_amount_minor: 100,
+        currency_code: "USD",
+        next_expected_on: "2026-07-27",
+      },
+      {
+        stream_type: "bill",
+        status: "resumed",
+        cadence: "biweekly",
+        expected_amount_minor: 200,
+        currency_code: "USD",
+        next_expected_on: "2026-07-28",
+      },
+      {
+        stream_type: "bill",
+        status: "active",
+        cadence: "monthly",
+        expected_amount_minor: 300,
+        currency_code: "USD",
+        next_expected_on: "2026-08-27",
+      },
+      {
+        stream_type: "bill",
+        status: "active",
+        cadence: "monthly",
+        expected_amount_minor: 9_999,
+        currency_code: "EUR",
+        next_expected_on: "2026-08-28",
+      },
+      {
+        stream_type: "bill",
+        status: "active",
+        cadence: "monthly",
+        expected_amount_minor: 400,
+        currency_code: "EUR",
+        next_expected_on: "2026-08-01",
+      },
+      {
+        stream_type: "bill",
+        status: "irregular",
+        cadence: "irregular",
+        expected_amount_minor: 500,
+        currency_code: "USD",
+        next_expected_on: null,
+      },
+      {
+        stream_type: "bill",
+        status: "active",
+        cadence: "monthly",
+        expected_amount_minor: 600,
+        currency_code: "USD",
+        next_expected_on: "2026-13-01",
+      },
+      {
+        stream_type: "bill",
+        status: "canceled",
+        cadence: "monthly",
+        expected_amount_minor: 700,
+        currency_code: "USD",
+        next_expected_on: "2026-08-01",
+      },
+    ],
+  });
+
+  assert.equal(projection.expected_bills.amount_minor, 1_400);
+  assert.equal(projection.expected_bill_occurrence_count, 9);
+  assert.equal(projection.expected_bills_through_on, "2026-08-27");
+  assert.equal(projection.excluded_expected_bill_count, 2);
+});
+
+test("calendar-cadence bills reserve only their stored next estimate", () => {
+  const projection = projectExpectedBills({
+    asOf: "2026-01-31",
+    recurringStreams: [
+      {
+        stream_type: "bill",
+        status: "active",
+        cadence: "monthly",
+        expected_amount_minor: 500,
+        currency_code: "USD",
+        next_expected_on: "2026-01-31",
+      },
+    ],
+  });
+
+  assert.equal(projection.expected_bills.amount_minor, 500);
+  assert.equal(projection.expected_bill_occurrence_count, 1);
+  assert.equal(projection.expected_bills_through_on, "2026-03-02");
+});
+
+test("an observed bill stops reserving the occurrence after detection advances it", () => {
+  const bill = {
+    stream_type: "bill",
+    status: "active",
+    cadence: "monthly",
+    expected_amount_minor: 500_000,
+    currency_code: "USD",
+  };
+  const beforeDetection = projectExpectedBills({
+    asOf: "2026-07-28",
+    recurringStreams: [
+      { ...bill, next_expected_on: "2026-07-27" },
+    ],
+  });
+  const afterDetection = projectExpectedBills({
+    asOf: "2026-07-28",
+    recurringStreams: [
+      { ...bill, next_expected_on: "2026-08-28" },
+    ],
+  });
+
+  assert.equal(beforeDetection.expected_bills.amount_minor, 500_000);
+  assert.equal(afterDetection.expected_bills.amount_minor, 0);
 });
 
 test("goal spending releases current earmarks while preserving funded progress", () => {
@@ -418,6 +575,292 @@ test("budgets use posted splits, let refunds reduce spending, and ignore transfe
   assert.equal(groceries.actual.amount_minor, 6_000);
   assert.equal(budget.actual_total.amount_minor, 8_000);
   assert.equal(budget.remaining_total.amount_minor, 10_000);
+});
+
+test("category actuals cover the full taxonomy without historical budget lines", () => {
+  const budget = buildBudgetStatus({
+    monthOn: "2026-06-01",
+    categories: [
+      {
+        id: "car",
+        name: "Car",
+        path: "Car",
+        parent_category_id: null,
+      },
+      {
+        id: "car-down-payment",
+        name: "Down payment",
+        path: "Car / Down payment",
+        parent_category_id: "car",
+      },
+      {
+        id: "food",
+        name: "Food",
+        path: "Food",
+        parent_category_id: null,
+      },
+    ],
+    transactions: [
+      {
+        id: "car-wire",
+        category_id: "car-down-payment",
+        category_primary: "Car / Down payment",
+        posted_on: "2026-06-12",
+        amount_minor: -7_000_000,
+        currency_code: "USD",
+        pending: false,
+        excluded_from_spending: false,
+      },
+    ],
+  });
+  const actualById = new Map(
+    budget.category_actuals.map((entry) => [
+      entry.category_id,
+      entry,
+    ]),
+  );
+
+  assert.deepEqual(budget.lines, []);
+  assert.equal(budget.actual_total.amount_minor, 7_000_000);
+  assert.equal(actualById.get("car").actual.amount_minor, 7_000_000);
+  assert.equal(actualById.get("car").direct_actual.amount_minor, 0);
+  assert.equal(
+    actualById.get("car-down-payment").actual.amount_minor,
+    7_000_000,
+  );
+  assert.equal(
+    actualById.get("car-down-payment").direct_actual.amount_minor,
+    7_000_000,
+  );
+  assert.equal(actualById.get("food").actual.amount_minor, 0);
+});
+
+test("full and partial goal attribution net from child, parent, total, and leftover actuals", () => {
+  const budget = buildBudgetStatus({
+    monthOn: "2026-07-01",
+    categories: [
+      {
+        id: "car",
+        name: "Car",
+        path: "Car",
+        parent_category_id: null,
+      },
+      {
+        id: "car-down-payment",
+        name: "Down payment",
+        path: "Car / Down payment",
+        parent_category_id: "car",
+      },
+      {
+        id: "car-service",
+        name: "Service",
+        path: "Car / Service",
+        parent_category_id: "car",
+      },
+    ],
+    budgetLines: [
+      {
+        category_id: "car",
+        category: "Car",
+        amount_minor: 8_000_000,
+      },
+      {
+        category_id: "car-down-payment",
+        category: "Car / Down payment",
+        amount_minor: 7_000_000,
+      },
+      {
+        category_id: "car-service",
+        category: "Car / Service",
+        amount_minor: 500_000,
+      },
+    ],
+    transactions: [
+      {
+        id: "car-wire",
+        category_id: "car-down-payment",
+        category_primary: "Car / Down payment",
+        posted_on: "2026-07-02",
+        amount_minor: -7_000_000,
+        goal_attributed_minor: 7_000_000,
+        currency_code: "USD",
+        pending: false,
+        excluded_from_spending: false,
+      },
+      {
+        id: "car-service",
+        category_id: "car-service",
+        category_primary: "Car / Service",
+        posted_on: "2026-07-03",
+        amount_minor: -500_000,
+        goal_attributed_minor: 200_000,
+        currency_code: "USD",
+        pending: false,
+        excluded_from_spending: false,
+      },
+    ],
+    income: {
+      average_monthly_minor: 10_000_000,
+      actual_month_minor: 10_000_000,
+      month_count: 4,
+      category_ids: [],
+    },
+  });
+  const byId = new Map(
+    budget.lines.map((line) => [line.category_id, line]),
+  );
+
+  assert.equal(budget.actual_total.amount_minor, 300_000);
+  assert.equal(budget.goal_attributed_total.amount_minor, 7_200_000);
+  assert.equal(budget.remaining_total.amount_minor, 7_700_000);
+  assert.equal(budget.actual_leftover.amount_minor, 9_700_000);
+  assert.equal(byId.get("car").actual.amount_minor, 300_000);
+  assert.equal(
+    byId.get("car").goal_attributed.amount_minor,
+    7_200_000,
+  );
+  assert.equal(byId.get("car").direct_goal_attributed.amount_minor, 0);
+  assert.equal(
+    byId.get("car-down-payment").actual.amount_minor,
+    0,
+  );
+  assert.equal(
+    byId.get("car-down-payment").direct_goal_attributed
+      .amount_minor,
+    7_000_000,
+  );
+  assert.equal(
+    byId.get("car-service").actual.amount_minor,
+    300_000,
+  );
+  assert.equal(
+    byId.get("car-service").goal_attributed.amount_minor,
+    200_000,
+  );
+});
+
+test("zero goal attribution restores the gross Plan actual", () => {
+  const input = {
+    monthOn: "2026-07-01",
+    categories: [
+      {
+        id: "car",
+        name: "Car",
+        path: "Car",
+        parent_category_id: null,
+      },
+    ],
+    budgetLines: [
+      {
+        category_id: "car",
+        category: "Car",
+        amount_minor: 20_000,
+      },
+    ],
+  };
+  const transaction = {
+    id: "repair",
+    category_id: "car",
+    category_primary: "Car",
+    posted_on: "2026-07-03",
+    amount_minor: -10_000,
+    currency_code: "USD",
+    pending: false,
+    excluded_from_spending: false,
+  };
+  const attributed = buildBudgetStatus({
+    ...input,
+    transactions: [
+      { ...transaction, goal_attributed_minor: 6_000 },
+    ],
+  });
+  const reversed = buildBudgetStatus({
+    ...input,
+    transactions: [
+      { ...transaction, goal_attributed_minor: 0 },
+    ],
+  });
+
+  assert.equal(attributed.actual_total.amount_minor, 4_000);
+  assert.equal(attributed.goal_attributed_total.amount_minor, 6_000);
+  assert.equal(reversed.actual_total.amount_minor, 10_000);
+  assert.equal(reversed.goal_attributed_total.amount_minor, 0);
+  assert.equal(reversed.lines[0].actual.amount_minor, 10_000);
+  assert.equal(
+    reversed.lines[0].goal_attributed.amount_minor,
+    0,
+  );
+});
+
+test("split goal attribution reconciles cents with line-index tie breaking", () => {
+  const transaction = {
+    id: "three-cent-purchase",
+    category_primary: "Other",
+    posted_on: "2026-07-03",
+    amount_minor: -3,
+    goal_attributed_minor: 2,
+    currency_code: "USD",
+    pending: false,
+    excluded_from_spending: false,
+  };
+  const categories = ["a", "b", "c"].map((id) => ({
+    id,
+    name: id.toUpperCase(),
+    path: id.toUpperCase(),
+    parent_category_id: null,
+  }));
+  const budget = buildBudgetStatus({
+    monthOn: "2026-07-01",
+    categories,
+    budgetLines: categories.map((category) => ({
+      category_id: category.id,
+      category: category.path,
+      amount_minor: 10,
+    })),
+    transactions: [transaction],
+    splits: [
+      {
+        id: "split-a",
+        transaction_id: transaction.id,
+        line_index: 2,
+        category_id: "a",
+        category: "A",
+        amount_minor: -1,
+      },
+      {
+        id: "split-b",
+        transaction_id: transaction.id,
+        line_index: 0,
+        category_id: "b",
+        category: "B",
+        amount_minor: -1,
+      },
+      {
+        id: "split-c",
+        transaction_id: transaction.id,
+        line_index: 1,
+        category_id: "c",
+        category: "C",
+        amount_minor: -1,
+      },
+    ],
+  });
+  const byId = new Map(
+    budget.category_actuals.map((entry) => [
+      entry.category_id,
+      entry,
+    ]),
+  );
+
+  assert.equal(transaction.amount_minor, -3);
+  assert.equal(budget.actual_total.amount_minor, 1);
+  assert.equal(budget.goal_attributed_total.amount_minor, 2);
+  assert.equal(byId.get("a").actual.amount_minor, 1);
+  assert.equal(byId.get("a").goal_attributed.amount_minor, 0);
+  assert.equal(byId.get("b").actual.amount_minor, 0);
+  assert.equal(byId.get("b").goal_attributed.amount_minor, 1);
+  assert.equal(byId.get("c").actual.amount_minor, 0);
+  assert.equal(byId.get("c").goal_attributed.amount_minor, 1);
 });
 
 test("refunds can make net spending negative and increase actual leftover", () => {

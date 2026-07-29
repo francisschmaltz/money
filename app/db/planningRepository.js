@@ -1723,17 +1723,21 @@ export class PgPlanningRepository {
     const transactionResult = await database.query(
       `
         SELECT
-          id,
-          provider_transaction_id,
-          amount_minor,
-          currency_code,
-          posted_on,
-          pending,
-          excluded_from_spending,
-          goal_spend_version
-        FROM transactions
-        WHERE workspace_id = $1
-          AND id = $2
+          t.id,
+          t.provider_transaction_id,
+          t.amount_minor,
+          t.currency_code,
+          t.posted_on,
+          t.pending,
+          treatment.effective_excluded_from_spending
+            AS excluded_from_spending,
+          t.goal_spend_version
+        FROM transactions t
+        JOIN transaction_effective_spending_treatments treatment
+          ON treatment.workspace_id = t.workspace_id
+         AND treatment.transaction_id = t.id
+        WHERE t.workspace_id = $1
+          AND t.id = $2
       `,
       [workspaceId, transactionId],
     );
@@ -1759,6 +1763,38 @@ export class PgPlanningRepository {
     };
   }
 
+  async listActiveGoalSpendTotals(
+    workspaceId = DEFAULT_WORKSPACE_ID,
+    transactionIds = [],
+  ) {
+    const ids = [
+      ...new Set(
+        (transactionIds ?? [])
+          .map((transactionId) => String(transactionId))
+          .filter(Boolean),
+      ),
+    ];
+    if (ids.length === 0) return [];
+    const result = await this.#client().query(
+      `
+        SELECT
+          transaction_id,
+          SUM(amount_minor)::bigint AS amount_minor
+        FROM goal_transaction_spends
+        WHERE workspace_id = $1
+          AND transaction_id = ANY($2::text[])
+          AND status = 'active'
+        GROUP BY transaction_id
+        ORDER BY transaction_id
+      `,
+      [workspaceId, ids],
+    );
+    return result.rows.map((row) => ({
+      transaction_id: row.transaction_id,
+      amount_minor: integer(row.amount_minor),
+    }));
+  }
+
   async replaceTransactionGoalSpending(
     workspaceId,
     transactionId,
@@ -1772,18 +1808,22 @@ export class PgPlanningRepository {
       const transactionResult = await client.query(
         `
           SELECT
-            id,
-            provider_transaction_id,
-            amount_minor,
-            currency_code,
-            posted_on,
-            pending,
-            excluded_from_spending,
-            goal_spend_version
-          FROM transactions
-          WHERE workspace_id = $1
-            AND id = $2
-          FOR UPDATE
+            t.id,
+            t.provider_transaction_id,
+            t.amount_minor,
+            t.currency_code,
+            t.posted_on,
+            t.pending,
+            treatment.effective_excluded_from_spending
+              AS excluded_from_spending,
+            t.goal_spend_version
+          FROM transactions t
+          JOIN transaction_effective_spending_treatments treatment
+            ON treatment.workspace_id = t.workspace_id
+           AND treatment.transaction_id = t.id
+          WHERE t.workspace_id = $1
+            AND t.id = $2
+          FOR UPDATE OF t
         `,
         [workspaceId, transactionId],
       );
@@ -1821,7 +1861,7 @@ export class PgPlanningRepository {
       }
       const nextLines = normalized.lines;
       if (
-        nextLines.length > 0 &&
+        addsGoalSpending(before, nextLines) &&
         (
           transaction.pending ||
           transaction.currency_code !== "USD" ||
@@ -2773,6 +2813,15 @@ function sameGoalSpendLines(current, proposed) {
       line.amount_minor === next.amount_minor
     );
   });
+}
+
+function addsGoalSpending(current, proposed) {
+  const currentByGoalSource = sumGoalSpendLines(current);
+  const proposedByGoalSource = sumGoalSpendLines(proposed);
+  return [...proposedByGoalSource].some(
+    ([goalSource, amountMinor]) =>
+      amountMinor > (currentByGoalSource.get(goalSource) ?? 0),
+  );
 }
 
 function sumGoalSpendLines(lines) {

@@ -37,6 +37,10 @@ import {
   isCashSecurity,
 } from "./investmentSecurities.js";
 import {
+  consolidatePortfolioCashRows,
+  selectPortfolioHolding,
+} from "./portfolioPresentation.js";
+import {
   buildCreditScoreSummary,
   CREDIT_SCORE_PRESETS,
 } from "./creditScoreTracking.js";
@@ -59,6 +63,14 @@ const TRANSACTION_SORTS = new Set([
   "merchant",
   "category",
   "cost",
+]);
+const MANUAL_RECURRING_TYPES = new Set(["subscription", "bill"]);
+const MANUAL_RECURRING_CADENCES = new Set([
+  "weekly",
+  "biweekly",
+  "monthly",
+  "quarterly",
+  "annual",
 ]);
 const INSIGHT_INCORRECT_REASON_CODES = new Set([
   "not_subscription",
@@ -2076,10 +2088,111 @@ export class FinanceService {
       );
     if (!updated) throw notFound("Recurring stream not found");
     await this.#repository.rebuildSearchDocuments?.(this.#workspaceId);
+    const recomputeQueued = await this.#enqueueRecompute();
     return {
       updated: true,
       stream_id: streamId,
       type: updated.stream_type,
+      recompute_queued: recomputeQueued,
+    };
+  }
+
+  async upsertTransactionRecurringPattern(input, actor = null) {
+    const transactionId = requiredId(
+      input.transactionId ?? input.transaction_id,
+      "transaction_id",
+    );
+    const type = String(input.type ?? "").trim();
+    const cadence = String(input.cadence ?? "").trim();
+    if (!MANUAL_RECURRING_TYPES.has(type)) {
+      throw new TypeError("type must be subscription or bill");
+    }
+    if (!MANUAL_RECURRING_CADENCES.has(cadence)) {
+      throw new TypeError(
+        "cadence must be weekly, biweekly, monthly, quarterly, or annual",
+      );
+    }
+    const [transaction, context] = await Promise.all([
+      this.#repository.getTransaction(
+        this.#workspaceId,
+        transactionId,
+      ),
+      optionalRepositoryCall(
+        this.#repository,
+        "getTransactionRecurringContext",
+        null,
+        this.#workspaceId,
+        transactionId,
+      ),
+    ]);
+    if (!transaction) throw notFound("Transaction not found");
+    if (transaction.pending) {
+      throw new TypeError(
+        "Pending transactions cannot define recurring patterns",
+      );
+    }
+    if (transaction.amount_minor >= 0) {
+      throw new TypeError(
+        "Recurring patterns require a spending transaction",
+      );
+    }
+    if (transaction.excluded_from_spending) {
+      throw new TypeError(
+        "Transactions excluded from spending cannot define recurring patterns",
+      );
+    }
+    if (context && !context.account_active) {
+      throw new TypeError(
+        "Recurring patterns require an active account",
+      );
+    }
+    const pattern =
+      await this.#repository.upsertRecurringPatternRule?.(
+        this.#workspaceId,
+        transactionId,
+        {
+          type,
+          cadence,
+          actorId: actor?.id ?? input.user_id ?? null,
+        },
+      );
+    if (!pattern) throw notFound("Transaction not found");
+    const recomputeQueued = await this.#enqueueRecompute();
+    return {
+      updated: true,
+      pattern: {
+        id: pattern.id,
+        stream_id: pattern.stream_id,
+        type: pattern.stream_type,
+        cadence: pattern.cadence,
+        source: "manual",
+      },
+      recompute_queued: recomputeQueued,
+    };
+  }
+
+  async removeTransactionRecurringPattern(input, actor = null) {
+    const transactionId = requiredId(
+      input.transactionId ?? input.transaction_id,
+      "transaction_id",
+    );
+    const pattern =
+      await this.#repository.deactivateRecurringPatternRule?.(
+        this.#workspaceId,
+        transactionId,
+        {
+          actorId: actor?.id ?? input.user_id ?? null,
+        },
+      );
+    if (!pattern) {
+      throw notFound("Manual recurring pattern not found");
+    }
+    const recomputeQueued = await this.#enqueueRecompute();
+    return {
+      updated: true,
+      removed: true,
+      pattern_id: pattern.id,
+      recompute_queued: recomputeQueued,
     };
   }
 
@@ -3020,6 +3133,7 @@ export class FinanceService {
         observedCategories,
         categoryDefinitions,
         selectedTransaction,
+        selectedRecurringContext,
       ] =
         await Promise.all([
           this.listTransactions({
@@ -3071,6 +3185,15 @@ export class FinanceService {
                 query.transaction,
               )
             : null,
+          query.transaction
+            ? optionalRepositoryCall(
+                this.#repository,
+                "getTransactionRecurringContext",
+                null,
+                this.#workspaceId,
+                query.transaction,
+              )
+            : null,
         ]);
       const analysisCategory =
         categoryDefinitions.find(
@@ -3112,6 +3235,18 @@ export class FinanceService {
             (transaction) => transaction.id === query.transaction,
           )
         : null;
+      const selectedTransactionModel = selectedLedgerTransaction
+        ? webTransaction(selectedLedgerTransaction)
+        : selectedTransaction
+          ? webTransaction(transactionCard(selectedTransaction))
+          : null;
+      if (selectedTransactionModel) {
+        selectedTransactionModel.recurringPattern =
+          webTransactionRecurringContext(
+            selectedTransactionModel,
+            selectedRecurringContext,
+          );
+      }
       return {
         ...base,
         transactions: page.data.transactions.map(webTransaction),
@@ -3134,11 +3269,7 @@ export class FinanceService {
           : transactionCategoryOptions(observedCategories),
         transactionPeriod: periodSelection.name,
         transactionSort: sort,
-        selectedTransaction: selectedLedgerTransaction
-          ? webTransaction(selectedLedgerTransaction)
-          : selectedTransaction
-            ? webTransaction(transactionCard(selectedTransaction))
-            : null,
+        selectedTransaction: selectedTransactionModel,
       };
     }
     if (view === "recurring") {
@@ -3249,9 +3380,12 @@ export class FinanceService {
         this.getPortfolioSummary({
           period: query.period ?? "1m",
           scope: query.scope ?? "all",
+          holdingsLimit: 100,
         }),
       ]);
-      const webHoldings = portfolio.data.holdings.map(webHolding);
+      const webHoldings = consolidatePortfolioCashRows(
+        portfolio.data.holdings.map(webHolding),
+      );
       return {
         ...base,
         overview: webOverview(overview.data),
@@ -3266,12 +3400,10 @@ export class FinanceService {
           (point) => point.value.amount_minor,
         ),
         portfolioData: portfolio.data,
-        selectedHolding: portfolio.data.holdings
-          .filter(
-            (holding) =>
-              (holding.ticker_symbol ?? holding.name) === query.holding,
-          )
-          .map(webHolding)[0] ?? null,
+        selectedHolding: selectPortfolioHolding(
+          webHoldings,
+          query.holding,
+        ),
       };
     }
     if (view === "accounts") {
@@ -3444,12 +3576,13 @@ export class FinanceService {
   }
 
   async #enqueueRecompute() {
-    if (!this.#jobQueue) return;
+    if (!this.#jobQueue) return false;
     await this.#jobQueue.enqueue(
       "finance.detect_recurring",
       { workspaceId: this.#workspaceId },
       { dedupeKey: this.#workspaceId },
     );
+    return true;
   }
 
   #result({
@@ -3615,6 +3748,8 @@ function recurringCard(stream) {
     detected_type: stream.detected_stream_type ?? stream.stream_type,
     type_override: stream.stream_type_override ?? null,
     classification_signals: stream.classification_signals ?? {},
+    manual_pattern_rule_id:
+      stream.manual_pattern_rule_id ?? null,
     override_source_finding_id:
       stream.override_source_finding_id ?? null,
     cadence: stream.cadence,
@@ -4935,6 +5070,45 @@ function webTransaction(transaction) {
   };
 }
 
+function webTransactionRecurringContext(transaction, context) {
+  const manualPattern = context?.pattern ?? null;
+  const linkedStream = context?.linked_stream ?? null;
+  let ineligibleReason = null;
+  if (transaction.status === "pending") {
+    ineligibleReason =
+      "Post this transaction before creating a recurring pattern.";
+  } else if (
+    (transaction.providerAmount ?? transaction.amount).amount_minor >= 0
+  ) {
+    ineligibleReason =
+      "Recurring patterns can only start from spending transactions.";
+  } else if (transaction.excludedFromSpending) {
+    ineligibleReason =
+      "Include this transaction in spending before creating a recurring pattern.";
+  } else if (context && !context.account_active) {
+    ineligibleReason =
+      "Recurring patterns require an active account.";
+  }
+  const linkedType = MANUAL_RECURRING_TYPES.has(
+    linkedStream?.stream_type,
+  )
+    ? linkedStream.stream_type
+    : null;
+  return {
+    eligible: !ineligibleReason,
+    ineligibleReason,
+    manual: Boolean(manualPattern),
+    patternId: manualPattern?.id ?? null,
+    streamId:
+      manualPattern?.stream_id ?? linkedStream?.id ?? null,
+    type: manualPattern?.stream_type ?? linkedType,
+    cadence:
+      manualPattern?.cadence ?? linkedStream?.cadence ?? null,
+    cadenceSuggested:
+      !manualPattern && Boolean(linkedStream?.cadence),
+  };
+}
+
 function transactionCleanupRow(transaction, fallbackCurrency) {
   return {
     id: transaction.id,
@@ -5052,7 +5226,6 @@ function webHolding(holding) {
     price: holding.price ?? null,
     priceAsOf: holding.price_as_of ?? null,
     allocation: holding.allocation_basis_points / 100,
-    change: 0,
     shares: isCash ? null : String(holding.quantity ?? "—"),
   };
 }

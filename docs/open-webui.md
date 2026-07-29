@@ -58,6 +58,15 @@ spend_from_finance_goal
 reverse_goal_spend
 ```
 
+`get_safe_to_spend` returns liquid USD cash after positive current card
+balances, active USD bills expected from today through 30 days ahead, and
+cash-backed goal earmarks. The bill projection includes only recurring streams
+classified as bills; subscriptions are deliberately excluded. Treat
+`expected_bills` as an estimate, preserve `expected_bills_through_on`, and
+preserve `expected_bill_occurrence_count`. Surface
+`excluded_expected_bill_count` and any warnings instead of implying the
+projection is complete.
+
 Planning writes use optimistic versions in addition to idempotency keys.
 Pass each budget line's `version` to `set_category_budget` and each
 transaction's `split_version` to `split_transaction`. Use `0` only for a new
@@ -74,12 +83,20 @@ Before calling `spend_from_finance_goal` or `reverse_goal_spend`, call
 These writes only change virtual earmarks and transaction attribution. They do
 not move cash, pay a card, sell brokerage assets, or place a trade.
 
+Eligibility follows the transaction's effective spending treatment. A posted
+USD outflow explicitly marked **Include in spending** can be attributed to a
+goal even when its provider labels it a transfer. Untouched excluded transfers,
+pending transactions, inflows, and non-USD transactions remain ineligible.
+
 Goal spending may exceed the selected source's remaining earmark or the goal
 target. Usage may exceed 100%, but `plan_remaining` stops at zero and
 `over_by` reports the positive overage. A source overrun consumes the goal's
 other funding before it becomes `unfunded_spend`; it never creates a negative
 earmark or fake Safe to Spend. Reverse the exact goal-spend record to correct
-an attribution.
+an attribution. The attributed portion no longer counts against that month's
+Plan actuals, but the original transaction and goal-spending history remain
+visible. Reversing or invalidating the link restores the portion to Plan
+actuals.
 
 Create goals with a stable `purpose`:
 `vacation`, `home`, `vehicle`, `education`, `emergency`, `event`, `purchase`,

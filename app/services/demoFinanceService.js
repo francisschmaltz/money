@@ -538,6 +538,31 @@ function publicDemoTransaction(transaction) {
   };
 }
 
+function demoRecurringCadenceFactor(cadence) {
+  return {
+    weekly: 52 / 12,
+    biweekly: 26 / 12,
+    monthly: 1,
+    quarterly: 1 / 3,
+    annual: 1 / 12,
+  }[cadence];
+}
+
+function demoNextRecurringDate(value, cadence) {
+  const date = new Date(`${value}T00:00:00.000Z`);
+  if (cadence === "weekly") date.setUTCDate(date.getUTCDate() + 7);
+  else if (cadence === "biweekly") {
+    date.setUTCDate(date.getUTCDate() + 14);
+  } else if (cadence === "monthly") {
+    date.setUTCMonth(date.getUTCMonth() + 1);
+  } else if (cadence === "quarterly") {
+    date.setUTCMonth(date.getUTCMonth() + 3);
+  } else {
+    date.setUTCFullYear(date.getUTCFullYear() + 1);
+  }
+  return date.toISOString().slice(0, 10);
+}
+
 function normalizedMatchText(value) {
   return String(value ?? "")
     .normalize("NFKD")
@@ -827,6 +852,7 @@ export class DemoFinanceService {
   #accountGroups = new Map();
   #transactions;
   #recurring;
+  #recurringPatterns = new Map();
   #transactionBaselines;
   #spendingCategories;
   #spendingCategorySequence = 1;
@@ -3450,11 +3476,258 @@ export class DemoFinanceService {
       throw error;
     }
     stream.type = type;
+    const pattern = this.#recurringPatterns.get(
+      stream.manual_pattern_rule_id,
+    );
+    if (pattern) {
+      if (type === "frequent_spending") {
+        this.#recurringPatterns.delete(pattern.id);
+      } else {
+        pattern.type = type;
+        for (const transaction of this.#transactions) {
+          if (
+            transaction.recurring_pattern?.patternId === pattern.id
+          ) {
+            transaction.recurring_pattern.type = type;
+          }
+        }
+      }
+    }
     return {
       updated: true,
       demo: true,
       stream_id: streamId,
       type,
+      recompute_queued: false,
+    };
+  }
+
+  async upsertTransactionRecurringPattern(input, actor = null) {
+    const transactionId =
+      input.transactionId ?? input.transaction_id;
+    const type = String(input.type ?? "");
+    const cadence = String(input.cadence ?? "");
+    if (!["subscription", "bill"].includes(type)) {
+      throw new TypeError("type must be subscription or bill");
+    }
+    if (
+      ![
+        "weekly",
+        "biweekly",
+        "monthly",
+        "quarterly",
+        "annual",
+      ].includes(cadence)
+    ) {
+      throw new TypeError(
+        "cadence must be weekly, biweekly, monthly, quarterly, or annual",
+      );
+    }
+    const source = this.#transactions.find(
+      (transaction) => transaction.id === transactionId,
+    );
+    if (!source) throw demoCategoryError("Transaction not found", 404);
+    if (source.pending) {
+      throw new TypeError(
+        "Pending transactions cannot define recurring patterns",
+      );
+    }
+    if (source.amount.amount_minor >= 0) {
+      throw new TypeError(
+        "Recurring patterns require a spending transaction",
+      );
+    }
+    if (source.excluded_from_spending) {
+      throw new TypeError(
+        "Transactions excluded from spending cannot define recurring patterns",
+      );
+    }
+    const normalizedMerchant = normalizeMerchant(
+      source.raw_merchant ?? source.merchant,
+    );
+    const normalizedName = normalizeTransactionName(
+      source.raw_name ?? source.description,
+    );
+    const matchField = normalizedMerchant
+      ? "normalized_merchant"
+      : "normalized_name";
+    const normalizedValue =
+      matchField === "normalized_merchant"
+        ? normalizedMerchant
+        : normalizedName;
+    const anchorAmount = Math.abs(source.amount.amount_minor);
+    const tolerance = Math.max(200, Math.round(anchorAmount * 0.2));
+    const accountId = source.account.id;
+    const existing = [...this.#recurringPatterns.values()].find(
+      (pattern) =>
+        pattern.accountId === accountId &&
+        pattern.matchField === matchField &&
+        pattern.normalizedValue === normalizedValue &&
+        Math.abs(pattern.anchorAmount - anchorAmount) <=
+          Math.max(200, Math.round(pattern.anchorAmount * 0.2)),
+    );
+    const pattern = existing ?? {
+      id: `demo-recurring-pattern-${transactionId}`,
+      streamId: `demo-manual-recurring-${transactionId}`,
+      accountId,
+      matchField,
+      normalizedValue,
+      anchorAmount,
+    };
+    Object.assign(pattern, {
+      type,
+      cadence,
+      anchorAmount,
+      updatedBy: actor?.id ?? null,
+    });
+    this.#recurringPatterns.set(pattern.id, pattern);
+    const matches = this.#transactions
+      .filter((transaction) => {
+        const candidate =
+          matchField === "normalized_merchant"
+            ? normalizeMerchant(
+                transaction.raw_merchant ?? transaction.merchant,
+              )
+            : normalizeTransactionName(
+                transaction.raw_name ?? transaction.description,
+              );
+        return (
+          !transaction.pending &&
+          !transaction.excluded_from_spending &&
+          transaction.amount.amount_minor < 0 &&
+          transaction.account.id === accountId &&
+          candidate === normalizedValue &&
+          Math.abs(
+            Math.abs(transaction.amount.amount_minor) - anchorAmount,
+          ) <= tolerance
+        );
+      })
+      .sort((left, right) =>
+        String(left.posted_on ?? left.date).localeCompare(
+          String(right.posted_on ?? right.date),
+        ),
+      );
+    for (const transaction of matches) {
+      transaction.recurring_pattern = {
+        eligible: true,
+        manual: true,
+        patternId: pattern.id,
+        streamId: pattern.streamId,
+        type,
+        cadence,
+        cadenceSuggested: false,
+        ineligibleReason: null,
+      };
+    }
+    const amounts = matches.map((transaction) =>
+      Math.abs(transaction.amount.amount_minor),
+    );
+    const expectedAmount = Math.round(
+      amounts.reduce((sum, amount) => sum + amount, 0) /
+        amounts.length,
+    );
+    const last = matches.at(-1) ?? source;
+    const lastDate = last.posted_on ?? last.date;
+    const monthly = Math.round(
+      expectedAmount * demoRecurringCadenceFactor(cadence),
+    );
+    const stream = {
+      id: pattern.streamId,
+      service:
+        source.display_name ??
+        source.merchant ??
+        source.description,
+      service_family: normalizedValue,
+      type,
+      detected_type: type,
+      cadence,
+      expected_amount: money(expectedAmount),
+      monthly_equivalent: money(monthly),
+      annual_equivalent: money(monthly * 12),
+      next_estimated_date: demoNextRecurringDate(
+        lastDate,
+        cadence,
+      ),
+      confidence_basis_points: 10_000,
+      status: "active",
+      account: {
+        id: source.account.id,
+        name: source.account.name,
+      },
+      icon: "ph-repeat",
+      category: source.category_primary ?? source.category,
+      manual_pattern_rule_id: pattern.id,
+      classification_signals: {
+        manual_pattern: true,
+        manual_pattern_rule_id: pattern.id,
+        occurrence_count: matches.length,
+        classification_confidence_basis_points: 10_000,
+      },
+      transactions: matches.map((transaction) => ({
+        id: transaction.id,
+        merchant:
+          transaction.display_name ??
+          transaction.merchant ??
+          transaction.description,
+        date: transaction.posted_on ?? transaction.date,
+        category:
+          transaction.category_primary ?? transaction.category,
+        amount: { ...transaction.amount },
+      })),
+    };
+    const streamIndex = this.#recurring.findIndex(
+      (candidate) => candidate.id === pattern.streamId,
+    );
+    if (streamIndex >= 0) this.#recurring[streamIndex] = stream;
+    else this.#recurring.push(stream);
+    return {
+      updated: true,
+      demo: true,
+      pattern: {
+        id: pattern.id,
+        stream_id: pattern.streamId,
+        type,
+        cadence,
+        source: "manual",
+      },
+      recompute_queued: false,
+    };
+  }
+
+  async removeTransactionRecurringPattern(input) {
+    const transactionId =
+      input.transactionId ?? input.transaction_id;
+    const transaction = this.#transactions.find(
+      (candidate) => candidate.id === transactionId,
+    );
+    if (!transaction) throw demoCategoryError("Transaction not found", 404);
+    const patternId = transaction.recurring_pattern?.patternId;
+    const pattern = patternId
+      ? this.#recurringPatterns.get(patternId)
+      : null;
+    if (!pattern) {
+      throw demoCategoryError(
+        "Manual recurring pattern not found",
+        404,
+      );
+    }
+    this.#recurringPatterns.delete(pattern.id);
+    this.#recurring = this.#recurring.filter(
+      (stream) => stream.id !== pattern.streamId,
+    );
+    for (const candidate of this.#transactions) {
+      if (
+        candidate.recurring_pattern?.patternId === pattern.id
+      ) {
+        delete candidate.recurring_pattern;
+      }
+    }
+    return {
+      updated: true,
+      removed: true,
+      demo: true,
+      pattern_id: pattern.id,
+      recompute_queued: false,
     };
   }
 

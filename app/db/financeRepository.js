@@ -6678,6 +6678,313 @@ export class PgFinanceRepository {
     });
   }
 
+  async listRecurringPatternRules(
+    workspaceId = DEFAULT_WORKSPACE_ID,
+    { activeOnly = false } = {},
+  ) {
+    const result = await this.#pool.query(
+      `
+        SELECT *
+        FROM recurring_pattern_rules
+        WHERE workspace_id = $1
+          AND ($2::boolean = false OR active = true)
+        ORDER BY updated_at DESC, id
+      `,
+      [workspaceId, activeOnly],
+    );
+    return result.rows.map(mapRecurringPatternRule);
+  }
+
+  async getTransactionRecurringContext(
+    workspaceId = DEFAULT_WORKSPACE_ID,
+    transactionId,
+  ) {
+    const result = await this.#pool.query(
+      `
+        SELECT
+          t.id AS transaction_id,
+          a.active = true AND connection.status <> 'removed'
+            AS account_active,
+          pattern.id AS pattern_id,
+          pattern.stream_id AS pattern_stream_id,
+          pattern.stream_type AS pattern_stream_type,
+          pattern.cadence AS pattern_cadence,
+          pattern.active AS pattern_active,
+          pattern.updated_at AS pattern_updated_at,
+          linked.id AS linked_stream_id,
+          COALESCE(linked.stream_type_override, linked.stream_type)
+            AS linked_stream_type,
+          linked.cadence AS linked_cadence
+        FROM transactions t
+        JOIN accounts a ON a.id = t.account_id
+        JOIN finance_connections connection
+          ON connection.id = a.connection_id
+        LEFT JOIN LATERAL (
+          SELECT rule.*
+          FROM recurring_pattern_rules rule
+          WHERE rule.workspace_id = t.workspace_id
+            AND rule.active = true
+            AND rule.account_id = t.account_id
+            AND rule.currency_code = t.currency_code
+            AND CASE rule.match_field
+              WHEN 'normalized_merchant'
+                THEN rule.normalized_match_value = t.normalized_merchant
+              WHEN 'normalized_name'
+                THEN rule.normalized_match_value = t.normalized_name
+              ELSE false
+            END
+            AND abs(
+              rule.anchor_amount_minor - abs(t.amount_minor)
+            ) <= greatest(
+              200,
+              round(rule.anchor_amount_minor * 0.2)
+            )
+          ORDER BY
+            abs(rule.anchor_amount_minor - abs(t.amount_minor)),
+            rule.updated_at DESC,
+            rule.id
+          LIMIT 1
+        ) pattern ON true
+        LEFT JOIN LATERAL (
+          SELECT stream.*
+          FROM recurring_stream_transactions occurrence
+          JOIN recurring_streams stream
+            ON stream.id = occurrence.stream_id
+          WHERE occurrence.transaction_id = t.id
+            AND stream.workspace_id = t.workspace_id
+            AND stream.status IN ('active', 'resumed', 'irregular')
+          ORDER BY
+            (stream.id = pattern.stream_id) DESC,
+            stream.updated_at DESC,
+            stream.id
+          LIMIT 1
+        ) linked ON true
+        WHERE t.workspace_id = $1 AND t.id = $2
+        LIMIT 1
+      `,
+      [workspaceId, transactionId],
+    );
+    const row = result.rows[0];
+    if (!row) return null;
+    return {
+      transaction_id: row.transaction_id,
+      account_active: Boolean(row.account_active),
+      pattern: row.pattern_id
+        ? {
+            id: row.pattern_id,
+            stream_id: row.pattern_stream_id,
+            stream_type: row.pattern_stream_type,
+            cadence: row.pattern_cadence,
+            active: Boolean(row.pattern_active),
+            updated_at: dateValue(row.pattern_updated_at),
+          }
+        : null,
+      linked_stream: row.linked_stream_id
+        ? {
+            id: row.linked_stream_id,
+            stream_type: row.linked_stream_type,
+            cadence: row.linked_cadence,
+          }
+        : null,
+    };
+  }
+
+  async upsertRecurringPatternRule(
+    workspaceId = DEFAULT_WORKSPACE_ID,
+    transactionId,
+    {
+      type,
+      cadence,
+      actorId = null,
+    } = {},
+  ) {
+    return withTransaction(this.#pool, async (client) => {
+      const sourceResult = await client.query(
+        `
+          SELECT
+            t.id,
+            t.account_id,
+            t.normalized_merchant,
+            t.normalized_name,
+            t.amount_minor,
+            t.currency_code,
+            a.active = true AND connection.status <> 'removed'
+              AS account_active
+          FROM transactions t
+          JOIN accounts a ON a.id = t.account_id
+          JOIN finance_connections connection
+            ON connection.id = a.connection_id
+          WHERE t.workspace_id = $1 AND t.id = $2
+          FOR UPDATE OF t
+        `,
+        [workspaceId, transactionId],
+      );
+      const source = sourceResult.rows[0];
+      if (!source) return null;
+      if (!source.account_active) {
+        throw new TypeError(
+          "Recurring patterns require an active account",
+        );
+      }
+      const matchField = source.normalized_merchant
+        ? "normalized_merchant"
+        : "normalized_name";
+      const normalizedMatchValue =
+        source[matchField]?.trim() ?? "";
+      if (!normalizedMatchValue) {
+        throw new TypeError(
+          "Transaction has no stable merchant or statement match",
+        );
+      }
+      const anchorAmountMinor = Math.abs(Number(source.amount_minor));
+      const existingResult = await client.query(
+        `
+          SELECT *
+          FROM recurring_pattern_rules
+          WHERE workspace_id = $1
+            AND account_id = $2
+            AND match_field = $3
+            AND normalized_match_value = $4
+            AND currency_code = $5
+            AND abs(anchor_amount_minor - $6::bigint) <= greatest(
+              200,
+              round(anchor_amount_minor * 0.2)
+            )
+          ORDER BY
+            active DESC,
+            abs(anchor_amount_minor - $6::bigint),
+            updated_at DESC,
+            id
+          LIMIT 1
+          FOR UPDATE
+        `,
+        [
+          workspaceId,
+          source.account_id,
+          matchField,
+          normalizedMatchValue,
+          source.currency_code,
+          anchorAmountMinor,
+        ],
+      );
+      const existing = existingResult.rows[0];
+      const id = existing?.id ?? randomUUID();
+      const streamId =
+        existing?.stream_id ??
+        stableId("recurring", `manual:${id}`);
+      const result = await client.query(
+        `
+          INSERT INTO recurring_pattern_rules (
+            id, workspace_id, stream_id, source_transaction_id,
+            account_id, match_field, normalized_match_value,
+            anchor_amount_minor, currency_code, stream_type,
+            cadence, active, created_by, updated_by
+          )
+          VALUES (
+            $1, $2, $3, $4, $5, $6, $7,
+            $8, $9, $10, $11, true, $12, $12
+          )
+          ON CONFLICT (id) DO UPDATE SET
+            source_transaction_id = EXCLUDED.source_transaction_id,
+            anchor_amount_minor = EXCLUDED.anchor_amount_minor,
+            stream_type = EXCLUDED.stream_type,
+            cadence = EXCLUDED.cadence,
+            active = true,
+            updated_by = EXCLUDED.updated_by,
+            updated_at = now()
+          RETURNING *
+        `,
+        [
+          id,
+          workspaceId,
+          streamId,
+          source.id,
+          source.account_id,
+          matchField,
+          normalizedMatchValue,
+          anchorAmountMinor,
+          source.currency_code,
+          type,
+          cadence,
+          actorId,
+        ],
+      );
+      return mapRecurringPatternRule(result.rows[0]);
+    });
+  }
+
+  async deactivateRecurringPatternRule(
+    workspaceId = DEFAULT_WORKSPACE_ID,
+    transactionId,
+    { actorId = null } = {},
+  ) {
+    return withTransaction(this.#pool, async (client) => {
+      const result = await client.query(
+        `
+          WITH source AS (
+            SELECT *
+            FROM transactions
+            WHERE workspace_id = $1 AND id = $2
+          ),
+          selected AS (
+            SELECT rule.id
+            FROM recurring_pattern_rules rule
+            JOIN source ON source.workspace_id = rule.workspace_id
+            WHERE rule.active = true
+              AND rule.account_id = source.account_id
+              AND rule.currency_code = source.currency_code
+              AND CASE rule.match_field
+                WHEN 'normalized_merchant'
+                  THEN rule.normalized_match_value =
+                    source.normalized_merchant
+                WHEN 'normalized_name'
+                  THEN rule.normalized_match_value =
+                    source.normalized_name
+                ELSE false
+              END
+              AND abs(
+                rule.anchor_amount_minor - abs(source.amount_minor)
+              ) <= greatest(
+                200,
+                round(rule.anchor_amount_minor * 0.2)
+              )
+            ORDER BY
+              abs(
+                rule.anchor_amount_minor - abs(source.amount_minor)
+              ),
+              rule.updated_at DESC,
+              rule.id
+            LIMIT 1
+          )
+          UPDATE recurring_pattern_rules rule
+          SET active = false,
+              updated_by = $3,
+              updated_at = now()
+          FROM selected
+          WHERE rule.id = selected.id
+          RETURNING rule.*
+        `,
+        [workspaceId, transactionId, actorId],
+      );
+      const rule = result.rows[0];
+      if (!rule) return null;
+      await client.query(
+        `
+          UPDATE recurring_streams
+          SET status = 'canceled',
+              stream_type_override = NULL,
+              override_source_finding_id = NULL,
+              override_updated_by = $3,
+              override_updated_at = now(),
+              updated_at = now()
+          WHERE workspace_id = $1 AND id = $2
+        `,
+        [workspaceId, rule.stream_id, actorId],
+      );
+      return mapRecurringPatternRule(rule);
+    });
+  }
+
   async listRecurringStreams(
     workspaceId = DEFAULT_WORKSPACE_ID,
     { includeInactive = false } = {},
@@ -6686,6 +6993,7 @@ export class PgFinanceRepository {
       `
         SELECT
           r.*,
+          pattern.id AS manual_pattern_rule_id,
           a.name AS account_name,
           COALESCE(
             current_transaction.display_name,
@@ -6698,6 +7006,10 @@ export class PgFinanceRepository {
             '[]'::jsonb
           ) AS transaction_ids
         FROM recurring_streams r
+        LEFT JOIN recurring_pattern_rules pattern
+          ON pattern.workspace_id = r.workspace_id
+         AND pattern.stream_id = r.id
+         AND pattern.active = true
         LEFT JOIN accounts a ON a.id = r.account_id
         LEFT JOIN LATERAL (
           SELECT jsonb_agg(
@@ -6782,20 +7094,49 @@ export class PgFinanceRepository {
     ) {
       throw new TypeError("Invalid recurring classification");
     }
-    const result = await this.#pool.query(
-      `
-        UPDATE recurring_streams
-        SET stream_type_override = $3,
-            override_source_finding_id = $4,
-            override_updated_by = $5,
-            override_updated_at = now(),
-            updated_at = now()
-        WHERE workspace_id = $1 AND id = $2
-        RETURNING *
-      `,
-      [workspaceId, streamId, type, sourceFindingId, actorId],
-    );
-    return result.rows[0] ? mapRecurring(result.rows[0]) : null;
+    return withTransaction(this.#pool, async (client) => {
+      if (type === "frequent_spending") {
+        await client.query(
+          `
+            UPDATE recurring_pattern_rules
+            SET active = false,
+                updated_by = $3,
+                updated_at = now()
+            WHERE workspace_id = $1
+              AND stream_id = $2
+              AND active = true
+          `,
+          [workspaceId, streamId, actorId],
+        );
+      } else {
+        await client.query(
+          `
+            UPDATE recurring_pattern_rules
+            SET stream_type = $3,
+                updated_by = $4,
+                updated_at = now()
+            WHERE workspace_id = $1
+              AND stream_id = $2
+              AND active = true
+          `,
+          [workspaceId, streamId, type, actorId],
+        );
+      }
+      const result = await client.query(
+        `
+          UPDATE recurring_streams
+          SET stream_type_override = $3,
+              override_source_finding_id = $4,
+              override_updated_by = $5,
+              override_updated_at = now(),
+              updated_at = now()
+          WHERE workspace_id = $1 AND id = $2
+          RETURNING *
+        `,
+        [workspaceId, streamId, type, sourceFindingId, actorId],
+      );
+      return result.rows[0] ? mapRecurring(result.rows[0]) : null;
+    });
   }
 
   async clearRecurringClassificationFromFinding(
@@ -8893,6 +9234,27 @@ function mapInsightLlmCallStatus(row) {
   };
 }
 
+function mapRecurringPatternRule(row) {
+  return {
+    id: row.id,
+    workspace_id: row.workspace_id,
+    stream_id: row.stream_id,
+    source_transaction_id: row.source_transaction_id ?? null,
+    account_id: row.account_id,
+    match_field: row.match_field,
+    normalized_match_value: row.normalized_match_value,
+    anchor_amount_minor: integer(row.anchor_amount_minor),
+    currency_code: row.currency_code,
+    stream_type: row.stream_type,
+    cadence: row.cadence,
+    active: Boolean(row.active),
+    created_by: row.created_by ?? null,
+    updated_by: row.updated_by ?? null,
+    created_at: dateValue(row.created_at),
+    updated_at: dateValue(row.updated_at),
+  };
+}
+
 function mapRecurring(row) {
   const detectedType = row.stream_type;
   const effectiveType = row.stream_type_override ?? detectedType;
@@ -8905,6 +9267,10 @@ function mapRecurring(row) {
     detected_stream_type: detectedType,
     stream_type_override: row.stream_type_override ?? null,
     classification_signals: row.classification_signals ?? {},
+    manual_pattern_rule_id:
+      row.manual_pattern_rule_id ??
+      row.classification_signals?.manual_pattern_rule_id ??
+      null,
     override_source_finding_id:
       row.override_source_finding_id ?? null,
     cadence: row.cadence,

@@ -1,5 +1,48 @@
 import { expect, test } from "@playwright/test";
 
+test("Safe to Spend explains its four-part calculation without overflowing", async ({
+  page,
+}) => {
+  await page.goto("/plan");
+  const card = page.getByRole("region", { name: "Safe to Spend" });
+
+  await expect(card.locator("dt")).toHaveText([
+    "Liquid cash",
+    "Credit card balances",
+    "Expected bills",
+    "Goals",
+  ]);
+  const help = card.locator(".safe-to-spend-help summary");
+  const explanation = card.locator(".safe-to-spend-help > p");
+  await help.focus();
+  await help.press("Enter");
+  await expect(explanation).toBeVisible();
+  await expect(explanation).toContainText(
+    "Bill amounts and dates are estimates based on recurring history.",
+  );
+  await help.press("Enter");
+  await expect(explanation).toBeHidden();
+
+  for (const width of [1024, 480]) {
+    await page.setViewportSize({ width, height: 900 });
+    const geometry = await card.evaluate((element) => {
+      const bounds = element.getBoundingClientRect();
+      return {
+        left: bounds.left,
+        right: bounds.right,
+        scrollWidth: element.scrollWidth,
+        clientWidth: element.clientWidth,
+        viewport: document.documentElement.clientWidth,
+      };
+    });
+    expect(geometry.left).toBeGreaterThanOrEqual(-1);
+    expect(geometry.right).toBeLessThanOrEqual(geometry.viewport + 1);
+    expect(geometry.scrollWidth).toBeLessThanOrEqual(
+      geometry.clientWidth + 1,
+    );
+  }
+});
+
 test("Plan keeps one Safe to Spend card and a fixed, editable budget", async ({
   page,
 }) => {
@@ -306,9 +349,9 @@ test("goal summaries use compact actions and modal editing", async ({
   ).toBeVisible();
   await expect(
     houseGoal.getByRole("button", {
-      name: "Move money for House down payment",
+      name: "Fund goal House down payment",
     }),
-  ).toHaveText("Move money");
+  ).toHaveText("Fund goal");
   await houseGoal.locator('[data-goal-dialog-open="edit"]').click();
   const editDialog = page.locator('[data-goal-dialog="edit"][open]');
   await expect(editDialog).toBeVisible();

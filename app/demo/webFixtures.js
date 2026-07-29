@@ -548,6 +548,12 @@ export function demoHoldingForWeb(holding) {
   return {
     id: holding.id,
     securityId: holding.security_id,
+    accountId: holding.account_id ?? null,
+    selectionKey:
+      holding.selectionKey ??
+      holding.ticker_symbol ??
+      holding.symbol ??
+      holding.name,
     symbol:
       holding.display_symbol ??
       holding.symbol ??
@@ -560,7 +566,6 @@ export function demoHoldingForWeb(holding) {
     price,
     priceAsOf: holding.price_as_of ?? "2026-07-26",
     allocation,
-    change: Number(holding.change_percent ?? 0),
     shares:
       holding.shares_label ??
       (Number.isFinite(holding.quantity)

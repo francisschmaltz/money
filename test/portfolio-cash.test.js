@@ -9,6 +9,10 @@ import { buildPortfolioSummary } from "../app/services/analytics.js";
 import { createFinanceService } from "../app/services/financeService.js";
 import { detectInvestmentInsights } from "../app/services/insightDetectors.js";
 import { normalizePlaidSecurity } from "../app/providers/plaidNormalizer.js";
+import {
+  consolidatePortfolioCashRows,
+  selectPortfolioHolding,
+} from "../app/services/portfolioPresentation.js";
 
 const NOW = new Date("2026-07-27T19:00:00.000Z");
 
@@ -111,6 +115,92 @@ test("cash never triggers a single-stock concentration insight", () => {
   );
 });
 
+test("portfolio presentation consolidates cash by currency and account", () => {
+  const rows = consolidatePortfolioCashRows([
+    {
+      id: "stock",
+      selectionKey: "INDEX",
+      symbol: "INDEX",
+      securityType: "equity",
+      value: usd(175_000),
+      allocation: 50,
+    },
+    {
+      id: "cash-a-1",
+      accountId: "account-a",
+      account: "Brokerage A",
+      selectionKey: "CUR:USD",
+      symbol: "Cash",
+      securityType: "cash",
+      value: usd(100_000),
+      allocation: 28.57,
+    },
+    {
+      id: "cash-b",
+      accountId: "account-b",
+      account: "Brokerage B",
+      selectionKey: "CUR:USD",
+      symbol: "Cash",
+      securityType: "cash",
+      value: usd(75_000),
+      allocation: 21.43,
+    },
+    {
+      id: "cash-a-2",
+      accountId: "account-a",
+      account: "Brokerage A",
+      selectionKey: "CUR:USD",
+      symbol: "Cash",
+      securityType: "cash",
+      value: usd(0),
+      allocation: 0,
+    },
+  ]);
+
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].selectionKey, "INDEX");
+  assert.deepEqual(rows[1], {
+    id: "cash:USD",
+    securityId: null,
+    accountId: null,
+    account: null,
+    selectionKey: "cash:USD",
+    symbol: "Cash",
+    badge: "$",
+    name: "USD across 2 accounts",
+    isCash: true,
+    securityType: "cash",
+    balanceGroup: null,
+    value: usd(175_000),
+    costBasis: null,
+    price: null,
+    priceAsOf: null,
+    allocation: 50,
+    shares: null,
+    positions: [
+      {
+        accountId: "account-a",
+        account: "Brokerage A",
+        value: usd(100_000),
+      },
+      {
+        accountId: "account-b",
+        account: "Brokerage B",
+        value: usd(75_000),
+      },
+    ],
+    legacySelectionKeys: ["CUR:USD"],
+  });
+  assert.equal(
+    selectPortfolioHolding(rows, "cash:USD"),
+    rows[1],
+  );
+  assert.equal(
+    selectPortfolioHolding(rows, "CUR:USD"),
+    rows[1],
+  );
+});
+
 test("portfolio page model presents E*TRADE currency as a cash balance", async () => {
   const service = createFinanceService({
     repository: {
@@ -159,27 +249,44 @@ test("portfolio page model presents E*TRADE currency as a cash balance", async (
   });
 
   assert.deepEqual(page.holdings[0], {
-    id: "holding-cash",
-    securityId: "security-cash",
-    accountId: "account-etrade",
-    account: "E*TRADE Brokerage",
-    selectionKey: "CUR:USD",
+    id: "cash:USD",
+    securityId: null,
+    accountId: null,
+    account: null,
+    selectionKey: "cash:USD",
     symbol: "Cash",
     badge: "$",
-    name: "USD balance",
+    name: "USD in E*TRADE Brokerage",
     isCash: true,
     securityType: "cash",
-    balanceGroup: "taxable_investment",
+    balanceGroup: null,
     value: usd(123_456),
     costBasis: null,
-    price: usd(100),
+    price: null,
     priceAsOf: null,
     allocation: 100,
-    change: 0,
     shares: null,
+    positions: [
+      {
+        accountId: "account-etrade",
+        account: "E*TRADE Brokerage",
+        value: usd(123_456),
+      },
+    ],
+    legacySelectionKeys: ["CUR:USD"],
   });
   assert.deepEqual(page.allocation, [{ label: "Cash", value: 100 }]);
   assert.equal(page.selectedHolding.symbol, "Cash");
+  assert.equal(page.selectedHolding.selectionKey, "cash:USD");
+  assert.equal(page.portfolioData.holdings[0].id, "holding-cash");
+
+  const canonicalSelection = await service.getPageData("portfolio", {
+    query: { scope: "trading", holding: "cash:USD" },
+  });
+  assert.equal(
+    canonicalSelection.selectedHolding.selectionKey,
+    "cash:USD",
+  );
 });
 
 test("portfolio HTML shows cash value without rendering CUR:USD as a stock", async () => {
@@ -197,17 +304,49 @@ test("portfolio HTML shows cash value without rendering CUR:USD as a stock", asy
       csrfToken: "csrf-test-value",
       holdings: [
         {
-          selectionKey: "CUR:USD",
+          selectionKey: "cash:USD",
           symbol: "Cash",
           badge: "$",
-          name: "USD balance",
+          name: "USD across 2 accounts",
           isCash: true,
           value: usd(123_456),
           allocation: 100,
-          change: 0,
+          positions: [
+            {
+              accountId: "account-etrade",
+              account: "E*TRADE Brokerage",
+              value: usd(100_000),
+            },
+            {
+              accountId: "account-roth",
+              account: "Roth IRA",
+              value: usd(23_456),
+            },
+          ],
         },
       ],
       allocation: [{ label: "Cash", value: 100 }],
+      selectedHolding: {
+        selectionKey: "cash:USD",
+        symbol: "Cash",
+        badge: "$",
+        name: "USD across 2 accounts",
+        isCash: true,
+        value: usd(123_456),
+        allocation: 100,
+        positions: [
+          {
+            accountId: "account-etrade",
+            account: "E*TRADE Brokerage",
+            value: usd(100_000),
+          },
+          {
+            accountId: "account-roth",
+            account: "Roth IRA",
+            value: usd(23_456),
+          },
+        ],
+      },
       portfolioData: {
         scope: "trading",
         total_value: usd(123_456),
@@ -220,7 +359,15 @@ test("portfolio HTML shows cash value without rendering CUR:USD as a stock", asy
   );
 
   assert.match(html, />Cash</);
-  assert.match(html, />USD balance</);
+  assert.match(html, />USD across 2 accounts</);
   assert.match(html, /\$1,234\.56/);
+  assert.match(html, /By investment account/);
+  assert.match(html, /E\*TRADE Brokerage/);
+  assert.match(html, /Roth IRA/);
+  assert.match(html, /\$1,000\.00/);
+  assert.match(html, /\$234\.56/);
+  assert.doesNotMatch(html, /<dt>Shares<\/dt>/);
+  assert.doesNotMatch(html, /<dt>Holding ID<\/dt>/);
+  assert.doesNotMatch(html, /<span>Selected period<\/span>/);
   assert.doesNotMatch(html, /CUR:USD/);
 });

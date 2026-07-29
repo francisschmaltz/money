@@ -3867,6 +3867,79 @@
       });
   }
 
+  function transactionRecurringPatterns() {
+    const csrfToken =
+      document.querySelector('meta[name="csrf-token"]')?.content || "";
+    document
+      .querySelectorAll("[data-transaction-recurring-form]")
+      .forEach((form) => {
+        const status = form.querySelector(
+          "[data-transaction-recurring-status]",
+        );
+        const submit = form.querySelector('button[type="submit"]');
+        const remove = form.querySelector(
+          "[data-remove-recurring-pattern]",
+        );
+        const setBusy = (busy) => {
+          if (submit) submit.disabled = busy;
+          if (remove) remove.disabled = busy;
+        };
+        const request = async (method, body = null) => {
+          setBusy(true);
+          if (status) {
+            status.textContent =
+              method === "DELETE" ? "Removing…" : "Saving…";
+          }
+          try {
+            const response = await fetch(form.dataset.endpoint, {
+              method,
+              headers: {
+                Accept: "application/json",
+                ...(body
+                  ? { "Content-Type": "application/json" }
+                  : {}),
+                "X-CSRF-Token": csrfToken,
+              },
+              ...(body ? { body: JSON.stringify(body) } : {}),
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) {
+              throw new Error(
+                payload.message ||
+                  `Update failed with ${response.status}`,
+              );
+            }
+            if (status) {
+              const action =
+                method === "DELETE" ? "Removed" : "Saved";
+              status.textContent = payload.recompute_queued
+                ? `${action}. Recurring totals are updating…`
+                : `${action}. Recurring totals update during the next refresh.`;
+            }
+            window.setTimeout(() => window.location.reload(), 900);
+          } catch (error) {
+            if (status) {
+              status.textContent =
+                error.message || "Couldn’t update the recurring pattern";
+            }
+            setBusy(false);
+          }
+        };
+
+        form.addEventListener("submit", (event) => {
+          event.preventDefault();
+          const data = new FormData(form);
+          request("PUT", {
+            type: data.get("type"),
+            cadence: data.get("cadence"),
+          });
+        });
+        remove?.addEventListener("click", () => {
+          request("DELETE");
+        });
+      });
+  }
+
   function insightBulkActions() {
     const root = document.querySelector("[data-bulk-insights]");
     if (!root) return;
@@ -6052,6 +6125,7 @@
     transactionBulkEdit();
     transactionNotes();
     transactionOrganization();
+    transactionRecurringPatterns();
     insightBulkActions();
     insightActions();
     transactionCleanupRules();

@@ -98,6 +98,152 @@ test("recurring detection reads exactly 400 local calendar days", async () => {
   });
 });
 
+test("manual patterns claim matching history and suppress overlapping automatic streams", () => {
+  const matching = [
+    "2026-01-01",
+    "2026-02-01",
+    "2026-03-01",
+    "2026-04-01",
+  ].map((date, index) =>
+    charge({
+      id: `manual-${index}`,
+      date,
+      merchant: "Disney Plus",
+      amount: index === 3 ? -2_099 : -1_999,
+    }),
+  );
+  const transactions = [
+    ...matching,
+    charge({
+      id: "different-account",
+      date: "2026-04-01",
+      merchant: "Disney Plus",
+      account: "account_other",
+    }),
+    charge({
+      id: "different-amount",
+      date: "2026-04-01",
+      merchant: "Disney Plus",
+      amount: -4_999,
+    }),
+    {
+      ...charge({
+        id: "pending",
+        date: "2026-04-01",
+        merchant: "Disney Plus",
+      }),
+      pending: true,
+    },
+    {
+      ...charge({
+        id: "excluded",
+        date: "2026-04-01",
+        merchant: "Disney Plus",
+      }),
+      excluded_from_spending: true,
+    },
+    charge({
+      id: "income",
+      date: "2026-04-01",
+      merchant: "Disney Plus",
+      amount: 1_999,
+    }),
+  ];
+  const streams = detectRecurringStreams(transactions, {
+    manualPatterns: [
+      {
+        id: "pattern-1",
+        stream_id: "manual-stream-1",
+        account_id: "account_card",
+        match_field: "normalized_merchant",
+        normalized_match_value: "disney plus",
+        anchor_amount_minor: 1_999,
+        currency_code: "USD",
+        stream_type: "bill",
+        cadence: "monthly",
+        active: true,
+      },
+    ],
+    now: new Date("2026-04-05T00:00:00Z"),
+  });
+
+  const manual = streams.find(
+    (stream) => stream.id === "manual-stream-1",
+  );
+  assert.ok(manual);
+  assert.equal(manual.stream_type, "bill");
+  assert.equal(manual.cadence, "monthly");
+  assert.deepEqual(
+    manual.transaction_ids,
+    matching.map((transaction) => transaction.id),
+  );
+  assert.equal(
+    manual.classification_signals.manual_pattern_rule_id,
+    "pattern-1",
+  );
+  assert.equal(
+    streams.filter(
+      (stream) =>
+        stream.account_id === "account_card" &&
+        stream.service_family === "disney+",
+    ).length,
+    1,
+  );
+  const fallback = detectRecurringStreams(matching, {
+    now: new Date("2026-04-05T00:00:00Z"),
+  });
+  assert.equal(fallback.length, 1);
+  assert.notEqual(fallback[0].id, manual.id);
+  assert.equal(fallback[0].stream_type, "subscription");
+});
+
+test("recurring service loads active manual patterns before replacement", async () => {
+  let stored;
+  const service = new RecurringService({
+    repository: {
+      async getTransactionsForPeriod() {
+        return [
+          charge({
+            id: "source-1",
+            date: "2026-07-01",
+            merchant: "Apartment Rent",
+            amount: -150_000,
+          }),
+        ];
+      },
+      async listRecurringPatternRules(_workspaceId, options) {
+        assert.deepEqual(options, { activeOnly: true });
+        return [
+          {
+            id: "pattern-rent",
+            stream_id: "stream-rent",
+            account_id: "account_card",
+            match_field: "normalized_merchant",
+            normalized_match_value: "apartment rent",
+            anchor_amount_minor: 150_000,
+            currency_code: "USD",
+            stream_type: "bill",
+            cadence: "monthly",
+            active: true,
+          },
+        ];
+      },
+      async replaceRecurringStreams(_workspaceId, streams) {
+        stored = streams;
+      },
+      async rebuildSearchDocuments() {},
+    },
+    now: () => new Date("2026-07-05T00:00:00Z"),
+  });
+
+  await service.detectAndStore();
+
+  assert.equal(stored.length, 1);
+  assert.equal(stored[0].id, "stream-rent");
+  assert.equal(stored[0].stream_type, "bill");
+  assert.deepEqual(stored[0].transaction_ids, ["source-1"]);
+});
+
 test("keeps strong subscription and bill signals conservative but useful", () => {
   const netflix = ["2026-01-01", "2026-02-01", "2026-03-01"].map(
     (date, index) =>

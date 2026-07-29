@@ -141,6 +141,35 @@ test("income does not expose Spend from goal", async () => {
   assert.doesNotMatch(html, /Spend from goal/);
 });
 
+test("blocked posted outflows disclose why goal spending is unavailable", async () => {
+  const demo = buildDemoModel();
+  const selectedTransaction = demo.transactions.find(
+    (transaction) => transaction.id === "txn_whole_foods",
+  );
+  const html = await renderTransactions({
+    selectedTransaction,
+    selectedTransactionGoalSpending: {
+      transaction_id: selectedTransaction.id,
+      goal_spend_version: 0,
+      eligible: false,
+      ineligible_reason:
+        "Mark this transaction Include in spending before assigning it to a goal.",
+      goal_spends: [],
+    },
+    selectedTransactionGoals: [],
+  });
+
+  assert.match(html, /<summary>Spend from goal<\/summary>/);
+  assert.match(
+    html,
+    /Mark this transaction Include in spending before assigning it to a goal\./,
+  );
+  assert.doesNotMatch(
+    html,
+    /data-endpoint="\/api\/v1\/transactions\/txn_whole_foods\/goal-spends"\s+data-method="POST"/,
+  );
+});
+
 test("existing goal spending stays reversible after the transaction becomes ineligible", async () => {
   const demo = buildDemoModel();
   const selectedTransaction = demo.transactions.find(

@@ -169,7 +169,7 @@
       </div>
       <div class="holdings-table">
         <div class="holdings-row holdings-row--header" aria-hidden="true">
-          <span>Holding</span><span>Value</span><span>Allocation</span><span>Selected period</span>
+          <span>Holding</span><span>Value</span><span>Allocation</span>
         </div>
         <% holdings.forEach((holding) => { %>
           <a
@@ -181,11 +181,6 @@
             <span><b class="ticker"><%= holding.badge || holding.symbol.slice(0, 4) %></b><span><strong><%= holding.symbol %></strong><small><%= holding.name %></small></span></span>
             <strong><%= formatMoney(holding.value) %></strong>
             <span><%= holding.allocation %>%</span>
-            <% if (livePortfolio) { %>
-              <span>—</span>
-            <% } else { %>
-              <strong class="<%= holding.change >= 0 ? 'money-positive' : 'money-negative' %>"><%= holding.change >= 0 ? '+' : '' %><%= holding.change %>%</strong>
-            <% } %>
           </a>
         <% }) %>
         <% if (!holdings.length) { %>
@@ -216,19 +211,34 @@
           </section>
 
           <div class="entity-detail-dialog__body">
-            <dl class="entity-detail-grid">
-              <div><dt>Account</dt><dd><%= selectedHolding.account || "—" %></dd></div>
-              <div><dt>Security type</dt><dd><%= selectedHolding.securityType || (selectedHolding.isCash ? "cash" : "—") %></dd></div>
-              <div><dt>Shares</dt><dd><%= selectedHolding.shares ?? "—" %></dd></div>
-              <div><dt>Allocation</dt><dd><%= selectedHolding.allocation %>% of <%= portfolioScopeLabels[selectedScope].toLowerCase() %></dd></div>
-              <div><dt>Current price</dt><dd><%= selectedHolding.price ? formatMoney(selectedHolding.price) : "—" %></dd></div>
-              <div><dt>Price as of</dt><dd><%= selectedHolding.priceAsOf || "—" %></dd></div>
-              <div><dt>Cost basis</dt><dd><%= selectedHolding.costBasis ? formatMoney(selectedHolding.costBasis) : "—" %></dd></div>
-              <div><dt>Current value</dt><dd><%= formatMoney(selectedHolding.value) %></dd></div>
-              <div class="entity-detail-grid__wide"><dt>Holding ID</dt><dd><code><%= selectedHolding.id || "—" %></code></dd></div>
-              <div class="entity-detail-grid__wide"><dt>Security ID</dt><dd><code><%= selectedHolding.securityId || "—" %></code></dd></div>
-            </dl>
-            <p class="entity-detail-dialog__note"><i class="ph ph-info" aria-hidden="true"></i> Values come from the latest synced holding and may be delayed.</p>
+            <% if (selectedHolding.isCash && selectedHolding.positions?.length) { %>
+              <section class="cash-position-breakdown" aria-labelledby="cash-position-breakdown-heading">
+                <h3 id="cash-position-breakdown-heading">By investment account</h3>
+                <div class="cash-position-list" role="list">
+                  <% selectedHolding.positions.forEach((position) => { %>
+                    <div class="cash-position-row" role="listitem">
+                      <span><%= position.account %></span>
+                      <strong><%= formatMoney(position.value) %></strong>
+                    </div>
+                  <% }) %>
+                </div>
+              </section>
+              <p class="entity-detail-dialog__note"><i class="ph ph-info" aria-hidden="true"></i> Cash balances come from the latest synced investment holdings and may be delayed.</p>
+            <% } else { %>
+              <dl class="entity-detail-grid">
+                <div><dt>Account</dt><dd><%= selectedHolding.account || "—" %></dd></div>
+                <div><dt>Security type</dt><dd><%= selectedHolding.securityType || "—" %></dd></div>
+                <div><dt>Shares</dt><dd><%= selectedHolding.shares ?? "—" %></dd></div>
+                <div><dt>Allocation</dt><dd><%= selectedHolding.allocation %>% of <%= portfolioScopeLabels[selectedScope].toLowerCase() %></dd></div>
+                <div><dt>Current price</dt><dd><%= selectedHolding.price ? formatMoney(selectedHolding.price) : "—" %></dd></div>
+                <div><dt>Price as of</dt><dd><%= selectedHolding.priceAsOf || "—" %></dd></div>
+                <div><dt>Cost basis</dt><dd><%= selectedHolding.costBasis ? formatMoney(selectedHolding.costBasis) : "—" %></dd></div>
+                <div><dt>Current value</dt><dd><%= formatMoney(selectedHolding.value) %></dd></div>
+                <div class="entity-detail-grid__wide"><dt>Holding ID</dt><dd><code><%= selectedHolding.id || "—" %></code></dd></div>
+                <div class="entity-detail-grid__wide"><dt>Security ID</dt><dd><code><%= selectedHolding.securityId || "—" %></code></dd></div>
+              </dl>
+              <p class="entity-detail-dialog__note"><i class="ph ph-info" aria-hidden="true"></i> Values come from the latest synced holding and may be delayed.</p>
+            <% } %>
           </div>
         </div>
       </dialog>

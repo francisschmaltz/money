@@ -42,7 +42,7 @@ const DEFINITIONS = Object.freeze({
   get_safe_to_spend: {
     title: "Get Safe to Spend",
     description:
-      "Get liquid USD checking and savings minus positive current credit-card balances and cash-backed goal earmarks. Brokerage and budgets are deliberately excluded. Use the returned formula and warnings; never hide a negative result.",
+      "Get liquid USD checking and savings minus positive current credit-card balances, active USD bills expected in the next 30 days, and cash-backed goal earmarks. Subscriptions, brokerage, and budgets are deliberately excluded. Expected bill dates and amounts are estimates from recurring history. Use the returned window, exclusions, formula, and warnings; never hide a negative result.",
   },
   list_finance_goals: {
     title: "List finance goals",
@@ -52,7 +52,7 @@ const DEFINITIONS = Object.freeze({
   get_budget_status: {
     title: "Get monthly budget status",
     description:
-      "Return the selected hierarchical budget tree with direct and subtree actuals, effective tracking modes, optimistic versions, rolling four-completed-month income, estimated and actual leftover, and plan status. Refunds reduce spending; pending, excluded, transfer, and card-payment transactions stay out; unbudgeted spending still reduces actual leftover.",
+      "Return the selected hierarchical budget tree with taxonomy-wide direct and subtree actuals, effective tracking modes, optimistic versions, rolling four-completed-month income, estimated and actual leftover, and plan status. Refunds reduce spending; pending, excluded, and card-payment transactions stay out; provider transfers stay out unless explicitly marked Include in spending. Goal-attributed portions are netted from monthly Plan actuals but remain in transaction and goal history; unbudgeted spending still reduces actual leftover.",
   },
   model_finance_plan: {
     title: "Model finance plan",
@@ -62,7 +62,7 @@ const DEFINITIONS = Object.freeze({
   get_transaction_goal_spending: {
     title: "Get transaction goal spending",
     description:
-      "Get one transaction's active goal-spending links, unassigned amount, goal versions, and goal_spend_version. Read this immediately before spending from a goal or reversing goal spending; never guess either optimistic version.",
+      "Get one transaction's effective goal-spending eligibility, active links, unassigned amount, goal versions, and goal_spend_version. A posted USD outflow explicitly marked Include in spending is eligible even when its provider labels it a transfer. Read this immediately before spending from a goal or reversing goal spending; never guess either optimistic version.",
   },
   create_finance_goal: {
     title: "Create finance goal",
@@ -112,12 +112,12 @@ const DEFINITIONS = Object.freeze({
   spend_from_finance_goal: {
     title: "Spend from finance goal",
     description:
-      "Attribute part of a posted USD outflow to an active finance goal. Spending may exceed its remaining earmark or target; usage can exceed 100%, the remaining plan never becomes negative, and the positive overage is reported as over_by. A source overrun consumes the goal's other funding before it becomes unfunded, so finishing an overused goal cannot create fake Safe to Spend. This is virtual attribution, not a payment, transfer, brokerage sale, or trade. Confirm the transaction, goal, source, and amount, then pass exact current versions.",
+      "Attribute part of a posted USD outflow, including a provider-labeled transfer explicitly marked Include in spending, to an active finance goal. The attributed portion stops counting against monthly Plan actuals but remains in transaction and goal history. Spending may exceed its remaining earmark or target; usage can exceed 100%, the remaining plan never becomes negative, and the positive overage is reported as over_by. A source overrun consumes the goal's other funding before it becomes unfunded, so finishing an overused goal cannot create fake Safe to Spend. This is virtual attribution, not a payment, transfer, brokerage sale, or trade. Confirm the transaction, goal, source, and amount, then pass exact current versions.",
   },
   reverse_goal_spend: {
     title: "Reverse goal spending",
     description:
-      "Reverse one transaction-to-goal spending link while preserving audit history. The reversal reduces actual spending and restores only unused recorded funding; it cannot manufacture an earmark after overspending. Confirm the exact record, then pass current goal and transaction versions.",
+      "Reverse one transaction-to-goal spending link while preserving audit history. The reversal reduces goal actual spending, restores the attributed portion to monthly Plan actuals, and restores only unused recorded funding; it cannot manufacture an earmark after overspending. Confirm the exact record, then pass current goal and transaction versions.",
   },
 });
 

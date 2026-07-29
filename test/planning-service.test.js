@@ -436,6 +436,88 @@ function fixture() {
   };
 }
 
+test("Safe to Spend loads upcoming bills using the workspace date", async () => {
+  const calls = [];
+  const service = new PlanningService({
+    repository: {
+      async listGoals() {
+        return [];
+      },
+      async getWorkspaceTimezone() {
+        return "America/Los_Angeles";
+      },
+    },
+    financeRepository: {
+      async listAccounts() {
+        return [
+          {
+            id: "checking",
+            balance_group: "cash",
+            current_balance_minor: 1_000_000,
+            currency_code: "USD",
+            active: true,
+          },
+        ];
+      },
+      async listRecurringStreams(workspaceId, options) {
+        calls.push({ workspaceId, options });
+        return [
+          {
+            id: "rent",
+            stream_type: "bill",
+            status: "active",
+            cadence: "monthly",
+            expected_amount_minor: 500_000,
+            currency_code: "USD",
+            next_expected_on: "2026-08-26",
+          },
+          {
+            id: "streaming",
+            stream_type: "subscription",
+            status: "active",
+            cadence: "monthly",
+            expected_amount_minor: 2_000,
+            currency_code: "USD",
+            next_expected_on: "2026-08-01",
+          },
+          {
+            id: "foreign-bill",
+            stream_type: "bill",
+            status: "active",
+            cadence: "monthly",
+            expected_amount_minor: 3_000,
+            currency_code: "EUR",
+            next_expected_on: "2026-08-01",
+          },
+        ];
+      },
+      async getDataFreshness() {
+        return {
+          data_as_of: "2026-07-28T06:25:00.000Z",
+          partial: false,
+        };
+      },
+    },
+    now: () => new Date("2026-07-28T06:30:00.000Z"),
+  });
+
+  const result = await service.getSafeToSpend();
+
+  assert.deepEqual(calls, [
+    {
+      workspaceId: "shared",
+      options: { includeInactive: false },
+    },
+  ]);
+  assert.equal(result.data.expected_bills.amount_minor, 500_000);
+  assert.equal(result.data.expected_bill_occurrence_count, 1);
+  assert.equal(result.data.expected_bills_through_on, "2026-08-26");
+  assert.equal(result.data.excluded_expected_bill_count, 1);
+  assert.equal(result.data.safe_to_spend.amount_minor, 500_000);
+  assert.match(result.summary, /bills expected in the next 30 days/i);
+  assert.match(result.warnings[0], /1 active bill estimate was not included/i);
+});
+
 test("brokerage allocations cannot consume value already earmarked to other goals", async () => {
   const { service, goal } = fixture();
   await assert.rejects(
@@ -701,6 +783,37 @@ test("transaction goal spending releases and restores earmarks without losing pr
   assert.deepEqual(cleared.data.goal_spends, []);
 });
 
+test("retroactive funding consumed by a goal-linked outflow leaves Safe to Spend unchanged", async () => {
+  const { service, goal } = fixture();
+  const before = await service.getSafeToSpend();
+
+  await service.allocateFinanceGoal({
+    goal_id: goal.id,
+    source: "cash",
+    direction: "allocate",
+    amount_minor: 400,
+    expected_version: 1,
+  });
+  await service.spendFromFinanceGoal({
+    transaction_id: "posted",
+    goal_id: goal.id,
+    source: "cash",
+    amount_minor: 400,
+    expected_goal_version: 2,
+    expected_transaction_version: 0,
+  });
+
+  const after = await service.getSafeToSpend();
+  const goals = await service.listFinanceGoals();
+  assert.equal(
+    after.data.safe_to_spend.amount_minor,
+    before.data.safe_to_spend.amount_minor,
+  );
+  assert.equal(goals.data.goals[0].actual.amount_minor, 400);
+  assert.equal(goals.data.goals[0].cash_earmarked.amount_minor, 500);
+  assert.equal(goals.data.goals[0].unfunded_spend.amount_minor, 0);
+});
+
 test("transaction goal spending may overrun funding but not the transaction", async () => {
   const { service, goal } = fixture();
 
@@ -763,7 +876,7 @@ test("explicit goal spending survives later cleanup exclusion until reversed", a
       expected_goal_version: 2,
       expected_transaction_version: 1,
     }),
-    /Transfers and excluded transactions/,
+    /Include this outflow in spending/,
   );
 });
 

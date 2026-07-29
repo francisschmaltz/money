@@ -39,6 +39,7 @@ export function detectRecurringStreams(
   transactions,
   {
     aliases = {},
+    manualPatterns = [],
     minimumOccurrences = 2,
     now = new Date(),
   } = {},
@@ -66,12 +67,23 @@ export function detectRecurringStreams(
     }))
     .filter((transaction) => transaction.serviceFamily);
 
-  const merchantAccounts = groupBy(
+  const manualStreams = buildManualStreams(
     eligible,
+    manualPatterns,
+    now,
+  );
+  const manuallyClaimedTransactionIds = new Set(
+    manualStreams.flatMap((stream) => stream.transaction_ids),
+  );
+  const merchantAccounts = groupBy(
+    eligible.filter(
+      (transaction) =>
+        !manuallyClaimedTransactionIds.has(transaction.id),
+    ),
     (transaction) =>
       `${transaction.serviceFamily}\0${transaction.account_id ?? "unknown"}`,
   );
-  const streams = [];
+  const streams = [...manualStreams];
   for (const group of merchantAccounts.values()) {
     for (const cluster of clusterAmounts(group)) {
       if (cluster.length < minimumOccurrences) continue;
@@ -187,21 +199,110 @@ export class RecurringService {
   }
 
   async detectAndStore({ workspaceId = this.#workspaceId } = {}) {
-    const transactions = await this.#repository.getTransactionsForPeriod(
-      workspaceId,
-      {
-        startOn: shiftDateOnly(this.#now(), -399),
-        endOn: shiftDateOnly(this.#now(), 1),
-        activeAccountsOnly: true,
-      },
-    );
+    const [transactions, manualPatterns] = await Promise.all([
+      this.#repository.getTransactionsForPeriod(
+        workspaceId,
+        {
+          startOn: shiftDateOnly(this.#now(), -399),
+          endOn: shiftDateOnly(this.#now(), 1),
+          activeAccountsOnly: true,
+        },
+      ),
+      typeof this.#repository.listRecurringPatternRules === "function"
+        ? this.#repository.listRecurringPatternRules(workspaceId, {
+            activeOnly: true,
+          })
+        : [],
+    ]);
     const streams = detectRecurringStreams(transactions, {
+      manualPatterns,
       now: this.#now(),
     });
     await this.#repository.replaceRecurringStreams(workspaceId, streams);
     await this.#repository.rebuildSearchDocuments(workspaceId);
     return streams;
   }
+}
+
+function buildManualStreams(transactions, patterns, now) {
+  const claimed = new Set();
+  const streams = [];
+  const activePatterns = [...patterns]
+    .filter((pattern) => pattern.active !== false)
+    .sort((left, right) =>
+      String(right.updated_at ?? "").localeCompare(
+        String(left.updated_at ?? ""),
+      ),
+    );
+  for (const pattern of activePatterns) {
+    const anchorAmount = Number(pattern.anchor_amount_minor);
+    const tolerance = Math.max(200, Math.round(anchorAmount * 0.2));
+    const matches = transactions
+      .filter((transaction) => {
+        if (claimed.has(transaction.id)) return false;
+        const normalizedValue =
+          pattern.match_field === "normalized_name"
+            ? transaction.normalized_name
+            : transaction.normalized_merchant;
+        return (
+          transaction.account_id === pattern.account_id &&
+          transaction.currency_code === pattern.currency_code &&
+          normalizedValue === pattern.normalized_match_value &&
+          Math.abs(transaction.spendMinor - anchorAmount) <= tolerance
+        );
+      })
+      .sort((left, right) =>
+        left.posted_on.localeCompare(right.posted_on),
+      );
+    if (!matches.length) continue;
+    for (const transaction of matches) claimed.add(transaction.id);
+
+    const cadence =
+      CADENCES.find((entry) => entry.name === pattern.cadence) ??
+      CADENCES.find((entry) => entry.name === "monthly");
+    const amounts = matches.map((transaction) => transaction.spendMinor);
+    const expected = Math.round(median(amounts));
+    const first = matches[0];
+    const last = matches.at(-1);
+    streams.push({
+      id: pattern.stream_id,
+      service_family: first.serviceFamily,
+      display_name:
+        preferredDisplayName(matches) ||
+        titleCase(first.serviceFamily),
+      stream_type: pattern.stream_type,
+      classification_signals: {
+        manual_pattern: true,
+        manual_pattern_rule_id: pattern.id,
+        occurrence_count: matches.length,
+        classification_confidence_basis_points: 10_000,
+      },
+      cadence: cadence.name,
+      account_id: first.account_id ?? null,
+      expected_amount_minor: expected,
+      min_amount_minor: Math.min(...amounts),
+      max_amount_minor: Math.max(...amounts),
+      monthly_equivalent_minor: Math.round(
+        expected * cadence.monthlyFactor,
+      ),
+      currency_code: first.currency_code ?? "USD",
+      first_seen_on: first.posted_on,
+      last_seen_on: last.posted_on,
+      next_expected_on: nextExpectedDate(
+        last.posted_on,
+        cadence.name,
+      ),
+      confidence_basis_points: 10_000,
+      status: inferStatus(last, cadence, now),
+      transaction_ids: matches.map((transaction) => transaction.id),
+      recent_amounts: matches.slice(-4).map((transaction) => ({
+        transaction_id: transaction.id,
+        posted_on: transaction.posted_on,
+        amount_minor: transaction.spendMinor,
+      })),
+    });
+  }
+  return streams;
 }
 
 function serviceFamily(transaction, aliases) {

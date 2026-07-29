@@ -10,15 +10,20 @@
         ? previousBudget
         : {
             lines: [],
+            category_actuals: [],
             actual_total: {
+              amount_minor: 0,
+              currency: budget.actual_total.currency,
+            },
+            goal_attributed_total: {
               amount_minor: 0,
               currency: budget.actual_total.currency,
             },
           };
     const previousActualByCategory = new Map(
-      priorBudget.lines.flatMap((line) => [
-        [line.category_id, line.actual],
-        [line.category, line.actual],
+      (priorBudget.category_actuals || []).map((categoryActual) => [
+        categoryActual.category_id,
+        categoryActual,
       ]),
     );
     const zeroBudgetMoney = {
@@ -329,10 +334,10 @@
                 type="button"
                 data-goal-dialog-open="allocate"
                 data-goal-dialog-target="goal-allocate-dialog-<%= goalIndex %>"
-                aria-label="Move money for <%= goal.name %>"
+                aria-label="Fund goal <%= goal.name %>"
               >
                 <i class="ph ph-arrows-left-right" aria-hidden="true"></i>
-                Move money
+                Fund goal
               </button>
             </div>
           </article>
@@ -441,7 +446,7 @@
               <header class="plan-dialog__heading">
                 <div>
                   <p class="card-kicker">Goal funding</p>
-                  <h3 id="goal-allocate-dialog-title-<%= goalIndex %>">Move money for <%= goal.name %></h3>
+                  <h3 id="goal-allocate-dialog-title-<%= goalIndex %>">Fund <%= goal.name %></h3>
                 </div>
                 <button class="icon-button" type="button" data-goal-dialog-close aria-label="Close goal funding">
                   <i class="ph ph-x" aria-hidden="true"></i>
@@ -449,12 +454,13 @@
               </header>
               <div class="plan-dialog__body plan-form-grid">
                 <input type="hidden" name="expected_version" value="<%= goal.version %>">
+                <p class="card-note">Funding is virtual. It earmarks money in the plan without moving cash, selling investments, or making a payment.</p>
                 <dl class="plan-dialog__funding-summary" aria-label="Current goal funding">
                   <div><dt>Cash</dt><dd><%= formatMoney(goal.cash_earmarked) %></dd></div>
                   <div><dt>Brokerage</dt><dd><%= formatMoney(goal.brokerage_earmarked) %></dd></div>
                   <div><dt>Still needed</dt><dd><%= formatMoney(goal.shortfall) %></dd></div>
                 </dl>
-                <label>Move
+                <label>Action
                   <select name="direction" data-goal-dialog-initial-focus><option value="allocate">Allocate</option><option value="release">Release</option></select>
                 </label>
                 <label>From
@@ -674,9 +680,9 @@
         <div class="budget-row budget-row--total <%= editBudget ? 'budget-row--edit' : 'budget-row--view' %>" role="row">
           <span class="budget-row__category" role="cell">Total</span>
           <span class="budget-metric" role="cell"><span class="budget-cell-label">Planned</span><span class="budget-cell-value"><%= formatMoney(budget.planned_total) %></span></span>
-          <span class="budget-metric" role="cell"><span class="budget-cell-label">Actual</span><span class="budget-cell-value"><%= formatMoney(budget.actual_total) %></span></span>
+          <span class="budget-metric" role="cell"><span class="budget-cell-label">Actual</span><span class="budget-cell-value"><%= formatMoney(budget.actual_total) %></span><% if (Number(budget.goal_attributed_total?.amount_minor) > 0) { %><small class="card-note">From goals: <%= formatMoney(budget.goal_attributed_total) %></small><% } %></span>
           <span class="budget-metric budget-status <%= remainingClass(budget.remaining_total) %>" role="cell"><span class="budget-cell-label">Remaining</span><span class="budget-cell-value"><%= remainingStatus(budget.remaining_total) %></span></span>
-          <span class="budget-metric" role="cell"><span class="budget-cell-label">Previous month</span><span class="budget-cell-value"><%= formatMoney(priorBudget.actual_total) %></span></span>
+          <span class="budget-metric" role="cell"><span class="budget-cell-label">Previous month</span><span class="budget-cell-value"><%= formatMoney(priorBudget.actual_total) %></span><% if (Number(priorBudget.goal_attributed_total?.amount_minor) > 0) { %><small class="card-note">From goals: <%= formatMoney(priorBudget.goal_attributed_total) %></small><% } %></span>
           <% if (editBudget) { %><span class="budget-row__actions" role="cell"></span><% } %>
         </div>
         <% budget.lines.forEach((line) => { %>
@@ -684,28 +690,28 @@
             const budgetStatus = line.remaining
               ? remainingStatus(line.remaining)
               : "Informational";
+            const previousCategoryActual =
+              previousActualByCategory.get(line.category_id);
             const previousActual =
-              previousActualByCategory.get(line.category_id) ||
-              previousActualByCategory.get(line.category) ||
-              zeroBudgetMoney;
+              previousCategoryActual?.actual || zeroBudgetMoney;
           %>
           <% if (editBudget) { %>
             <form class="budget-row budget-row--edit <%= budgetParentIds.has(line.category_id) ? 'budget-row--parent' : '' %> <%= (line.depth || 0) > 0 ? 'budget-row--child' : '' %> <%= line.over.amount_minor > 0 ? 'budget-row--over' : '' %>" role="row" data-plan-form data-budget-category-id="<%= line.category_id %>" data-budget-parent-id="<%= line.parent_category_id || '' %>" data-endpoint="/api/v1/plan/budget/<%= encodeURIComponent(line.category_id) %>" data-method="PUT">
               <input type="hidden" name="expected_version" value="<%= line.version %>">
               <span class="budget-row__category" role="cell" style="--budget-depth: <%= line.depth || 0 %>"><span class="budget-category-heading"><% if (budgetParentIds.has(line.category_id)) { %><button class="budget-tree-toggle" type="button" data-budget-toggle aria-expanded="true" aria-label="Collapse <%= line.category %> child budgets"><i class="ph ph-caret-down" aria-hidden="true"></i></button><% } else { %><span class="budget-tree-spacer" aria-hidden="true"></span><% } %><a class="budget-category-link" href="/transactions?category=<%= encodeURIComponent(line.category_id) %>"><%= line.name || line.category %></a></span><% if (budgetParentIds.has(line.category_id)) { %><small><%= formatMoney(line.child_planned_total) %> allocated · <%= formatMoney(line.unallocated_planned) %> unallocated</small><% } else if (line.effective_tracking_mode === "informational") { %><small><%= line.tracking_mode === "informational" ? "Informational" : "Informational (inherited)" %></small><% } %></span>
               <span class="budget-metric budget-metric--input" role="cell"><span class="budget-cell-label">Planned</span><span class="money-input"><span>$</span><input data-money-minor="amount_minor" inputmode="decimal" min="<%= ((line.child_planned_total?.amount_minor || 0) / 100).toFixed(2) %>" value="<%= (line.planned.amount_minor / 100).toFixed(2) %>" aria-label="<%= line.category %> planned amount"></span></span>
-              <span class="budget-metric" role="cell"><span class="budget-cell-label">Actual</span><span class="budget-cell-value"><%= formatMoney(line.actual) %></span></span>
+              <span class="budget-metric" role="cell"><span class="budget-cell-label">Actual</span><span class="budget-cell-value"><%= formatMoney(line.actual) %></span><% if (Number(line.goal_attributed?.amount_minor) > 0) { %><small class="card-note">From goals: <%= formatMoney(line.goal_attributed) %></small><% } %></span>
               <span class="budget-metric budget-status <%= line.remaining ? remainingClass(line.remaining) : '' %>" role="cell"><span class="budget-cell-label">Remaining</span><span class="budget-cell-value"><%= line.remaining ? budgetStatus : "Informational" %></span></span>
-              <span class="budget-metric" role="cell"><span class="budget-cell-label">Previous month</span><span class="budget-cell-value"><%= formatMoney(previousActual) %></span></span>
+              <span class="budget-metric" role="cell"><span class="budget-cell-label">Previous month</span><span class="budget-cell-value"><%= formatMoney(previousActual) %></span><% if (Number(previousCategoryActual?.goal_attributed?.amount_minor) > 0) { %><small class="card-note">From goals: <%= formatMoney(previousCategoryActual.goal_attributed) %></small><% } %></span>
               <span class="budget-row__actions" role="cell"><span class="budget-cell-label">Tracking and actions</span><select name="tracking_mode" aria-label="<%= line.category %> tracking mode"><option value="tracked" <%= line.tracking_mode === "tracked" ? "selected" : "" %>>Tracked</option><option value="informational" <%= line.tracking_mode === "informational" ? "selected" : "" %>>Informational</option></select><button class="button button--ghost" type="submit">Save</button><button class="button button--ghost danger-action" type="button" data-budget-remove data-endpoint="/api/v1/plan/budget/<%= encodeURIComponent(line.category_id) %>">Remove</button><span class="form-status" data-plan-status aria-live="polite"></span></span>
             </form>
           <% } else { %>
             <div class="budget-row budget-row--view <%= budgetParentIds.has(line.category_id) ? 'budget-row--parent' : '' %> <%= (line.depth || 0) > 0 ? 'budget-row--child' : '' %> <%= line.over.amount_minor > 0 ? 'budget-row--over' : '' %>" role="row" data-budget-category-id="<%= line.category_id %>" data-budget-parent-id="<%= line.parent_category_id || '' %>">
               <span class="budget-row__category" role="cell" style="--budget-depth: <%= line.depth || 0 %>"><span class="budget-category-heading"><% if (budgetParentIds.has(line.category_id)) { %><button class="budget-tree-toggle" type="button" data-budget-toggle aria-expanded="true" aria-label="Collapse <%= line.category %> child budgets"><i class="ph ph-caret-down" aria-hidden="true"></i></button><% } else { %><span class="budget-tree-spacer" aria-hidden="true"></span><% } %><a class="budget-category-link" href="/transactions?category=<%= encodeURIComponent(line.category_id) %>"><%= line.name || line.category %></a></span><% if (budgetParentIds.has(line.category_id)) { %><small><%= formatMoney(line.child_planned_total) %> allocated · <%= formatMoney(line.unallocated_planned) %> unallocated</small><% } else if (line.effective_tracking_mode === "informational") { %><small><%= line.tracking_mode === "informational" ? "Informational" : "Informational (inherited)" %></small><% } %></span>
               <span class="budget-metric" role="cell"><span class="budget-cell-label">Planned</span><span class="budget-cell-value"><%= formatMoney(line.planned) %></span></span>
-              <span class="budget-metric" role="cell"><span class="budget-cell-label">Actual</span><span class="budget-cell-value"><%= formatMoney(line.actual) %></span></span>
+              <span class="budget-metric" role="cell"><span class="budget-cell-label">Actual</span><span class="budget-cell-value"><%= formatMoney(line.actual) %></span><% if (Number(line.goal_attributed?.amount_minor) > 0) { %><small class="card-note">From goals: <%= formatMoney(line.goal_attributed) %></small><% } %></span>
               <span class="budget-metric budget-status <%= line.remaining ? remainingClass(line.remaining) : '' %>" role="cell"><span class="budget-cell-label">Remaining</span><span class="budget-cell-value"><%= line.remaining ? budgetStatus : "Informational" %></span></span>
-              <span class="budget-metric" role="cell"><span class="budget-cell-label">Previous month</span><span class="budget-cell-value"><%= formatMoney(previousActual) %></span></span>
+              <span class="budget-metric" role="cell"><span class="budget-cell-label">Previous month</span><span class="budget-cell-value"><%= formatMoney(previousActual) %></span><% if (Number(previousCategoryActual?.goal_attributed?.amount_minor) > 0) { %><small class="card-note">From goals: <%= formatMoney(previousCategoryActual.goal_attributed) %></small><% } %></span>
             </div>
           <% } %>
         <% }) %>

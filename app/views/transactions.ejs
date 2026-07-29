@@ -332,6 +332,73 @@
               Edit similar transactions or create a rule <i class="ph ph-arrow-up-right" aria-hidden="true"></i>
             </a>
           <% } %>
+          <% if (viewer?.is_admin) {
+            const recurringPattern =
+              selectedTransaction.recurringPattern ?? {
+                eligible:
+                  selectedTransaction.status === "posted" &&
+                  (selectedTransaction.providerAmount ?? selectedTransaction.amount).amount_minor < 0 &&
+                  !selectedTransaction.excludedFromSpending,
+                ineligibleReason:
+                  selectedTransaction.status === "pending"
+                    ? "Post this transaction before creating a recurring pattern."
+                    : (selectedTransaction.providerAmount ?? selectedTransaction.amount).amount_minor >= 0
+                      ? "Recurring patterns can only start from spending transactions."
+                      : selectedTransaction.excludedFromSpending
+                        ? "Include this transaction in spending before creating a recurring pattern."
+                        : null,
+                manual: false,
+                type: null,
+                cadence: null,
+                cadenceSuggested: false,
+              };
+          %>
+            <section class="transaction-organize transaction-recurring-pattern" aria-labelledby="transaction-recurring-heading">
+              <div>
+                <h3 id="transaction-recurring-heading">Recurring pattern</h3>
+                <p>Applies to matching charges from this merchant and account within the same amount range.</p>
+              </div>
+              <% if (recurringPattern.eligible) { %>
+                <form
+                  data-transaction-recurring-form
+                  data-endpoint="/api/v1/transactions/<%= encodeURIComponent(selectedTransaction.id) %>/recurring-pattern"
+                  data-manual="<%= recurringPattern.manual ? "true" : "false" %>"
+                >
+                  <label>
+                    Type
+                    <select name="type" required>
+                      <option value="" <%= recurringPattern.type ? "" : "selected" %> disabled>Choose a type</option>
+                      <option value="subscription" <%= recurringPattern.type === "subscription" ? "selected" : "" %>>Subscription</option>
+                      <option value="bill" <%= recurringPattern.type === "bill" ? "selected" : "" %>>Bill</option>
+                    </select>
+                  </label>
+                  <label>
+                    Frequency
+                    <select name="cadence" required>
+                      <option value="" <%= recurringPattern.cadence ? "" : "selected" %> disabled>Choose a frequency</option>
+                      <option value="weekly" <%= recurringPattern.cadence === "weekly" ? "selected" : "" %>>Weekly</option>
+                      <option value="biweekly" <%= recurringPattern.cadence === "biweekly" ? "selected" : "" %>>Biweekly</option>
+                      <option value="monthly" <%= recurringPattern.cadence === "monthly" ? "selected" : "" %>>Monthly</option>
+                      <option value="quarterly" <%= recurringPattern.cadence === "quarterly" ? "selected" : "" %>>Quarterly</option>
+                      <option value="annual" <%= recurringPattern.cadence === "annual" ? "selected" : "" %>>Annual</option>
+                    </select>
+                    <% if (recurringPattern.cadenceSuggested) { %>
+                      <small>Suggested from detected transaction history. Confirm it before saving.</small>
+                    <% } %>
+                  </label>
+                  <div class="transaction-organize__footer">
+                    <span class="form-status" role="status" data-transaction-recurring-status></span>
+                    <% if (recurringPattern.manual) { %>
+                      <button class="button button--ghost" type="button" data-remove-recurring-pattern>Remove manual pattern</button>
+                    <% } %>
+                    <button class="button button--secondary" type="submit"><%= recurringPattern.manual ? "Save pattern" : "Mark recurring" %></button>
+                  </div>
+                </form>
+              <% } else { %>
+                <p class="card-note"><%= recurringPattern.ineligibleReason %></p>
+              <% } %>
+            </section>
+          <% } %>
           <% if (
             selectedTransaction.status !== "pending" &&
             selectedTransaction.amount.currency === "USD"
@@ -390,13 +457,17 @@
                 ? selectedTransactionGoalSpending
                 : null;
             const goalSpends = goalSpending?.goal_spends ?? [];
+            const goalSpendAmount =
+              selectedTransaction.providerAmount ?? selectedTransaction.amount;
+            const isPostedOutflow =
+              selectedTransaction.status === "posted" &&
+              goalSpendAmount.amount_minor < 0;
             const canAddGoalSpend =
               goalSpending?.eligible === true &&
-              selectedTransaction.status === "posted" &&
-              selectedTransaction.amount.currency === "USD" &&
-              (selectedTransaction.providerAmount ?? selectedTransaction.amount).amount_minor < 0;
+              isPostedOutflow &&
+              goalSpendAmount.currency === "USD";
           %>
-          <% if (goalSpending && (goalSpends.length || canAddGoalSpend)) {
+          <% if (goalSpending && (goalSpends.length || isPostedOutflow)) {
             const activeGoals =
               typeof selectedTransactionGoals !== "undefined"
                 ? selectedTransactionGoals.filter(
@@ -404,7 +475,7 @@
                   )
                 : [];
             const sourceAmountMinor = Math.abs(
-              (selectedTransaction.providerAmount ?? selectedTransaction.amount).amount_minor,
+              goalSpendAmount.amount_minor,
             );
             const assignedAmountMinor = goalSpends.reduce(
               (sum, spend) => sum + Math.abs(Number(spend.amount_minor) || 0),

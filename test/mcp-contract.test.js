@@ -127,6 +127,26 @@ test("MCP instructions forbid guessed optimistic versions", () => {
     FINANCE_MCP_INSTRUCTIONS,
     /goal overspending never creates fake spending power/i,
   );
+  assert.match(
+    FINANCE_MCP_INSTRUCTIONS,
+    /active goal attribution reduces category and total budget actuals in the transaction's effective Plan month/i,
+  );
+  assert.match(
+    FINANCE_MCP_INSTRUCTIONS,
+    /active USD bills expected in the next 30 days/i,
+  );
+  assert.match(
+    FINANCE_MCP_INSTRUCTIONS,
+    /Expected bill dates and amounts are estimates from recurring history/i,
+  );
+  assert.match(
+    FINANCE_MCP_INSTRUCTIONS,
+    /Safe to Spend excludes subscriptions/i,
+  );
+  assert.match(
+    README,
+    /get_safe_to_spend` \| Liquid cash minus positive card balances, active bills expected in the next 30 days/i,
+  );
 });
 
 test("goal write schemas preserve purpose and finish outcome", () => {

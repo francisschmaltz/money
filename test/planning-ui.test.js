@@ -75,7 +75,26 @@ test("Dashboard and Plan share the same link-free Safe to Spend component", asyn
     source,
     /\.safe-to-spend-hero \{[\s\S]*?grid-template-columns: minmax\(0, 1\.3fr\) minmax\(260px, 0\.8fr\);/,
   );
+  assert.match(
+    source,
+    /\.safe-to-spend-breakdown \{[\s\S]*?font-size: 0\.9rem;/,
+  );
+  assert.match(
+    source,
+    /\.safe-to-spend-help summary:focus-visible \{[\s\S]*?box-shadow:/,
+  );
   assert.doesNotMatch(partial, /quiet-link|Cash details|<a\b/);
+  assert.match(partial, /<details class="safe-to-spend-help">/);
+  assert.match(partial, /How Safe to Spend is calculated/);
+  assert.match(
+    partial,
+    /Bill amounts and dates are estimates based on recurring history\./,
+  );
+  assert.match(partial, /<dt>Liquid cash<\/dt>/);
+  assert.match(partial, /<dt>Credit card balances<\/dt>/);
+  assert.match(partial, /<dt>Expected bills<\/dt>/);
+  assert.match(partial, /formatMoney\(safeToSpend\.expected_bills\)/);
+  assert.match(partial, /<dt>Goals<\/dt>/);
   assert.match(dashboard, /include\("partials\/safe-to-spend-card"/);
   assert.match(plan, /include\("partials\/safe-to-spend-card"/);
   assert.match(source, /\.plan-section \.section-heading \{/);
@@ -157,7 +176,12 @@ test("goal cards are summaries and all goal changes live in dialogs", async () =
   assert.match(plan, /data-goal-dialog-target="goal-(?:edit|allocate)-dialog-/);
   assert.match(plan, /data-goal-dialog-close/);
   assert.match(plan, /aria-label="Edit <%= goal\.name %>"/);
-  assert.match(plan, /aria-label="Move money for <%= goal\.name %>"/);
+  assert.match(plan, /aria-label="Fund goal <%= goal\.name %>"/);
+  assert.match(plan, />\s*Fund goal\s*<\/button>/);
+  assert.match(
+    plan,
+    /Funding is virtual\. It earmarks money in the plan without moving cash, selling investments, or making a payment\./,
+  );
   assert.match(
     plan,
     /data-goal-dialog="allocate"[\s\S]*plan-dialog__funding-summary/,
@@ -190,6 +214,64 @@ test("goal cards are summaries and all goal changes live in dialogs", async () =
     client,
     /delete form\.dataset\.idempotencyKey/,
   );
+});
+
+test("budget rows use taxonomy-wide previous actuals and disclose goal offsets", async () => {
+  const overview =
+    await createDemoPlanningService().getPlanningOverview();
+  const money = (amount_minor) => ({
+    amount_minor,
+    currency: "USD",
+  });
+  const html = await renderPlan({
+    budget: {
+      ...overview.budget,
+      goal_attributed_total: money(3_500),
+      lines: overview.budget.lines.map((line) =>
+        line.category_id === "category_dining"
+          ? {
+              ...line,
+              direct_goal_attributed: money(3_500),
+              goal_attributed: money(3_500),
+            }
+          : line,
+      ),
+    },
+    previousBudget: {
+      ...overview.previousBudget,
+      actual_total: money(2_444_779),
+      goal_attributed_total: money(7_000_000),
+      lines: [
+        {
+          category_id: "category_dining",
+          category: "Dining",
+          actual: money(999_999),
+        },
+      ],
+      category_actuals: [
+        {
+          category_id: "category_dining",
+          category: "Dining",
+          name: "Dining",
+          parent_category_id: null,
+          direct_actual: money(12_345),
+          actual: money(12_345),
+          direct_goal_attributed: money(7_000),
+          goal_attributed: money(7_000),
+        },
+      ],
+    },
+  });
+
+  assert.match(
+    html,
+    /budget-row--total[\s\S]*?budget-cell-label">Actual<\/span>[\s\S]*?From goals: \$35\.00[\s\S]*?budget-cell-label">Previous month<\/span><span class="budget-cell-value">\$24,447\.79<\/span>[\s\S]*?From goals: \$70,000\.00/,
+  );
+  assert.match(
+    html,
+    /href="\/transactions\?category=category_dining">Dining<\/a>[\s\S]*?budget-cell-label">Actual<\/span>[\s\S]*?From goals: \$35\.00[\s\S]*?budget-cell-label">Previous month<\/span><span class="budget-cell-value">\$123\.45<\/span>[\s\S]*?From goals: \$70\.00/,
+  );
+  assert.doesNotMatch(html, /\$9,999\.99/);
 });
 
 test("goal purpose and finishing controls stay in goal dialogs", async () => {

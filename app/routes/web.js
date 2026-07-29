@@ -20,6 +20,10 @@ import {
   resolveTransactionPeriod,
   webSpendingDetails,
 } from "../services/financeService.js";
+import {
+  consolidatePortfolioCashRows,
+  selectPortfolioHolding,
+} from "../services/portfolioPresentation.js";
 
 const usd = (amountMinor) => ({ amount_minor: amountMinor, currency: "USD" });
 
@@ -674,6 +678,10 @@ function demoServiceTransactionForWeb(transaction, demo) {
       ),
     isFixed:
       Boolean(transaction.is_fixed ?? stored?.isFixed),
+    recurringPattern:
+      transaction.recurring_pattern ??
+      stored?.recurringPattern ??
+      null,
     icon: stored?.icon ?? "ph-receipt",
     status:
       transaction.pending === true ||
@@ -1132,7 +1140,7 @@ async function demoPageModel(
       (total, holding) => total + holding.value.amount_minor,
       0,
     );
-    const displayedHoldings = scopedHoldings.map((holding) => ({
+    const allocatedHoldings = scopedHoldings.map((holding) => ({
       ...holding,
       allocation:
         portfolioMinor === 0
@@ -1141,22 +1149,25 @@ async function demoPageModel(
               (holding.value.amount_minor / portfolioMinor) * 10_000,
             ) / 100,
     }));
+    const displayedHoldings =
+      consolidatePortfolioCashRows(allocatedHoldings);
     return {
       portfolioScope: requestedScope,
       holdings: displayedHoldings,
-      allocation: displayedHoldings.map((holding) => ({
-        label: holding.symbol,
-        value: holding.allocation,
-      })),
+      allocation: displayedHoldings
+        .filter((holding) => holding.value.amount_minor > 0)
+        .map((holding) => ({
+          label: holding.symbol,
+          value: holding.allocation,
+        })),
       overview: {
         ...demo.overview,
         portfolio: usd(portfolioMinor),
       },
-      selectedHolding:
-        displayedHoldings.find(
-          (holding) => holding.symbol === query.holding,
-        ) ??
-        null,
+      selectedHolding: selectPortfolioHolding(
+        displayedHoldings,
+        query.holding,
+      ),
     };
   }
   if (view === "credit") {

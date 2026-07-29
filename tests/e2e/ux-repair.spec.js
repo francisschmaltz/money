@@ -408,6 +408,36 @@ test.describe("@ux-stress Money UX repair", () => {
 
     const explorer = page.locator("[data-spending-explorer]");
     await expect(explorer).toBeVisible();
+    const desktopGeometry = await explorer.evaluate((root) => {
+      const layout = root.querySelector(".spending-detail-layout");
+      const trend = root.querySelector(".spending-detail-trend");
+      const categories = root.querySelector(
+        ".spending-detail-categories",
+      );
+      const list = root.querySelector(
+        ".spending-detail-category-list",
+      );
+      const width = (element) =>
+        element?.getBoundingClientRect().width ?? 0;
+      return {
+        layout: width(layout),
+        trend: width(trend),
+        categories: width(categories),
+        columns:
+          getComputedStyle(list).gridTemplateColumns
+            .split(" ")
+            .filter(Boolean).length,
+      };
+    });
+    expect(
+      Math.abs(desktopGeometry.layout - desktopGeometry.trend),
+    ).toBeLessThanOrEqual(2);
+    expect(
+      Math.abs(
+        desktopGeometry.layout - desktopGeometry.categories,
+      ),
+    ).toBeLessThanOrEqual(2);
+    expect(desktopGeometry.columns).toBe(2);
     const ledgerCount = await page.locator(".transaction-row").count();
     expect(ledgerCount).toBeGreaterThan(0);
 
@@ -969,5 +999,60 @@ test.describe("@ux-stress Money UX repair", () => {
       "category-merge-mobile.png",
       { animations: "disabled", maxDiffPixelRatio: 0.01 },
     );
+  });
+
+  test("transaction spending groups collapse to one full-width column on narrow screens", async ({
+    page,
+  }) => {
+    for (const width of [480, 320]) {
+      await page.setViewportSize({ width, height: 900 });
+      await gotoSettled(page, "/transactions?period=90");
+      const explorer = page.locator("[data-spending-explorer]");
+      await expect(explorer).toBeVisible();
+      const geometry = await explorer.evaluate((root) => {
+        const layout = root.querySelector(
+          ".spending-detail-layout",
+        );
+        const trend = root.querySelector(
+          ".spending-detail-trend",
+        );
+        const categories = root.querySelector(
+          ".spending-detail-categories",
+        );
+        const list = root.querySelector(
+          ".spending-detail-category-list",
+        );
+        const rect = (element) =>
+          element?.getBoundingClientRect() ?? {
+            width: 0,
+            right: 0,
+          };
+        return {
+          layout: rect(layout).width,
+          trend: rect(trend).width,
+          categories: rect(categories).width,
+          right: Math.max(
+            rect(layout).right,
+            rect(trend).right,
+            rect(categories).right,
+          ),
+          viewport: document.documentElement.clientWidth,
+          columns:
+            getComputedStyle(list).gridTemplateColumns
+              .split(" ")
+              .filter(Boolean).length,
+        };
+      });
+      expect(geometry.columns).toBe(1);
+      expect(
+        Math.abs(geometry.layout - geometry.trend),
+      ).toBeLessThanOrEqual(2);
+      expect(
+        Math.abs(geometry.layout - geometry.categories),
+      ).toBeLessThanOrEqual(2);
+      expect(geometry.right).toBeLessThanOrEqual(
+        geometry.viewport + 1,
+      );
+    }
   });
 });

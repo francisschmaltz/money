@@ -40,6 +40,48 @@ test("read credentials discover planning reads but never plan writes", () => {
   }
 });
 
+test("planning tool copy explains effective transfer eligibility and budget netting", () => {
+  const tools = registry("plan:write");
+  const safeToSpendDescription = tools.get(
+    "get_safe_to_spend",
+  ).definition.description;
+  const budgetDescription = tools.get("get_budget_status").definition
+    .description;
+  const eligibilityDescription = tools.get(
+    "get_transaction_goal_spending",
+  ).definition.description;
+  const spendDescription = tools.get(
+    "spend_from_finance_goal",
+  ).definition.description;
+  const reverseDescription = tools.get(
+    "reverse_goal_spend",
+  ).definition.description;
+
+  assert.match(safeToSpendDescription, /bills expected in the next 30 days/i);
+  assert.match(safeToSpendDescription, /Subscriptions.*excluded/i);
+  assert.match(safeToSpendDescription, /estimates from recurring history/i);
+  assert.match(
+    budgetDescription,
+    /provider transfers stay out unless explicitly marked Include in spending/i,
+  );
+  assert.match(
+    budgetDescription,
+    /Goal-attributed portions are netted from monthly Plan actuals/i,
+  );
+  assert.match(
+    eligibilityDescription,
+    /eligible even when its provider labels it a transfer/i,
+  );
+  assert.match(
+    spendDescription,
+    /stops counting against monthly Plan actuals but remains in transaction and goal history/i,
+  );
+  assert.match(
+    reverseDescription,
+    /restores the attributed portion to monthly Plan actuals/i,
+  );
+});
+
 test("plan credentials discover annotated writes and return plan-change receipts", async () => {
   const tools = registry("plan:write");
   assert.equal(
@@ -230,6 +272,24 @@ test("planning reads emit the five version-compatible card kinds", async () => {
       JSON.parse(result.content[1].text),
       result.structuredContent,
     );
+    if (kind === "safe_to_spend") {
+      assert.equal(
+        result.structuredContent.data.expected_bills.amount_minor,
+        82_844,
+      );
+      assert.equal(
+        result.structuredContent.data.expected_bill_occurrence_count,
+        4,
+      );
+      assert.equal(
+        result.structuredContent.data.expected_bills_through_on,
+        "2026-08-26",
+      );
+      assert.equal(
+        result.structuredContent.data.excluded_expected_bill_count,
+        0,
+      );
+    }
     if (kind === "budget") {
       for (const line of result.structuredContent.data.lines) {
         assert.ok(Number.isInteger(line.version));

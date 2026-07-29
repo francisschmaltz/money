@@ -83,7 +83,10 @@ export class PlanningService {
         state.snapshot.active_goal_count === 1 ? "" : "s"
       }`,
       path: "/plan",
-      summary: `${formatMoney(state.snapshot.safe_to_spend)} is safe to spend after current card balances and cash-backed goals.`,
+      summary: `${formatMoney(state.snapshot.safe_to_spend)} is safe to spend after current card balances, bills expected in the next 30 days, and cash-backed goals.`,
+      warnings: state.snapshot.alerts
+        .filter((alert) => alert.code === "expected_bills_incomplete")
+        .map((alert) => alert.message),
     });
   }
 
@@ -230,6 +233,25 @@ export class PlanningService {
       ]);
     const incomeCategoryIds =
       budgetSettings.income_category_ids ?? [];
+    const goalSpendTotals =
+      typeof this.#repository.listActiveGoalSpendTotals ===
+        "function" && transactions.length
+        ? await this.#repository.listActiveGoalSpendTotals(
+            this.#workspaceId,
+            transactions.map((transaction) => transaction.id),
+          )
+        : [];
+    const goalAttributedByTransaction = new Map(
+      goalSpendTotals.map((entry) => [
+        entry.transaction_id,
+        Number(entry.amount_minor),
+      ]),
+    );
+    const budgetTransactions = transactions.map((transaction) => ({
+      ...transaction,
+      goal_attributed_minor:
+        goalAttributedByTransaction.get(transaction.id) ?? 0,
+    }));
     const selectedIncomeIds = categorySubtreeIds(
       categories,
       incomeCategoryIds,
@@ -275,7 +297,7 @@ export class PlanningService {
       monthOn: month,
       budgetLines,
       categories,
-      transactions,
+      transactions: budgetTransactions,
       splits,
       income: {
         average_monthly_minor: averageIncomeMinor,
@@ -1882,16 +1904,29 @@ export class PlanningService {
   }
 
   async #planningState({ includeArchived = false } = {}) {
-    const [accounts, goals, freshness] = await Promise.all([
-      this.#financeRepository.listAccounts(this.#workspaceId),
-      this.#repository.listGoals(this.#workspaceId, {
-        includeArchived,
-      }),
-      this.#financeRepository.getDataFreshness(this.#workspaceId),
-    ]);
+    const [accounts, goals, recurringStreams, freshness, timeZone] =
+      await Promise.all([
+        this.#financeRepository.listAccounts(this.#workspaceId),
+        this.#repository.listGoals(this.#workspaceId, {
+          includeArchived,
+        }),
+        typeof this.#financeRepository.listRecurringStreams ===
+        "function"
+          ? this.#financeRepository.listRecurringStreams(
+              this.#workspaceId,
+              { includeInactive: false },
+            )
+          : [],
+        this.#financeRepository.getDataFreshness(this.#workspaceId),
+        typeof this.#repository.getWorkspaceTimezone === "function"
+          ? this.#repository.getWorkspaceTimezone(this.#workspaceId)
+          : "America/Los_Angeles",
+      ]);
     const snapshot = buildPlanningSnapshot({
       accounts,
       goals,
+      recurringStreams,
+      asOf: workspaceDate(this.#now(), timeZone),
       currency: this.#currency,
     });
     if (freshness.partial) {
@@ -1905,6 +1940,7 @@ export class PlanningService {
     return {
       accounts,
       goals,
+      recurringStreams,
       freshness,
       snapshot,
     };
@@ -2155,7 +2191,7 @@ function goalSpendIneligibleReason(transaction, amountMinor) {
     return "Only posted outflows can be spent from a goal.";
   }
   if (transaction.excluded_from_spending === true) {
-    return "Transfers and excluded transactions cannot be spent from a goal.";
+    return "Include this outflow in spending before using a goal.";
   }
   return null;
 }

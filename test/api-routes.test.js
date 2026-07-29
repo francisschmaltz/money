@@ -91,6 +91,34 @@ test("Plaid Link uses an opaque member ID and server-owned OAuth redirect", asyn
   ]);
 });
 
+test("Safe-to-Spend REST preserves expected-bill projection metadata", async () => {
+  const payload = {
+    data: {
+      liquid_cash: { amount_minor: 1_000_000, currency: "USD" },
+      current_card_liabilities: {
+        amount_minor: 0,
+        currency: "USD",
+      },
+      expected_bills: { amount_minor: 500_000, currency: "USD" },
+      expected_bill_occurrence_count: 1,
+      expected_bills_through_on: "2026-08-27",
+      excluded_expected_bill_count: 0,
+      cash_goal_earmarks: { amount_minor: 0, currency: "USD" },
+      safe_to_spend: { amount_minor: 500_000, currency: "USD" },
+    },
+    warnings: [],
+  };
+  const app = planningApiApp({
+    async getSafeToSpend() {
+      return payload;
+    },
+  });
+
+  await request(app)
+    .get("/api/v1/plan/safe-to-spend")
+    .expect(200, payload);
+});
+
 test("a fresh budget can create its first current standing category from the browser route", async () => {
   const calls = [];
   const app = planningApiApp({
@@ -987,6 +1015,14 @@ test("quality feedback and recurring classification routes validate structured a
           calls.push(["recurring", input, routeActor]);
           return { updated: true };
         },
+        upsertTransactionRecurringPattern(input, routeActor) {
+          calls.push(["pattern-upsert", input, routeActor]);
+          return { updated: true };
+        },
+        removeTransactionRecurringPattern(input, routeActor) {
+          calls.push(["pattern-remove", input, routeActor]);
+          return { updated: true, removed: true };
+        },
       },
     }),
   );
@@ -1011,6 +1047,22 @@ test("quality feedback and recurring classification routes validate structured a
     .put("/api/v1/recurring/stream-1/classification")
     .send({ type: "frequent_spending" })
     .expect(200);
+  await request(app)
+    .put(
+      "/api/v1/transactions/transaction-1/recurring-pattern",
+    )
+    .send({
+      transaction_id: "wrong-id",
+      type: "bill",
+      cadence: "monthly",
+    })
+    .expect(200);
+  await request(app)
+    .delete(
+      "/api/v1/transactions/transaction-1/recurring-pattern",
+    )
+    .send({})
+    .expect(200);
 
   assert.deepEqual(calls, [
     [
@@ -1030,6 +1082,20 @@ test("quality feedback and recurring classification routes validate structured a
     [
       "recurring",
       { stream_id: "stream-1", type: "frequent_spending" },
+      actor,
+    ],
+    [
+      "pattern-upsert",
+      {
+        transaction_id: "transaction-1",
+        type: "bill",
+        cadence: "monthly",
+      },
+      actor,
+    ],
+    [
+      "pattern-remove",
+      { transaction_id: "transaction-1" },
       actor,
     ],
   ]);

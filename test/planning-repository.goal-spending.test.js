@@ -169,6 +169,49 @@ test("transaction goal-spending reads expose the optimistic parent version", asy
   assert.equal(result.transaction.amount_minor, -1_000);
   assert.equal(result.goal_spends[0].amount_minor, 600);
   assert.equal(result.goal_spends[0].source, "cash");
+  assert.match(
+    db.calls[0].sql,
+    /JOIN transaction_effective_spending_treatments treatment/,
+  );
+});
+
+test("active goal-spend totals are batched and ignore ended history", async () => {
+  const db = transactionalPool(async () => ({
+    rows: [
+      {
+        transaction_id: "transaction-1",
+        amount_minor: "7000000",
+      },
+      {
+        transaction_id: "transaction-2",
+        amount_minor: "1250",
+      },
+    ],
+  }));
+  const repository = new PgPlanningRepository(db.pool);
+
+  const result = await repository.listActiveGoalSpendTotals(
+    "shared",
+    ["transaction-2", "transaction-1", "transaction-2"],
+  );
+
+  assert.deepEqual(result, [
+    { transaction_id: "transaction-1", amount_minor: 7_000_000 },
+    { transaction_id: "transaction-2", amount_minor: 1_250 },
+  ]);
+  assert.deepEqual(db.calls[0].params, [
+    "shared",
+    ["transaction-2", "transaction-1"],
+  ]);
+  assert.match(
+    db.calls[0].sql,
+    /transaction_id = ANY\(\$2::text\[\]\)/,
+  );
+  assert.match(db.calls[0].sql, /status = 'active'/);
+  assert.match(
+    db.calls[0].sql,
+    /SUM\(amount_minor\)::bigint AS amount_minor/,
+  );
 });
 
 test("identical goal-spending replacement is a true no-op", async () => {
@@ -259,7 +302,7 @@ test("goal-spending replacement permits overspending and advances versions", asy
   const db = transactionalPool(async (sql) => {
     if (sql.includes("pg_advisory_xact_lock")) return { rows: [{}] };
     if (
-      sql.startsWith("SELECT id, provider_transaction_id") &&
+      sql.startsWith("SELECT t.id") &&
       sql.includes("FROM transactions")
     ) {
       return {
@@ -337,6 +380,20 @@ test("goal-spending replacement permits overspending and advances versions", asy
   assert.equal(result.goal_spends[0].amount_minor, 900);
   assert.equal(result.goals[0].version, 5);
   assert.equal(result.audit_event_id, "audit-spend");
+  const lockedTransaction = db.calls.find(
+    (call) =>
+      call.sql.startsWith("SELECT t.id") &&
+      call.sql.includes("FOR UPDATE"),
+  );
+  assert.match(
+    lockedTransaction.sql,
+    /JOIN transaction_effective_spending_treatments treatment/,
+  );
+  assert.match(
+    lockedTransaction.sql,
+    /treatment\.effective_excluded_from_spending AS excluded_from_spending/,
+  );
+  assert.match(lockedTransaction.sql, /FOR UPDATE OF t/);
   assert.equal(
     db.calls.some((call) =>
       call.sql.includes("pg_advisory_xact_lock"),
@@ -361,6 +418,173 @@ test("goal-spending replacement permits overspending and advances versions", asy
   assert.match(
     goalUpdate.sql,
     /archive_outcome = CASE WHEN id = ANY\(\$3::text\[\]\) THEN NULL/,
+  );
+});
+
+test("ineligible transactions may reduce existing goal spending", async () => {
+  let spendSelectCount = 0;
+  const existing = {
+    id: "spend-existing",
+    transaction_id: "transaction-1",
+    transaction_provider_id: "provider-1",
+    goal_id: "goal-trip",
+    source: "cash",
+    line_index: "0",
+    amount_minor: "600",
+    status: "active",
+  };
+  const reduced = {
+    ...existing,
+    id: "spend-reduced",
+    amount_minor: "300",
+  };
+  const db = transactionalPool(async (sql) => {
+    if (sql.includes("pg_advisory_xact_lock")) return { rows: [{}] };
+    if (
+      sql.startsWith("SELECT t.id") &&
+      sql.includes("FROM transactions")
+    ) {
+      return {
+        rows: [
+          {
+            id: "transaction-1",
+            provider_transaction_id: "provider-1",
+            amount_minor: "-1000",
+            currency_code: "USD",
+            posted_on: "2026-07-27",
+            pending: false,
+            excluded_from_spending: true,
+            goal_spend_version: "3",
+          },
+        ],
+      };
+    }
+    if (
+      sql.startsWith("SELECT spend.*") &&
+      sql.includes("FROM goal_transaction_spends")
+    ) {
+      spendSelectCount += 1;
+      return {
+        rows: spendSelectCount === 1 ? [existing] : [reduced],
+      };
+    }
+    if (sql.includes("FROM finance_goals")) {
+      return {
+        rows: [
+          {
+            id: "goal-trip",
+            workspace_id: "shared",
+            status: "active",
+            version: "4",
+            archived_at: null,
+          },
+        ],
+      };
+    }
+    if (sql.startsWith("UPDATE finance_goals")) {
+      return {
+        rows: [
+          {
+            id: "goal-trip",
+            status: "active",
+            version: "5",
+            archived_at: null,
+          },
+        ],
+      };
+    }
+    if (sql.startsWith("UPDATE transactions")) {
+      return { rows: [{ goal_spend_version: "4" }] };
+    }
+    return { rows: [] };
+  });
+  const repository = new PgPlanningRepository(db.pool);
+
+  const result = await repository.replaceTransactionGoalSpending(
+    "shared",
+    "transaction-1",
+    [
+      {
+        id: "spend-reduced",
+        line_index: 0,
+        goal_id: "goal-trip",
+        source: "cash",
+        amount_minor: 300,
+      },
+    ],
+    3,
+    { "goal-trip": 4 },
+    { type: "member", id: "member-1" },
+    "audit-reduce",
+  );
+
+  assert.equal(result.validation, undefined);
+  assert.equal(result.goal_spends[0].amount_minor, 300);
+  assert.equal(result.goal_spend_version, 4);
+  assert.equal(
+    db.calls.some(
+      (call) =>
+        call.sql.startsWith("UPDATE goal_transaction_spends") &&
+        call.params[2]?.includes("spend-existing"),
+    ),
+    true,
+  );
+  assert.equal(
+    db.calls.some((call) =>
+      call.sql.startsWith("INSERT INTO goal_transaction_spends"),
+    ),
+    true,
+  );
+});
+
+test("ineligible transactions still reject increased goal spending", async () => {
+  const db = transactionalPool(async (sql) => {
+    if (sql.includes("pg_advisory_xact_lock")) return { rows: [{}] };
+    if (sql.includes("FROM transactions")) {
+      return {
+        rows: [
+          {
+            id: "transaction-1",
+            provider_transaction_id: "provider-1",
+            amount_minor: "-1000",
+            currency_code: "USD",
+            posted_on: "2026-07-27",
+            pending: false,
+            excluded_from_spending: true,
+            goal_spend_version: "0",
+          },
+        ],
+      };
+    }
+    return { rows: [] };
+  });
+  const repository = new PgPlanningRepository(db.pool);
+
+  const result = await repository.replaceTransactionGoalSpending(
+    "shared",
+    "transaction-1",
+    [
+      {
+        id: "spend-new",
+        line_index: 0,
+        goal_id: "goal-trip",
+        source: "cash",
+        amount_minor: 100,
+      },
+    ],
+    0,
+    { "goal-trip": 1 },
+    { type: "member", id: "member-1" },
+    "audit-blocked",
+  );
+
+  assert.equal(result.validation, true);
+  assert.equal(result.code, "transaction_not_posted_usd_expense");
+  assert.equal(
+    db.calls.some((call) =>
+      call.sql.startsWith("INSERT INTO goal_transaction_spends"),
+    ),
+    false,
   );
 });
 

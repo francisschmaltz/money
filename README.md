@@ -208,9 +208,9 @@ credential discovers those same tools plus all nine writes.
 | `read` | Finance | `get_net_worth_history` | Historical asset, liability, and net-worth snapshots. |
 | `read` | Finance | `get_portfolio_summary` | Holdings, allocation, value history, cash flows, and supported performance evidence. |
 | `read` | Finance | `get_credit_score_summary` | Manually tracked scores, freshness, household average, and history; not an underwriting score. |
-| `read` | Planning | `get_safe_to_spend` | Liquid cash minus positive card balances and cash-backed goal earmarks. |
+| `read` | Planning | `get_safe_to_spend` | Liquid cash minus positive card balances, active bills expected in the next 30 days, and cash-backed goal earmarks. |
 | `read` | Planning | `list_finance_goals` | Active or finished goals, funding, schedules, attributed spending, remaining amounts, and shortfalls. |
-| `read` | Planning | `get_budget_status` | Hierarchical selected budgets, tracking modes, income, leftover, and one month's posted actuals. |
+| `read` | Planning | `get_budget_status` | Hierarchical budgets, taxonomy-wide category actuals, goal-attributed offsets, income, and leftover for one Plan month. |
 | `read` | Planning | `model_finance_plan` | Deterministic goal-funding and brokerage-change scenario arithmetic. |
 | `read` | Planning | `get_transaction_goal_spending` | A transaction's goal-spending links, unassigned amount, and current write versions. |
 | `plan:write` | Planning | `create_finance_goal` | Create a household goal with a purpose, target, and optional date. |

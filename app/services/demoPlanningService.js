@@ -20,6 +20,7 @@ import {
   buildDefaultBudgetDefaults,
   buildDefaultGoals,
   buildDefaultPlanningAccounts,
+  buildDefaultRecurringPayments,
   buildDefaultTransactions,
 } from "../demo/defaultScenario.js";
 
@@ -46,6 +47,17 @@ export function createDemoPlanningService({
       : [];
   const accounts = buildDefaultPlanningAccounts();
   const goals = buildDefaultGoals();
+  const recurringStreams = buildDefaultRecurringPayments().map(
+    (stream) => ({
+      id: stream.id,
+      stream_type: stream.type,
+      cadence: stream.cadence,
+      expected_amount_minor: stream.expected_amount.amount_minor,
+      currency_code: stream.expected_amount.currency,
+      next_expected_on: stream.next_estimated_date,
+      status: stream.status,
+    }),
+  );
   if (scenario === "ux-stress") {
     goals[0].name =
       "House down payment for the long-term multigenerational family home";
@@ -126,6 +138,8 @@ export function createDemoPlanningService({
       goals: goals.filter(
         (goal) => includeArchived || goal.status === "active",
       ),
+      recurringStreams,
+      asOf: workspaceDate(now(), "America/Los_Angeles"),
       currency: "USD",
     });
   }
@@ -234,7 +248,8 @@ export function createDemoPlanningService({
         title: "Safe to Spend",
         subtitle: "2 active goals",
         source: { label: "Money", url: "/plan" },
-        summary: "Safe to Spend reflects liquid cash after card balances and cash-backed goals.",
+        summary:
+          "Safe to Spend reflects liquid cash after card balances, bills expected in the next 30 days, and cash-backed goals.",
       };
     },
 
@@ -498,7 +513,7 @@ export function createDemoPlanningService({
               ? "Pending transactions cannot be spent from a goal."
               : transaction.amount_minor >= 0
                 ? "Only posted outflows can be spent from a goal."
-                : "This transaction cannot be spent from a goal.",
+                : "Include this outflow in spending before using a goal.",
         },
         ...freshness,
         warnings: [],
@@ -664,6 +679,11 @@ export function createDemoPlanningService({
       ) {
         throw demoConflict(
           "Only posted USD outflows can be spent from a goal.",
+        );
+      }
+      if (transaction.excluded_from_spending === true) {
+        throw demoConflict(
+          "Include this outflow in spending before using a goal.",
         );
       }
       const currentTransactionVersion =

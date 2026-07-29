@@ -2,6 +2,15 @@ import { inferBalanceGroup, money, shiftDateOnly } from "./analytics.js";
 
 const SUPPORTED_SOURCES = new Set(["cash", "brokerage"]);
 const DEFAULT_GOAL_PURPOSE = "other";
+const EXPECTED_BILL_STATUSES = new Set(["active", "resumed"]);
+const EXPECTED_BILL_CADENCES = new Set([
+  "weekly",
+  "biweekly",
+  "monthly",
+  "quarterly",
+  "annual",
+]);
+const EXPECTED_BILL_WINDOW_DAYS = 30;
 
 export function workspaceDate(value = new Date(), timeZone = "America/Los_Angeles") {
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -69,9 +78,88 @@ export function nextScheduleDueOn(schedule, afterOn) {
   throw new TypeError("Unsupported goal schedule cadence.");
 }
 
+export function projectExpectedBills({
+  recurringStreams = [],
+  asOf = workspaceDate(),
+  currency = "USD",
+  windowDays = EXPECTED_BILL_WINDOW_DAYS,
+} = {}) {
+  const asOfOn = validDateOnly(asOf);
+  if (!asOfOn) throw new TypeError("asOf must be an ISO date.");
+  if (!Number.isInteger(windowDays) || windowDays < 0 || windowDays > 366) {
+    throw new TypeError("windowDays must be an integer from 0 to 366.");
+  }
+  const throughOn = shiftDateOnly(asOfOn, windowDays);
+  let amountMinor = 0;
+  let occurrenceCount = 0;
+  let excludedBillCount = 0;
+
+  for (const stream of recurringStreams) {
+    if (stream.stream_type !== "bill") continue;
+    if (!EXPECTED_BILL_STATUSES.has(stream.status)) {
+      continue;
+    }
+    const expectedAmountMinor = Number(stream.expected_amount_minor);
+    const nextExpectedOn = validDateOnly(stream.next_expected_on);
+    if (!nextExpectedOn) {
+      excludedBillCount += 1;
+      continue;
+    }
+    if (nextExpectedOn > throughOn) continue;
+    if (
+      stream.currency_code !== currency ||
+      !Number.isSafeInteger(expectedAmountMinor) ||
+      expectedAmountMinor <= 0 ||
+      !EXPECTED_BILL_CADENCES.has(stream.cadence)
+    ) {
+      excludedBillCount += 1;
+      continue;
+    }
+
+    if (!["weekly", "biweekly"].includes(stream.cadence)) {
+      amountMinor += expectedAmountMinor;
+      occurrenceCount += 1;
+      continue;
+    }
+
+    let occurrenceOn = nextExpectedOn;
+    let projectedCount = 0;
+    if (occurrenceOn < asOfOn) {
+      amountMinor += expectedAmountMinor;
+      occurrenceCount += 1;
+      projectedCount += 1;
+      do {
+        occurrenceOn = advanceRecurringDate(
+          occurrenceOn,
+          stream.cadence,
+        );
+        projectedCount += 1;
+      } while (occurrenceOn < asOfOn && projectedCount < 64);
+    }
+    while (occurrenceOn <= throughOn && projectedCount < 64) {
+      amountMinor += expectedAmountMinor;
+      occurrenceCount += 1;
+      occurrenceOn = advanceRecurringDate(
+        occurrenceOn,
+        stream.cadence,
+      );
+      projectedCount += 1;
+    }
+  }
+
+  return {
+    expected_bills: money(amountMinor, currency),
+    expected_bill_occurrence_count: occurrenceCount,
+    expected_bills_through_on: throughOn,
+    excluded_expected_bill_count: excludedBillCount,
+  };
+}
+
 export function buildPlanningSnapshot({
   accounts = [],
   goals = [],
+  recurringStreams = [],
+  asOf = workspaceDate(),
   currency = "USD",
 } = {}) {
   let liquidCash = 0;
@@ -163,13 +251,23 @@ export function buildPlanningSnapshot({
     (sum, goal) => sum + goal.brokerage_backed.amount_minor,
     0,
   );
-  const safeToSpend = liquidCash - creditCardLiabilities - cashEarmarks;
+  const expectedBills = projectExpectedBills({
+    recurringStreams,
+    asOf,
+    currency,
+  });
+  const safeToSpend =
+    liquidCash -
+    creditCardLiabilities -
+    expectedBills.expected_bills.amount_minor -
+    cashEarmarks;
   const alerts = [];
   if (safeToSpend < 0) {
     alerts.push({
       code: "safe_to_spend_negative",
       severity: "warning",
-      message: "Cash-backed commitments exceed liquid cash after card balances.",
+      message:
+        "Card balances, expected bills, and cash-backed goals exceed liquid cash.",
     });
   }
   if (brokerageBackedTotal < brokerageEarmarks) {
@@ -186,11 +284,21 @@ export function buildPlanningSnapshot({
       message: `${unknownBalanceCount} planning balance${unknownBalanceCount === 1 ? " is" : "s are"} unknown.`,
     });
   }
+  if (expectedBills.excluded_expected_bill_count > 0) {
+    alerts.push({
+      code: "expected_bills_incomplete",
+      severity: "warning",
+      message: `${expectedBills.excluded_expected_bill_count} active bill estimate${
+        expectedBills.excluded_expected_bill_count === 1 ? " was" : "s were"
+      } not included because the date, amount, cadence, or currency is unsupported.`,
+    });
+  }
 
   return {
     currency,
     liquid_cash: money(liquidCash, currency),
     current_card_liabilities: money(creditCardLiabilities, currency),
+    ...expectedBills,
     cash_goal_earmarks: money(cashEarmarks, currency),
     safe_to_spend: money(safeToSpend, currency),
     taxable_brokerage_value: money(brokerageValue, currency),
@@ -207,7 +315,7 @@ export function buildPlanningSnapshot({
     excluded_currency_count: excludedCurrencyCount,
     alerts,
     formula:
-      "Liquid checking/savings cash minus positive current card balances minus cash-backed goal earmarks.",
+      "Liquid cash minus credit card balances, bills expected in the next 30 days, and cash-backed goals.",
   };
 }
 
@@ -409,6 +517,7 @@ export function buildBudgetStatus({
     return false;
   };
   const directActualById = new Map();
+  const directGoalAttributedById = new Map();
   for (const transaction of expanded) {
     const transactionBudgetMonth = monthStart(
       transaction.budget_month_on ?? transaction.posted_on,
@@ -435,10 +544,18 @@ export function buildBudgetStatus({
     ) {
       continue;
     }
+    const goalAttributedMinor =
+      normalizedGoalAttributionMinor(transaction);
     directActualById.set(
       categoryId,
       (directActualById.get(categoryId) ?? 0) -
-        transaction.amount_minor,
+        transaction.amount_minor -
+        goalAttributedMinor,
+    );
+    directGoalAttributedById.set(
+      categoryId,
+      (directGoalAttributedById.get(categoryId) ?? 0) +
+        goalAttributedMinor,
     );
   }
   const planById = new Map(
@@ -485,6 +602,26 @@ export function buildBudgetStatus({
         0,
       );
     subtreeActualMemo.set(categoryId, value);
+    return value;
+  };
+  const subtreeGoalAttributedMemo = new Map();
+  const subtreeGoalAttributed = (
+    categoryId,
+    visited = new Set(),
+  ) => {
+    if (subtreeGoalAttributedMemo.has(categoryId)) {
+      return subtreeGoalAttributedMemo.get(categoryId);
+    }
+    if (visited.has(categoryId)) return 0;
+    const nextVisited = new Set(visited).add(categoryId);
+    const value =
+      (directGoalAttributedById.get(categoryId) ?? 0) +
+      (childrenById.get(categoryId) ?? []).reduce(
+        (sum, childId) =>
+          sum + subtreeGoalAttributed(childId, nextVisited),
+        0,
+      );
+    subtreeGoalAttributedMemo.set(categoryId, value);
     return value;
   };
   const selectedChildren = new Map();
@@ -598,6 +735,14 @@ export function buildBudgetStatus({
         directActualById.get(categoryId) ?? 0,
         currency,
       ),
+      goal_attributed: money(
+        subtreeGoalAttributed(categoryId),
+        currency,
+      ),
+      direct_goal_attributed: money(
+        directGoalAttributedById.get(categoryId) ?? 0,
+        currency,
+      ),
       tracked_planned: money(trackedPlanned, currency),
       tracked_actual: money(trackedActual, currency),
       remaining: effectiveInformational
@@ -638,6 +783,35 @@ export function buildBudgetStatus({
     (sum, amount) => sum + amount,
     0,
   );
+  const goalAttributedTotal = [
+    ...directGoalAttributedById.values(),
+  ].reduce((sum, amount) => sum + amount, 0);
+  const categoryActuals = [...categoryList]
+    .sort((left, right) =>
+      compareBudgetCategories(
+        left.path ?? left.name ?? left.id,
+        right.path ?? right.name ?? right.id,
+      ),
+    )
+    .map((category) => ({
+      category_id: category.id,
+      parent_category_id: category.parent_category_id ?? null,
+      category: category.path ?? category.name,
+      name: category.name,
+      actual: money(subtreeActual(category.id), currency),
+      direct_actual: money(
+        directActualById.get(category.id) ?? 0,
+        currency,
+      ),
+      goal_attributed: money(
+        subtreeGoalAttributed(category.id),
+        currency,
+      ),
+      direct_goal_attributed: money(
+        directGoalAttributedById.get(category.id) ?? 0,
+        currency,
+      ),
+    }));
   const averageIncome = Number(income?.average_monthly_minor ?? 0);
   const actualIncome = Number(income?.actual_month_minor ?? 0);
   const estimatedLeftover = averageIncome - plannedTotal;
@@ -653,6 +827,7 @@ export function buildBudgetStatus({
     currency,
     planned_total: money(plannedTotal, currency),
     actual_total: money(actualTotal, currency),
+    goal_attributed_total: money(goalAttributedTotal, currency),
     remaining_total: money(plannedTotal - actualTotal, currency),
     over_budget_category_count: trackedOver.length,
     average_monthly_income: money(averageIncome, currency),
@@ -665,6 +840,7 @@ export function buildBudgetStatus({
       estimatedLeftover < 0 || trackedOver.length
         ? "needs_attention"
         : "on_track",
+    category_actuals: categoryActuals,
     groups,
     lines,
   };
@@ -701,17 +877,83 @@ export function expandTransactionsWithSplits(transactions, splits) {
   return transactions.flatMap((transaction) => {
     const lines = byTransaction.get(transaction.id);
     if (!validSplitSet(transaction, lines)) return [transaction];
-    return lines.map((line) => ({
+    const goalAttributionByLine =
+      allocateGoalAttributionAcrossSplits(transaction, lines);
+    return lines.map((line, index) => ({
       ...transaction,
       id: `${transaction.id}:${line.id ?? line.line_index}`,
       category_primary: line.category,
       category_id: line.category_id ?? null,
       category_detailed: null,
       amount_minor: Number(line.amount_minor),
+      goal_attributed_minor: goalAttributionByLine[index],
       is_fixed: Boolean(line.is_fixed),
       split_parent_id: transaction.id,
     }));
   });
+}
+
+function normalizedGoalAttributionMinor(transaction) {
+  const amountMinor = Number(transaction.amount_minor);
+  const goalAttributedMinor = Number(
+    transaction.goal_attributed_minor ?? 0,
+  );
+  if (
+    !Number.isSafeInteger(amountMinor) ||
+    amountMinor >= 0 ||
+    !Number.isSafeInteger(goalAttributedMinor) ||
+    goalAttributedMinor <= 0
+  ) {
+    return 0;
+  }
+  return Math.min(goalAttributedMinor, -amountMinor);
+}
+
+function allocateGoalAttributionAcrossSplits(
+  transaction,
+  lines,
+) {
+  const goalAttributedMinor =
+    normalizedGoalAttributionMinor(transaction);
+  if (goalAttributedMinor === 0) {
+    return lines.map(() => 0);
+  }
+  const denominator = BigInt(-Number(transaction.amount_minor));
+  const shares = lines.map((line, inputIndex) => {
+    const numerator =
+      BigInt(goalAttributedMinor) *
+      BigInt(-Number(line.amount_minor));
+    const amountMinor = Number(numerator / denominator);
+    const parsedLineIndex = Number(line.line_index);
+    return {
+      inputIndex,
+      lineIndex:
+        line.line_index != null &&
+        Number.isSafeInteger(parsedLineIndex)
+          ? parsedLineIndex
+          : inputIndex,
+      amountMinor,
+      remainder: numerator % denominator,
+    };
+  });
+  const remaining =
+    goalAttributedMinor -
+    shares.reduce((sum, share) => sum + share.amountMinor, 0);
+  const largestRemainders = [...shares].sort((left, right) => {
+    if (left.remainder !== right.remainder) {
+      return left.remainder > right.remainder ? -1 : 1;
+    }
+    return (
+      left.lineIndex - right.lineIndex ||
+      left.inputIndex - right.inputIndex
+    );
+  });
+  for (let index = 0; index < remaining; index += 1) {
+    largestRemainders[index].amountMinor += 1;
+  }
+  return shares
+    .sort((left, right) => left.inputIndex - right.inputIndex)
+    .map((share) => share.amountMinor);
 }
 
 function validSplitSet(transaction, lines) {
@@ -1017,6 +1259,25 @@ function parseDate(value) {
   const date = new Date(`${String(value).slice(0, 10)}T00:00:00.000Z`);
   if (!Number.isFinite(date.getTime())) throw new TypeError("Invalid date.");
   return date;
+}
+
+function validDateOnly(value) {
+  const normalized = String(value ?? "").slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(normalized)) return null;
+  try {
+    const date = parseDate(normalized);
+    return date.toISOString().slice(0, 10) === normalized
+      ? normalized
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function advanceRecurringDate(value, cadence) {
+  if (cadence === "weekly") return shiftDateOnly(value, 7);
+  if (cadence === "biweekly") return shiftDateOnly(value, 14);
+  throw new TypeError("Unsupported recurring cadence.");
 }
 
 function boundedDay(value) {
