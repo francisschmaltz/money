@@ -37,7 +37,7 @@ import {
   isCashSecurity,
 } from "./investmentSecurities.js";
 import {
-  consolidatePortfolioCashRows,
+  consolidatePortfolioHoldingRows,
   selectPortfolioHolding,
 } from "./portfolioPresentation.js";
 import {
@@ -3383,7 +3383,7 @@ export class FinanceService {
           holdingsLimit: 100,
         }),
       ]);
-      const webHoldings = consolidatePortfolioCashRows(
+      const webHoldings = consolidatePortfolioHoldingRows(
         portfolio.data.holdings.map(webHolding),
       );
       return {

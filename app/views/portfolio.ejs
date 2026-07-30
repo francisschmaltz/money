@@ -202,7 +202,7 @@
           <section class="selected-detail entity-detail-dialog__summary">
             <b class="ticker"><%= selectedHolding.badge || selectedHolding.symbol.slice(0, 4) %></b>
             <div>
-              <p class="card-kicker"><%= selectedHolding.isCash ? "Cash balance" : "Holding details" %></p>
+              <p class="card-kicker"><%= selectedHolding.isCash ? "Cash balance" : selectedHolding.isAggregated ? "Combined holding" : "Holding details" %></p>
               <h2 id="selected-holding-heading"><%= selectedHolding.symbol %></h2>
               <p><%= selectedHolding.name %></p>
             </div>
@@ -212,11 +212,11 @@
 
           <div class="entity-detail-dialog__body">
             <% if (selectedHolding.isCash && selectedHolding.positions?.length) { %>
-              <section class="cash-position-breakdown" aria-labelledby="cash-position-breakdown-heading">
-                <h3 id="cash-position-breakdown-heading">By investment account</h3>
-                <div class="cash-position-list" role="list">
+              <section class="holding-position-breakdown" aria-labelledby="holding-position-breakdown-heading">
+                <h3 id="holding-position-breakdown-heading">By investment account</h3>
+                <div class="holding-position-list" role="list">
                   <% selectedHolding.positions.forEach((position) => { %>
-                    <div class="cash-position-row" role="listitem">
+                    <div class="holding-position-row" role="listitem">
                       <span><%= position.account %></span>
                       <strong><%= formatMoney(position.value) %></strong>
                     </div>
@@ -225,8 +225,26 @@
               </section>
               <p class="entity-detail-dialog__note"><i class="ph ph-info" aria-hidden="true"></i> Cash balances come from the latest synced investment holdings and may be delayed.</p>
             <% } else { %>
+              <% if (selectedHolding.isAggregated && selectedHolding.positions?.length) { %>
+                <section class="holding-position-breakdown" aria-labelledby="holding-position-breakdown-heading">
+                  <h3 id="holding-position-breakdown-heading">By investment account</h3>
+                  <div class="holding-position-list" role="list">
+                    <% selectedHolding.positions.forEach((position) => { %>
+                      <div class="holding-position-row" role="listitem">
+                        <span>
+                          <%= position.account %>
+                          <% if (position.shares != null) { %><small><%= position.shares %> shares</small><% } %>
+                        </span>
+                        <strong><%= formatMoney(position.value) %></strong>
+                      </div>
+                    <% }) %>
+                  </div>
+                </section>
+              <% } %>
               <dl class="entity-detail-grid">
-                <div><dt>Account</dt><dd><%= selectedHolding.account || "—" %></dd></div>
+                <% if (!selectedHolding.isAggregated) { %>
+                  <div><dt>Account</dt><dd><%= selectedHolding.account || "—" %></dd></div>
+                <% } %>
                 <div><dt>Security type</dt><dd><%= selectedHolding.securityType || "—" %></dd></div>
                 <div><dt>Shares</dt><dd><%= selectedHolding.shares ?? "—" %></dd></div>
                 <div><dt>Allocation</dt><dd><%= selectedHolding.allocation %>% of <%= portfolioScopeLabels[selectedScope].toLowerCase() %></dd></div>
@@ -234,10 +252,12 @@
                 <div><dt>Price as of</dt><dd><%= selectedHolding.priceAsOf || "—" %></dd></div>
                 <div><dt>Cost basis</dt><dd><%= selectedHolding.costBasis ? formatMoney(selectedHolding.costBasis) : "—" %></dd></div>
                 <div><dt>Current value</dt><dd><%= formatMoney(selectedHolding.value) %></dd></div>
-                <div class="entity-detail-grid__wide"><dt>Holding ID</dt><dd><code><%= selectedHolding.id || "—" %></code></dd></div>
-                <div class="entity-detail-grid__wide"><dt>Security ID</dt><dd><code><%= selectedHolding.securityId || "—" %></code></dd></div>
+                <% if (!selectedHolding.isAggregated) { %>
+                  <div class="entity-detail-grid__wide"><dt>Holding ID</dt><dd><code><%= selectedHolding.id || "—" %></code></dd></div>
+                  <div class="entity-detail-grid__wide"><dt>Security ID</dt><dd><code><%= selectedHolding.securityId || "—" %></code></dd></div>
+                <% } %>
               </dl>
-              <p class="entity-detail-dialog__note"><i class="ph ph-info" aria-hidden="true"></i> Values come from the latest synced holding and may be delayed.</p>
+              <p class="entity-detail-dialog__note"><i class="ph ph-info" aria-hidden="true"></i> Values come from the latest synced holding<%= selectedHolding.isAggregated ? "s" : "" %> and may be delayed.</p>
             <% } %>
           </div>
         </div>

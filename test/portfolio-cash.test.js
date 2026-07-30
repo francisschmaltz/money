@@ -10,7 +10,7 @@ import { createFinanceService } from "../app/services/financeService.js";
 import { detectInvestmentInsights } from "../app/services/insightDetectors.js";
 import { normalizePlaidSecurity } from "../app/providers/plaidNormalizer.js";
 import {
-  consolidatePortfolioCashRows,
+  consolidatePortfolioHoldingRows,
   selectPortfolioHolding,
 } from "../app/services/portfolioPresentation.js";
 
@@ -116,7 +116,7 @@ test("cash never triggers a single-stock concentration insight", () => {
 });
 
 test("portfolio presentation consolidates cash by currency and account", () => {
-  const rows = consolidatePortfolioCashRows([
+  const rows = consolidatePortfolioHoldingRows([
     {
       id: "stock",
       selectionKey: "INDEX",
@@ -199,6 +199,128 @@ test("portfolio presentation consolidates cash by currency and account", () => {
     selectPortfolioHolding(rows, "CUR:USD"),
     rows[1],
   );
+});
+
+test("portfolio presentation consolidates the same security across accounts", () => {
+  const rows = consolidatePortfolioHoldingRows([
+    {
+      id: "holding-schk-ira",
+      securityId: "security-schk-ira",
+      accountId: "account-ira",
+      account: "IRA",
+      selectionKey: "SCHK",
+      symbol: "SCHK",
+      badge: "SCHK",
+      name: "Schwab 1000 Index ETF",
+      securityType: "etf",
+      balanceGroup: "retirement",
+      value: usd(352_000),
+      costBasis: usd(300_000),
+      price: usd(3_520),
+      priceAsOf: "2026-07-25",
+      allocation: 23.27,
+      shares: "10",
+    },
+    {
+      id: "holding-schg",
+      securityId: "security-schg",
+      accountId: "account-brokerage",
+      account: "Brokerage",
+      selectionKey: "SCHG",
+      symbol: "SCHG",
+      badge: "SCHG",
+      name: "Schwab U.S. Large-Cap Growth ETF",
+      securityType: "etf",
+      balanceGroup: "taxable_investment",
+      value: usd(598_320),
+      costBasis: usd(500_000),
+      price: usd(2_000),
+      priceAsOf: "2026-07-26",
+      allocation: 39.56,
+      shares: "29.916",
+    },
+    {
+      id: "holding-schk-brokerage",
+      securityId: "security-schk-brokerage",
+      accountId: "account-brokerage",
+      account: "Brokerage",
+      selectionKey: "SCHK",
+      symbol: "SCHK",
+      badge: "SCHK",
+      name: "Schwab 1000 Index ETF",
+      securityType: "etf",
+      balanceGroup: "taxable_investment",
+      value: usd(222_760),
+      costBasis: usd(200_000),
+      price: usd(3_520),
+      priceAsOf: "2026-07-27",
+      allocation: 14.73,
+      shares: "6.33",
+    },
+    {
+      id: "holding-schk-shared",
+      securityId: "security-schk-shared",
+      accountId: "account-shared",
+      account: "Shared Brokerage",
+      selectionKey: "SCHK",
+      symbol: "SCHK",
+      badge: "SCHK",
+      name: "Schwab 1000 Index ETF",
+      securityType: "etf",
+      balanceGroup: "taxable_investment",
+      value: usd(123_200),
+      costBasis: usd(100_000),
+      price: usd(3_520),
+      priceAsOf: "2026-07-26",
+      allocation: 8.15,
+      shares: "3.5",
+    },
+  ]);
+
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].selectionKey, "SCHK");
+  assert.deepEqual(rows[0], {
+    id: null,
+    securityId: null,
+    accountId: null,
+    account: null,
+    selectionKey: "SCHK",
+    symbol: "SCHK",
+    badge: "SCHK",
+    name: "Schwab 1000 Index ETF",
+    securityType: "etf",
+    balanceGroup: null,
+    value: usd(697_960),
+    costBasis: usd(600_000),
+    price: usd(3_520),
+    priceAsOf: "2026-07-27",
+    allocation: 46.15,
+    shares: "19.83",
+    positions: [
+      {
+        accountId: "account-ira",
+        account: "IRA",
+        value: usd(352_000),
+        shares: "10",
+      },
+      {
+        accountId: "account-brokerage",
+        account: "Brokerage",
+        value: usd(222_760),
+        shares: "6.33",
+      },
+      {
+        accountId: "account-shared",
+        account: "Shared Brokerage",
+        value: usd(123_200),
+        shares: "3.5",
+      },
+    ],
+    isAggregated: true,
+    legacySelectionKeys: ["SCHK"],
+  });
+  assert.equal(rows[1].selectionKey, "SCHG");
+  assert.equal(selectPortfolioHolding(rows, "SCHK"), rows[0]);
 });
 
 test("portfolio page model presents E*TRADE currency as a cash balance", async () => {
@@ -370,4 +492,83 @@ test("portfolio HTML shows cash value without rendering CUR:USD as a stock", asy
   assert.doesNotMatch(html, /<dt>Holding ID<\/dt>/);
   assert.doesNotMatch(html, /<span>Selected period<\/span>/);
   assert.doesNotMatch(html, /CUR:USD/);
+});
+
+test("portfolio HTML shows one combined security with its account positions", async () => {
+  const demo = buildDemoModel();
+  const combined = consolidatePortfolioHoldingRows([
+    {
+      id: "holding-ira",
+      securityId: "security-ira",
+      accountId: "account-ira",
+      account: "IRA",
+      selectionKey: "SCHK",
+      symbol: "SCHK",
+      badge: "SCHK",
+      name: "Schwab 1000 Index ETF",
+      securityType: "etf",
+      balanceGroup: "retirement",
+      value: usd(352_000),
+      costBasis: usd(300_000),
+      price: usd(3_520),
+      priceAsOf: "2026-07-27",
+      allocation: 60,
+      shares: "10",
+    },
+    {
+      id: "holding-brokerage",
+      securityId: "security-brokerage",
+      accountId: "account-brokerage",
+      account: "Brokerage",
+      selectionKey: "SCHK",
+      symbol: "SCHK",
+      badge: "SCHK",
+      name: "Schwab 1000 Index ETF",
+      securityType: "etf",
+      balanceGroup: "taxable_investment",
+      value: usd(222_760),
+      costBasis: usd(200_000),
+      price: usd(3_520),
+      priceAsOf: "2026-07-27",
+      allocation: 40,
+      shares: "6.33",
+    },
+  ])[0];
+  const html = await ejs.renderFile(
+    path.resolve("app/views/portfolio.ejs"),
+    {
+      ...demo,
+      formatMoney,
+      activePath: "/portfolio",
+      currentPath: "/portfolio",
+      pageTitle: "Portfolio",
+      pageDescription: "Description",
+      query: { period: "1m", scope: "all" },
+      csrfToken: "csrf-test-value",
+      holdings: [combined],
+      allocation: [{ label: "SCHK", value: 100 }],
+      selectedHolding: combined,
+      portfolioData: {
+        scope: "all",
+        total_value: combined.value,
+        holdings: [],
+        series: [],
+        warnings: [],
+        period: { name: "1m" },
+      },
+    },
+  );
+
+  assert.equal((html.match(/<strong>SCHK<\/strong>/g) ?? []).length, 1);
+  assert.match(html, /Combined holding/);
+  assert.match(html, /By investment account/);
+  assert.match(html, /IRA[\s\S]*10 shares[\s\S]*\$3,520\.00/);
+  assert.match(
+    html,
+    /Brokerage[\s\S]*6\.33 shares[\s\S]*\$2,227\.60/,
+  );
+  assert.match(html, /<dt>Shares<\/dt><dd>16\.33<\/dd>/);
+  assert.match(html, /<dt>Cost basis<\/dt><dd>\$5,000\.00<\/dd>/);
+  assert.doesNotMatch(html, /<dt>Holding ID<\/dt>/);
+  assert.doesNotMatch(html, /<dt>Security ID<\/dt>/);
 });

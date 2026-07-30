@@ -21,7 +21,7 @@ import {
   webSpendingDetails,
 } from "../services/financeService.js";
 import {
-  consolidatePortfolioCashRows,
+  consolidatePortfolioHoldingRows,
   selectPortfolioHolding,
 } from "../services/portfolioPresentation.js";
 
@@ -1150,7 +1150,7 @@ async function demoPageModel(
             ) / 100,
     }));
     const displayedHoldings =
-      consolidatePortfolioCashRows(allocatedHoldings);
+      consolidatePortfolioHoldingRows(allocatedHoldings);
     return {
       portfolioScope: requestedScope,
       holdings: displayedHoldings,

@@ -2287,16 +2287,16 @@ h3 {
   border-top: 1px solid var(--line);
 }
 
-.cash-position-breakdown h3 {
+.holding-position-breakdown h3 {
   margin-bottom: 12px;
   font-size: 0.86rem;
 }
 
-.cash-position-list {
+.holding-position-list {
   border-top: 1px solid var(--line);
 }
 
-.cash-position-row {
+.holding-position-row {
   display: flex;
   min-height: 48px;
   align-items: center;
@@ -2307,12 +2307,19 @@ h3 {
   font-size: 0.8rem;
 }
 
-.cash-position-row span {
+.holding-position-row span {
+  display: flex;
   min-width: 0;
+  flex-direction: column;
   overflow-wrap: anywhere;
 }
 
-.cash-position-row strong {
+.holding-position-row small {
+  margin-top: 2px;
+  color: var(--ink-faint);
+}
+
+.holding-position-row strong {
   flex: 0 0 auto;
   font-variant-numeric: tabular-nums;
 }
