@@ -1,5 +1,5 @@
 export const FINANCE_CARD_SCHEMA = "com.yaboiii.finance-card";
-export const FINANCE_CARD_VERSION = 1;
+export const FINANCE_CARD_VERSION = 2;
 export const MAX_FINANCE_ENVELOPE_BYTES = 20_000;
 export const FINANCE_MCP_CONNECTION_ID = "money";
 export const FINANCE_OPEN_WEBUI_TOOL_ID = "server:mcp:money";
@@ -20,6 +20,7 @@ export const FINANCE_TOOL_KIND_MAP = Object.freeze({
 export const PLANNING_READ_TOOL_KIND_MAP = Object.freeze({
   get_safe_to_spend: "safe_to_spend",
   list_finance_goals: "goals",
+  get_finance_goal: "goals",
   get_budget_status: "budget",
   model_finance_plan: "scenario",
   get_transaction_goal_spending: "goals",

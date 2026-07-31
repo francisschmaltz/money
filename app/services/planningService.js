@@ -173,6 +173,35 @@ export class PlanningService {
     });
   }
 
+  async getFinanceGoal({ goal_id } = {}) {
+    const goalId = requiredId(goal_id, "goal_id");
+    const state = await this.#planningState({ includeArchived: true });
+    const catalog = this.#goalCatalog(state);
+    const goal = catalog.goals.find(
+      (candidate) => candidate.id === goalId,
+    );
+    if (!goal) throw notFound("Goal not found.");
+    return result({
+      data: {
+        goal,
+        history_insights: boundedGoalHistoryInsights(
+          catalog.historyInsights.filter((insight) =>
+            insight.evidence_goal_ids.includes(goalId),
+          ),
+        ),
+        alerts: state.snapshot.alerts.filter(
+          (alert) => alert.goal_id === goalId,
+        ),
+      },
+      freshness: state.freshness,
+      title: goal.name,
+      subtitle:
+        goal.status === "archived" ? "Finished goal" : "Active goal",
+      path: `/plan#goal-${encodeURIComponent(goalId)}`,
+      summary: `${goal.name} details returned.`,
+    });
+  }
+
   async getBudgetStatus({
     month_on = null,
     include_available_categories = false,
@@ -1578,7 +1607,15 @@ export class PlanningService {
       throw conflict("Pending transactions cannot be split.");
     }
     if (transaction.currency_code !== this.#currency) {
-      throw conflict("Only USD transactions can be split in v1.");
+      throw conflict("Only USD transactions can be split in this workspace.");
+    }
+    if (
+      input.currency != null &&
+      input.currency !== transaction.currency_code
+    ) {
+      throw conflict(
+        "Split currency must match the transaction currency.",
+      );
     }
     if (!Array.isArray(input.lines) || input.lines.length > 50) {
       throw badRequest("lines must be an array with at most 50 entries.");

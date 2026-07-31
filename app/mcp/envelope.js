@@ -16,6 +16,7 @@ import {
   financeErrorData,
   normalizeFinanceMcpError,
 } from "./errors.js";
+import { hasCurrencyPrecision } from "./units.js";
 
 const KIND_DISPLAY = Object.freeze({
   overview: { title: "Finance overview", path: "/" },
@@ -217,7 +218,7 @@ function isValidIsoTimestamp(value) {
 }
 
 function validateMoneyObject(value, path) {
-  const hasAmount = Object.hasOwn(value, "amount_minor");
+  const hasAmount = Object.hasOwn(value, "amount");
   const hasCurrency = Object.hasOwn(value, "currency");
   if (!hasAmount) {
     if (
@@ -228,23 +229,37 @@ function validateMoneyObject(value, path) {
     }
     return;
   }
+  if (typeof value.amount !== "number") {
+    if (
+      value.amount &&
+      typeof value.amount === "object" &&
+      !Array.isArray(value.amount)
+    ) {
+      return;
+    }
+    throw validationFailure(
+      `${path}.amount must be a finite number or nested Money object.`,
+    );
+  }
 
   if (!hasCurrency) {
     throw validationFailure(
-      `${path} must contain both amount_minor and currency.`,
+      `${path} must contain both amount and currency.`,
     );
   }
   if (
-    !Number.isSafeInteger(value.amount_minor) ||
+    typeof value.amount !== "number" ||
+    !Number.isFinite(value.amount) ||
     typeof value.currency !== "string" ||
-    !ISO_CURRENCY.test(value.currency)
+    !ISO_CURRENCY.test(value.currency) ||
+    !hasCurrencyPrecision(value.amount, value.currency)
   ) {
     throw validationFailure(
-      `${path} must be Money with a safe integer amount_minor and ISO-4217 currency.`,
+      `${path} must be Money with a finite amount and ISO-4217 currency.`,
     );
   }
   const extraKeys = Object.keys(value).filter(
-    (key) => key !== "amount_minor" && key !== "currency",
+    (key) => key !== "amount" && key !== "currency",
   );
   if (extraKeys.length > 0) {
     throw validationFailure(
@@ -287,12 +302,13 @@ function validateFinding(value, path) {
     throw validationFailure(`${path}.metrics must be an object.`);
   }
   if (
-    !Number.isSafeInteger(value.confidence_basis_points) ||
-    value.confidence_basis_points < 0 ||
-    value.confidence_basis_points > 10_000
+    typeof value.confidence_percentage !== "number" ||
+    !Number.isFinite(value.confidence_percentage) ||
+    value.confidence_percentage < 0 ||
+    value.confidence_percentage > 100
   ) {
     throw validationFailure(
-      `${path}.confidence_basis_points must be between 0 and 10000.`,
+      `${path}.confidence_percentage must be between 0 and 100.`,
     );
   }
   if (!Array.isArray(value.evidence)) {
@@ -363,32 +379,37 @@ function validateSemanticField(key, value, path) {
     }
   }
 
-  const boundedBasisPoints =
-    key === "confidence_basis_points" ||
-    key.endsWith("_share_basis_points") ||
-    key.endsWith("_allocation_basis_points") ||
-    key.endsWith("_concentration_basis_points") ||
-    key.endsWith("_threshold_basis_points") ||
-    key.endsWith("_contribution_basis_points") ||
-    key === "share_basis_points" ||
-    key === "allocation_basis_points" ||
-    key === "concentration_basis_points" ||
-    key === "threshold_basis_points" ||
-    key === "contribution_basis_points";
-  if (boundedBasisPoints) {
+  if (key.endsWith("_minor") || key.endsWith("_basis_points")) {
+    throw validationFailure(`${path} uses a legacy MCP unit field.`);
+  }
+
+  const boundedPercentage =
+    key === "confidence_percentage" ||
+    key.endsWith("_share_percentage") ||
+    key.endsWith("_allocation_percentage") ||
+    key.endsWith("_concentration_percentage") ||
+    key.endsWith("_threshold_percentage") ||
+    key.endsWith("_contribution_percentage") ||
+    key === "share_percentage" ||
+    key === "allocation_percentage" ||
+    key === "concentration_percentage" ||
+    key === "threshold_percentage" ||
+    key === "contribution_percentage";
+  if (boundedPercentage) {
     if (
-      !Number.isSafeInteger(value) ||
+      typeof value !== "number" ||
+      !Number.isFinite(value) ||
       value < 0 ||
-      value > 10_000
+      value > 100
     ) {
-      throw validationFailure(`${path} must be between 0 and 10000.`);
+      throw validationFailure(`${path} must be between 0 and 100.`);
     }
   } else if (
-    key.endsWith("_basis_points") &&
+    key.endsWith("_percentage") &&
     value !== null &&
-    !Number.isSafeInteger(value)
+    (typeof value !== "number" || !Number.isFinite(value))
   ) {
-    throw validationFailure(`${path} must be a signed integer or null.`);
+    throw validationFailure(`${path} must be a finite number or null.`);
   }
 
   if (
@@ -451,11 +472,7 @@ function validateCardData(
     if (!Number.isFinite(value)) {
       throw validationFailure(`${path} contains a non-finite number.`);
     }
-    if (
-      (fieldKey === "amount_minor" ||
-        fieldKey?.endsWith("_count")) &&
-      !Number.isSafeInteger(value)
-    ) {
+    if (fieldKey?.endsWith("_count") && !Number.isSafeInteger(value)) {
       throw validationFailure(`${path} must be an integer.`);
     }
     return;

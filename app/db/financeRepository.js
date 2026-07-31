@@ -3195,6 +3195,7 @@ export class PgFinanceRepository {
       status = "all",
       minAmountMinor = null,
       maxAmountMinor = null,
+      currencyCode = null,
       sort = "date",
       limit = 50,
       cursor = null,
@@ -3538,8 +3539,9 @@ export class PgFinanceRepository {
             $14::bigint IS NULL
             OR abs(
               COALESCE(category_split.amount_minor, t.amount_minor)
-            ) <= $14
+              ) <= $14
           )
+          AND ($18::text IS NULL OR t.currency_code = $18)
           AND (
             $15::boolean = false
             OR (a.active = true AND i.status <> 'removed')
@@ -3629,6 +3631,7 @@ export class PgFinanceRepository {
         activeAccountsOnly,
         merchant,
         useBudgetMonth,
+        currencyCode,
       ],
     );
     const hasMore = result.rows.length > boundedLimit;

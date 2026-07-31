@@ -18,6 +18,7 @@ import {
 } from "../app/mcp/index.js";
 import { createFinanceService } from "../app/services/financeService.js";
 import { createDemoFinanceService } from "../app/services/demoFinanceService.js";
+import { createDemoPlanningService } from "../app/services/demoPlanningService.js";
 
 const NOW = new Date("2026-07-27T01:02:03.000Z");
 
@@ -218,7 +219,10 @@ function makeFinanceService(overrides = {}) {
   return Object.assign(service, overrides);
 }
 
-function captureRegisteredTools(financeService = makeFinanceService()) {
+function captureRegisteredTools(
+  financeService = makeFinanceService(),
+  planningService = createDemoPlanningService(),
+) {
   const tools = new Map();
   const server = {
     registerTool(name, config, callback) {
@@ -227,6 +231,7 @@ function captureRegisteredTools(financeService = makeFinanceService()) {
   };
   registerFinanceTools(server, {
     financeService,
+    planningService,
     now: () => NOW,
     baseUrl: "https://money.example.com",
   });
@@ -277,8 +282,157 @@ test("every tool returns readable text then canonical JSON plus rich structured 
       JSON.parse(result.content[1].text),
       result.structuredContent,
     );
+    assert.doesNotMatch(
+      JSON.stringify(result.structuredContent),
+      /"(?:[^"]*_minor|[^"]*_basis_points)"/,
+      toolName,
+    );
     assert.doesNotMatch(result.content[0].text, /^\s*[\[{]/);
     assert.equal(result.isError, undefined);
+  }
+});
+
+test("overview leads with Safe to Spend and keeps supporting data out of headlines", async () => {
+  const started = [];
+  const financeService = makeFinanceService({
+    async getFinanceOverview() {
+      started.push("finance");
+      return {
+        data: {
+          cash_balance: { amount_minor: 2_000_000, currency: "USD" },
+          short_term_worth: { amount_minor: 3_000_000, currency: "USD" },
+          retirement_assets: { amount_minor: 4_000_000, currency: "USD" },
+          net_worth: { amount_minor: 9_000_000, currency: "USD" },
+          spending: { amount_minor: 125_50, currency: "USD" },
+          income: { amount_minor: 500_00, currency: "USD" },
+          subscription_count: 3,
+          manual_assets: [],
+        },
+        data_as_of: "2026-07-26T23:58:00.000Z",
+        warnings: [],
+      };
+    },
+  });
+  const planningService = {
+    async getSafeToSpend() {
+      started.push("planning");
+      return {
+        data: {
+          safe_to_spend: { amount_minor: 1_000_000, currency: "USD" },
+          active_goal_count: 1,
+          goals: [
+            {
+              id: "goal_house",
+              name: "House",
+              purpose: "home",
+              status: "active",
+              target_on: "2027-06-01",
+              progress_basis_points: 4_255,
+              version: 4,
+            },
+          ],
+        },
+        data_as_of: "2026-07-26T23:57:00.000Z",
+        warnings: [],
+      };
+    },
+  };
+
+  const result = await captureRegisteredTools(
+    financeService,
+    planningService,
+  )
+    .get("get_finance_overview")
+    .callback({});
+  const data = result.structuredContent.data;
+
+  assert.deepEqual(started, ["finance", "planning"]);
+  assert.match(result.content[0].text, /^Safe to Spend is \$10,000\.00\./);
+  assert.equal(result.structuredContent.data_as_of, "2026-07-26T23:57:00.000Z");
+  assert.deepEqual(data.safe_to_spend, {
+    amount: 10_000,
+    currency: "USD",
+  });
+  assert.deepEqual(data.wealth, {
+    cash: { amount: 20_000, currency: "USD" },
+    net_worth: { amount: 90_000, currency: "USD" },
+    retirement: { amount: 40_000, currency: "USD" },
+    short_term: { amount: 30_000, currency: "USD" },
+  });
+  assert.deepEqual(data.goals.items[0], {
+    id: "goal_house",
+    name: "House",
+    progress_percentage: 42.55,
+    purpose: "home",
+    status: "active",
+    target_on: "2027-06-01",
+    version: 4,
+    warning_flags: [],
+  });
+  assert.deepEqual(data.details.spending, {
+    amount: 125.5,
+    currency: "USD",
+  });
+  for (const duplicate of [
+    "cash_balance",
+    "short_term_worth",
+    "retirement_assets",
+    "net_worth",
+  ]) {
+    assert.equal(Object.hasOwn(data.details, duplicate), false, duplicate);
+  }
+});
+
+test("overview is explicitly partial when planning is unavailable", async () => {
+  const result = await captureRegisteredTools(makeFinanceService(), null)
+    .get("get_finance_overview")
+    .callback({});
+
+  assert.equal(result.isError, undefined);
+  assert.equal(result.structuredContent.partial, true);
+  assert.equal(result.structuredContent.data.safe_to_spend, null);
+  assert.deepEqual(result.structuredContent.data.goals.items, []);
+  assert.match(
+    JSON.stringify(result.structuredContent.warnings),
+    /Safe to Spend and goal status are temporarily unavailable/,
+  );
+  assert.match(result.content[0].text, /^Safe to Spend is unavailable\./);
+});
+
+test("list accounts returns rows and pagination without household summaries", async () => {
+  const financeService = makeFinanceService({
+    async listAccounts() {
+      return {
+        data: {
+          accounts: fixtureData("list_accounts", {}).accounts,
+          account_count: 1,
+          page_info: { has_more: false, next_cursor: null },
+          balance_summary: { amount_minor: 250_000, currency: "USD" },
+          credit_summary: { amount_minor: 50_000, currency: "USD" },
+          net_worth: { amount_minor: 200_000, currency: "USD" },
+          manual_assets: [{ id: "asset_car" }],
+        },
+        data_as_of: NOW,
+      };
+    },
+  });
+  const result = await captureRegisteredTools(financeService)
+    .get("list_accounts")
+    .callback({});
+  const data = result.structuredContent.data;
+
+  assert.equal(data.accounts.length, 1);
+  assert.deepEqual(data.page_info, {
+    has_more: false,
+    next_cursor: null,
+  });
+  for (const omitted of [
+    "balance_summary",
+    "credit_summary",
+    "net_worth",
+    "manual_assets",
+  ]) {
+    assert.equal(Object.hasOwn(data, omitted), false, omitted);
   }
 });
 

@@ -6,6 +6,12 @@ import {
   FINANCE_TOOL_KIND_MAP,
   PLANNING_TOOL_KIND_MAP,
 } from "./constants.js";
+import {
+  amountToMinorUnits,
+  hasCurrencyPrecision,
+  hasPercentagePrecision,
+  percentageToBasisPoints,
+} from "./units.js";
 
 const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const ISO_DATE_TIME_PATTERN =
@@ -79,17 +85,39 @@ const financeGoalArchiveOutcomeSchema = z.enum([
   "cancelled",
 ]);
 
-const safeMinorUnitsSchema = z
+const currencySchema = z
+  .string()
+  .trim()
+  .regex(/^[A-Z]{3}$/);
+const MAX_MAJOR_AMOUNT = Number.MAX_SAFE_INTEGER / 1000;
+const safeAmountSchema = z
   .number()
-  .int()
-  .min(Number.MIN_SAFE_INTEGER)
-  .max(Number.MAX_SAFE_INTEGER);
-const nonnegativeMinorUnitsSchema = z
+  .min(-MAX_MAJOR_AMOUNT)
+  .max(MAX_MAJOR_AMOUNT);
+const nonnegativeUsdAmountSchema = z
   .number()
-  .int()
   .min(0)
-  .max(Number.MAX_SAFE_INTEGER);
-const positiveMinorUnitsSchema = nonnegativeMinorUnitsSchema.min(1);
+  .max(MAX_MAJOR_AMOUNT)
+  .refine(
+    (value) => hasCurrencyPrecision(value, "USD"),
+    "amount supports at most two decimal places for USD",
+  );
+const positiveUsdAmountSchema = z
+  .number()
+  .gt(0)
+  .max(MAX_MAJOR_AMOUNT)
+  .refine(
+    (value) => hasCurrencyPrecision(value, "USD"),
+    "amount supports at most two decimal places for USD",
+  );
+const brokerageChangePercentageSchema = z
+  .number()
+  .min(-100)
+  .max(1_000)
+  .refine(
+    hasPercentagePrecision,
+    "percentage supports at most two decimal places",
+  );
 const idempotencyKeySchema = z
   .string()
   .trim()
@@ -143,9 +171,7 @@ function requireCompleteCustomPeriod(value, context) {
 
 export const FINANCE_TOOL_INPUT_SCHEMAS = Object.freeze({
   get_finance_overview: z
-    .object({
-      as_of: isoDateOrDateTimeSchema.optional(),
-    })
+    .object({})
     .strict(),
 
   get_finance_insights: z
@@ -194,21 +220,46 @@ export const FINANCE_TOOL_INPUT_SCHEMAS = Object.freeze({
     account_id: opaqueIdSchema.optional(),
     category: categorySchema.optional(),
     status: z.enum(["posted", "pending", "all"]).default("all"),
-    min_amount_minor: safeMinorUnitsSchema.optional(),
-    max_amount_minor: safeMinorUnitsSchema.optional(),
+    min_amount: safeAmountSchema.optional(),
+    max_amount: safeAmountSchema.optional(),
+    currency: currencySchema.optional(),
     limit: boundedLimit(20, 25),
     cursor: cursorSchema.optional(),
   }).superRefine((value, context) => {
     if (
-      value.min_amount_minor !== undefined &&
-      value.max_amount_minor !== undefined &&
-      value.min_amount_minor > value.max_amount_minor
+      value.min_amount !== undefined &&
+      value.max_amount !== undefined &&
+      value.min_amount > value.max_amount
     ) {
       context.addIssue({
         code: "custom",
-        message: "min_amount_minor must not exceed max_amount_minor.",
-        path: ["min_amount_minor"],
+        message: "min_amount must not exceed max_amount.",
+        path: ["min_amount"],
       });
+    }
+    if (
+      (value.min_amount !== undefined ||
+        value.max_amount !== undefined) &&
+      !value.currency
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "currency is required with amount filters.",
+        path: ["currency"],
+      });
+    }
+    for (const key of ["min_amount", "max_amount"]) {
+      if (
+        value[key] !== undefined &&
+        value.currency &&
+        !hasCurrencyPrecision(value[key], value.currency)
+      ) {
+        context.addIssue({
+          code: "custom",
+          message: `${key} has too many decimal places for ${value.currency}.`,
+          path: [key],
+        });
+      }
     }
   }),
 
@@ -287,6 +338,12 @@ export const FINANCE_TOOL_INPUT_SCHEMAS = Object.freeze({
     })
     .strict(),
 
+  get_finance_goal: z
+    .object({
+      goal_id: opaqueIdSchema,
+    })
+    .strict(),
+
   get_transaction_goal_spending: z
     .object({
       transaction_id: opaqueIdSchema,
@@ -302,18 +359,14 @@ export const FINANCE_TOOL_INPUT_SCHEMAS = Object.freeze({
   model_finance_plan: z
     .object({
       goal_id: opaqueIdSchema.optional(),
-      monthly_contribution_minor:
-        nonnegativeMinorUnitsSchema.default(0),
-      biweekly_contribution_minor:
-        nonnegativeMinorUnitsSchema.default(0),
-      one_time_contribution_minor:
-        nonnegativeMinorUnitsSchema.default(0),
-      brokerage_change_basis_points: z
-        .number()
-        .int()
-        .min(-10_000)
-        .max(100_000)
-        .default(0),
+      monthly_contribution:
+        nonnegativeUsdAmountSchema.default(0),
+      biweekly_contribution:
+        nonnegativeUsdAmountSchema.default(0),
+      one_time_contribution:
+        nonnegativeUsdAmountSchema.default(0),
+      brokerage_change_percentage:
+        brokerageChangePercentageSchema.default(0),
     })
     .strict(),
 
@@ -321,7 +374,7 @@ export const FINANCE_TOOL_INPUT_SCHEMAS = Object.freeze({
     .object({
       name: z.string().trim().min(1).max(120),
       purpose: financeGoalPurposeSchema.default("other"),
-      target_amount_minor: positiveMinorUnitsSchema,
+      target_amount: positiveUsdAmountSchema,
       target_on: isoDateSchema.nullable().optional(),
       idempotency_key: idempotencyKeySchema,
     })
@@ -333,7 +386,7 @@ export const FINANCE_TOOL_INPUT_SCHEMAS = Object.freeze({
       expected_version: z.number().int().min(1),
       name: z.string().trim().min(1).max(120).optional(),
       purpose: financeGoalPurposeSchema.optional(),
-      target_amount_minor: positiveMinorUnitsSchema.optional(),
+      target_amount: positiveUsdAmountSchema.optional(),
       target_on: isoDateSchema.nullable().optional(),
       idempotency_key: idempotencyKeySchema,
     })
@@ -342,7 +395,7 @@ export const FINANCE_TOOL_INPUT_SCHEMAS = Object.freeze({
       (value) =>
         value.name !== undefined ||
         value.purpose !== undefined ||
-        value.target_amount_minor !== undefined ||
+        value.target_amount !== undefined ||
         Object.hasOwn(value, "target_on"),
       "At least one goal field must change.",
     ),
@@ -352,7 +405,7 @@ export const FINANCE_TOOL_INPUT_SCHEMAS = Object.freeze({
       goal_id: opaqueIdSchema,
       source: z.enum(["cash", "brokerage"]),
       direction: z.enum(["allocate", "release"]).default("allocate"),
-      amount_minor: positiveMinorUnitsSchema,
+      amount: positiveUsdAmountSchema,
       expected_version: z.number().int().min(1),
       idempotency_key: idempotencyKeySchema,
     })
@@ -365,7 +418,7 @@ export const FINANCE_TOOL_INPUT_SCHEMAS = Object.freeze({
       expected_version: z.number().int().min(1).default(1),
       source: z.enum(["cash", "brokerage"]),
       cadence: z.enum(["monthly", "biweekly_friday"]),
-      amount_minor: positiveMinorUnitsSchema,
+      amount: positiveUsdAmountSchema,
       monthly_day: z.number().int().min(1).max(31).optional(),
       anchor_on: isoDateSchema.optional(),
       status: z.enum(["active", "paused"]).default("active"),
@@ -416,7 +469,7 @@ export const FINANCE_TOOL_INPUT_SCHEMAS = Object.freeze({
     .object({
       category: categorySchema.optional(),
       category_id: opaqueIdSchema.optional(),
-      amount_minor: nonnegativeMinorUnitsSchema,
+      amount: nonnegativeUsdAmountSchema,
       tracking_mode: z
         .enum(["tracked", "informational"])
         .optional(),
@@ -448,13 +501,14 @@ export const FINANCE_TOOL_INPUT_SCHEMAS = Object.freeze({
   split_transaction: z
     .object({
       transaction_id: opaqueIdSchema,
+      currency: currencySchema,
       expected_version: z.number().int().min(0),
       lines: z
         .array(
           z
             .object({
               category: categorySchema,
-              amount_minor: safeMinorUnitsSchema.refine(
+              amount: safeAmountSchema.refine(
                 (value) => value !== 0,
                 "Split amounts cannot be zero.",
               ),
@@ -465,14 +519,25 @@ export const FINANCE_TOOL_INPUT_SCHEMAS = Object.freeze({
         .max(50),
       idempotency_key: idempotencyKeySchema,
     })
-    .strict(),
+    .strict()
+    .superRefine((value, context) => {
+      value.lines.forEach((line, index) => {
+        if (!hasCurrencyPrecision(line.amount, value.currency)) {
+          context.addIssue({
+            code: "custom",
+            message: `amount has too many decimal places for ${value.currency}.`,
+            path: ["lines", index, "amount"],
+          });
+        }
+      });
+    }),
 
   spend_from_finance_goal: z
     .object({
       transaction_id: opaqueIdSchema,
       goal_id: opaqueIdSchema,
       source: z.enum(["cash", "brokerage"]),
-      amount_minor: positiveMinorUnitsSchema,
+      amount: positiveUsdAmountSchema,
       expected_goal_version: z.number().int().min(1),
       expected_transaction_version: z.number().int().min(0),
       idempotency_key: idempotencyKeySchema,
@@ -539,5 +604,98 @@ export function parseFinanceToolInput(toolName, input = {}) {
   if (!schema) {
     throw new TypeError(`Unknown finance tool: ${toolName}`);
   }
-  return schema.parse(input);
+  return internalToolInput(toolName, schema.parse(input));
+}
+
+function internalToolInput(toolName, input) {
+  switch (toolName) {
+    case "list_transactions": {
+      const { min_amount, max_amount, currency, ...rest } = input;
+      return {
+        ...rest,
+        ...(currency ? { currency } : {}),
+        ...(min_amount !== undefined
+          ? {
+              min_amount_minor: amountToMinorUnits(
+                min_amount,
+                currency,
+              ),
+            }
+          : {}),
+        ...(max_amount !== undefined
+          ? {
+              max_amount_minor: amountToMinorUnits(
+                max_amount,
+                currency,
+              ),
+            }
+          : {}),
+      };
+    }
+    case "model_finance_plan": {
+      const {
+        monthly_contribution,
+        biweekly_contribution,
+        one_time_contribution,
+        brokerage_change_percentage,
+        ...rest
+      } = input;
+      return {
+        ...rest,
+        monthly_contribution_minor: amountToMinorUnits(
+          monthly_contribution,
+          "USD",
+        ),
+        biweekly_contribution_minor: amountToMinorUnits(
+          biweekly_contribution,
+          "USD",
+        ),
+        one_time_contribution_minor: amountToMinorUnits(
+          one_time_contribution,
+          "USD",
+        ),
+        brokerage_change_basis_points: percentageToBasisPoints(
+          brokerage_change_percentage,
+        ),
+      };
+    }
+    case "create_finance_goal":
+    case "update_finance_goal": {
+      const { target_amount, ...rest } = input;
+      return {
+        ...rest,
+        ...(target_amount !== undefined
+          ? {
+              target_amount_minor: amountToMinorUnits(
+                target_amount,
+                "USD",
+              ),
+            }
+          : {}),
+      };
+    }
+    case "allocate_finance_goal":
+    case "set_goal_funding_schedule":
+    case "set_category_budget":
+    case "spend_from_finance_goal": {
+      const { amount, ...rest } = input;
+      return {
+        ...rest,
+        amount_minor: amountToMinorUnits(amount, "USD"),
+      };
+    }
+    case "split_transaction": {
+      const { currency, lines, ...rest } = input;
+      return {
+        ...rest,
+        currency,
+        lines: lines.map(({ amount, ...line }) => ({
+          ...line,
+          amount_minor: amountToMinorUnits(amount, currency),
+        })),
+      };
+    }
+    default:
+      return input;
+  }
 }

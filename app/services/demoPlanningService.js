@@ -342,6 +342,41 @@ export function createDemoPlanningService({
       };
     },
 
+    async getFinanceGoal({ goal_id } = {}) {
+      const goalId = demoReadId(goal_id, "goal_id");
+      const snapshot = state(true);
+      const catalog = goalCatalog(snapshot);
+      const goal = catalog.goals.find(
+        (candidate) => candidate.id === goalId,
+      );
+      if (!goal) {
+        throw demoNotFound("Goal not found.");
+      }
+      return {
+        data: {
+          goal,
+          history_insights: boundedDemoGoalHistoryInsights(
+            catalog.historyInsights.filter((insight) =>
+              insight.evidence_goal_ids.includes(goalId),
+            ),
+          ),
+          alerts: snapshot.alerts.filter(
+            (alert) => alert.goal_id === goalId,
+          ),
+        },
+        ...freshness,
+        warnings: [],
+        title: goal.name,
+        subtitle:
+          goal.status === "archived" ? "Finished goal" : "Active goal",
+        source: {
+          label: "Money",
+          url: `/plan#goal-${encodeURIComponent(goalId)}`,
+        },
+        summary: `${goal.name} details returned.`,
+      };
+    },
+
     async getBudgetStatus({
       month_on = null,
       include_available_categories = false,
@@ -1249,6 +1284,50 @@ export function createDemoPlanningService({
     },
 
     async splitTransaction(_input, actorInput) {
+      const transaction = demoTransactions.get(_input.transaction_id);
+      if (!transaction) throw demoNotFound("Transaction not found.");
+      if (transaction.pending) {
+        throw demoConflict("Pending transactions cannot be split.");
+      }
+      if (
+        _input.currency != null &&
+        _input.currency !== transaction.currency_code
+      ) {
+        throw demoConflict(
+          "Split currency must match the transaction currency.",
+        );
+      }
+      if (!Array.isArray(_input.lines) || _input.lines.length > 50) {
+        throw demoBadRequest(
+          "lines must be an array with at most 50 entries.",
+        );
+      }
+      if (_input.lines.length === 1) {
+        throw demoBadRequest(
+          "Use at least two split lines or clear the split.",
+        );
+      }
+      if (_input.lines.length > 1) {
+        const sign = Math.sign(transaction.amount_minor);
+        const total = _input.lines.reduce((sum, line) => {
+          const amount = Number(line.amount_minor);
+          if (
+            !Number.isSafeInteger(amount) ||
+            amount === 0 ||
+            Math.sign(amount) !== sign
+          ) {
+            throw demoBadRequest(
+              "Every split amount must have the transaction's sign.",
+            );
+          }
+          return sum + amount;
+        }, 0);
+        if (total !== transaction.amount_minor) {
+          throw demoBadRequest(
+            "Split amounts must sum exactly to the transaction amount.",
+          );
+        }
+      }
       const currentVersion =
         transactionSplitVersions.get(_input.transaction_id) ?? 0;
       if (currentVersion !== Number(_input.expected_version)) {
@@ -1430,6 +1509,18 @@ function demoReadInteger(value, minimum, maximum, name) {
     throw demoBadRequest(
       `${name} must be an integer from ${minimum} to ${maximum}.`,
     );
+  }
+  return normalized;
+}
+
+function demoReadId(value, name) {
+  const normalized = String(value ?? "").trim();
+  if (
+    !normalized ||
+    normalized.length > 128 ||
+    !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(normalized)
+  ) {
+    throw demoBadRequest(`${name} is invalid.`);
   }
   return normalized;
 }

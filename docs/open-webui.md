@@ -42,6 +42,7 @@ get_portfolio_summary
 get_credit_score_summary
 get_safe_to_spend
 list_finance_goals
+get_finance_goal
 get_budget_status
 model_finance_plan
 get_transaction_goal_spending
@@ -60,12 +61,18 @@ reverse_goal_spend
 
 `get_safe_to_spend` returns liquid USD cash after positive current card
 balances, active USD bills expected from today through 30 days ahead, and
-cash-backed goal earmarks. The bill projection includes only recurring streams
-classified as bills; subscriptions are deliberately excluded. Treat
-`expected_bills` as an estimate, preserve `expected_bills_through_on`, and
-preserve `expected_bill_occurrence_count`. Surface
-`excluded_expected_bill_count` and any warnings instead of implying the
-projection is complete.
+cash-backed goal earmarks. Its card deliberately contains only the final
+amount, status, formula, factor names and counts, alerts, and bounded IDs for
+goals with positive cash earmarks. Call `get_finance_goal` with one of those
+IDs for dollar details. The bill projection includes only recurring streams
+classified as bills; subscriptions are deliberately excluded. Preserve the
+calculation window and occurrence/exclusion counts, and surface warnings
+instead of implying the estimate is complete.
+
+Money MCP v2 uses decimal currency values and ordinary percentages. Send
+`{amount: 5.21, currency: "USD"}` in card data, decimal `amount` inputs on
+writes, and fields such as `progress_percentage: 42.5`. Never send legacy
+`*_minor` or `*_basis_points` fields.
 
 Planning writes use optimistic versions in addition to idempotency keys.
 Pass each budget line's `version` to `set_category_budget` and each
@@ -76,7 +83,8 @@ idempotency key to replay its original receipt.
 
 Before calling `spend_from_finance_goal` or `reverse_goal_spend`, call
 `get_transaction_goal_spending` for the exact transaction and
-`list_finance_goals` for the exact goal. Pass their current values as
+`get_finance_goal` for the exact goal ID discovered through
+`list_finance_goals`. Pass their current values as
 `expected_transaction_version` (from `goal_spend_version`) and
 `expected_goal_version`. Reversals also use the returned goal-spend record
 `id` as `goal_spend_id`; never guess it from the merchant or amount.
@@ -105,7 +113,7 @@ or `other`. Finish one with `finish_finance_goal` and an `outcome` of
 removes leftover earmarks from active planning, and preserves the goal,
 funding history, and transaction links. Query it later with
 `list_finance_goals({status:"archived"})` and follow `next_cursor` while
-`has_more` is true. Purpose insights use completed
+`has_more` is true, then pass its ID to `get_finance_goal`. Purpose insights use completed
 goals with attributed actual spending only and appear only when enough
 comparable history exists. The catch-all `other` purpose is never treated as a
 meaningful spending pattern. Finished cards report active earmarks as zero;
@@ -125,8 +133,8 @@ accepts both.
 After changing tool names or schemas:
 
 1. Verify/refresh the `money` external tool connection.
-2. Confirm the read credential discovers 15 tools and the planning credential
-   discovers all 24.
+2. Confirm the read credential discovers 16 tools and the planning credential
+   discovers all 27.
 3. Start a fresh chat. Existing chats may retain stale tool metadata.
 4. Call every card kind before declaring the deploy done.
 
@@ -257,7 +265,7 @@ In pseudocode:
 ```js
 const envelope = {
   schema: "com.yaboiii.finance-card",
-  version: 1,
+  version: 2,
   kind: "overview",
   generated_at: "ISO-8601",
   data_as_of: "ISO-8601",

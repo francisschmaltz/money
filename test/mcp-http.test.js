@@ -8,9 +8,13 @@ import { loadConfig } from "../app/config.js";
 import {
   FINANCE_CARD_SCHEMA,
   FINANCE_TOOL_KIND_MAP,
+  FINANCE_TOOL_NAMES,
+  PLANNING_READ_TOOL_NAMES,
+  PLANNING_WRITE_TOOL_NAMES,
   assertCanonicalJsonCopy,
 } from "../app/mcp/index.js";
 import { createDemoFinanceService } from "../app/services/demoFinanceService.js";
+import { createDemoPlanningService } from "../app/services/demoPlanningService.js";
 
 const config = loadConfig(
   {
@@ -19,6 +23,7 @@ const config = loadConfig(
     DEMO_MODE: "true",
     PUBLIC_BASE_URL: "http://money.test",
     MCP_BEARER_TOKEN: "test-mcp-token",
+    MCP_PLAN_WRITE_TOKEN: "test-mcp-plan-token",
     MCP_ALLOWED_HOSTS: "money.test",
     MCP_CARD_BASE_URL: "https://money.example.com",
   },
@@ -47,6 +52,7 @@ test("stateless HTTP MCP calls return prose, canonical JSON, and structuredConte
   const app = createApp({
     config,
     financeService: createDemoFinanceService(),
+    planningService: createDemoPlanningService(),
   });
 
   const insights = await mcpRequest(
@@ -79,6 +85,7 @@ test("every finance card kind survives the direct Streamable HTTP transport", as
   const app = createApp({
     config,
     financeService: createDemoFinanceService(),
+    planningService: createDemoPlanningService(),
   });
   const inputs = {
     get_finance_overview: {},
@@ -141,4 +148,62 @@ test("HTTP MCP rejects bad credentials and disallows stateful methods", async ()
     .set("Authorization", "Bearer test-mcp-token")
     .expect(405);
   assert.equal(deleteResponse.body.error.message, "Method not allowed for this stateless MCP endpoint.");
+});
+
+test("HTTP discovery exposes 16 reads and 11 writes with v2-only schemas", async () => {
+  const app = createApp({
+    config,
+    financeService: createDemoFinanceService(),
+    planningService: createDemoPlanningService(),
+  });
+  const listRequest = {
+    jsonrpc: "2.0",
+    id: 300,
+    method: "tools/list",
+    params: {},
+  };
+  const readResponse = await mcpRequest(app, listRequest).expect(200);
+  const planResponse = await mcpRequest(
+    app,
+    { ...listRequest, id: 301 },
+    "test-mcp-plan-token",
+  ).expect(200);
+  const readNames = readResponse.body.result.tools.map((tool) => tool.name);
+  const planTools = planResponse.body.result.tools;
+
+  assert.deepEqual(readNames, [
+    ...FINANCE_TOOL_NAMES,
+    ...PLANNING_READ_TOOL_NAMES,
+  ]);
+  assert.deepEqual(
+    planTools.map((tool) => tool.name),
+    [
+      ...FINANCE_TOOL_NAMES,
+      ...PLANNING_READ_TOOL_NAMES,
+      ...PLANNING_WRITE_TOOL_NAMES,
+    ],
+  );
+  assert.doesNotMatch(
+    JSON.stringify(planTools.map((tool) => tool.inputSchema)),
+    /"(?:[^"]*_minor|[^"]*_basis_points)"/,
+  );
+
+  const goal = await mcpRequest(
+    app,
+    toolCall(
+      "get_finance_goal",
+      { goal_id: "goal_down_payment" },
+      302,
+    ),
+    "test-mcp-plan-token",
+  ).expect(200);
+  assert.equal(goal.body.result.structuredContent.version, 2);
+  assert.equal(
+    goal.body.result.structuredContent.data.goal.id,
+    "goal_down_payment",
+  );
+  assert.doesNotMatch(
+    JSON.stringify(goal.body.result.structuredContent),
+    /"(?:[^"]*_minor|[^"]*_basis_points)"/,
+  );
 });

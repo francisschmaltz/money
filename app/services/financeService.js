@@ -516,6 +516,8 @@ export class FinanceService {
     const accountId = options.accountId ?? options.account_id;
     const search = options.search ?? options.query;
     const merchant = options.merchant ?? null;
+    const currencyCode =
+      options.currencyCode ?? options.currency_code ?? null;
     const minAmountMinor =
       options.minAmountMinor ?? options.min_amount_minor;
     const maxAmountMinor =
@@ -528,6 +530,7 @@ export class FinanceService {
       ...(accountId ? { accountId } : {}),
       ...(options.category ? { category: options.category } : {}),
       ...(merchant ? { merchant } : {}),
+      ...(currencyCode ? { currencyCode } : {}),
       status: options.status ?? "all",
       includePending:
         (options.status ?? "all") !== "posted" &&
@@ -561,6 +564,7 @@ export class FinanceService {
           status: repositoryOptions.status,
           min_amount_minor: minAmountMinor ?? null,
           max_amount_minor: maxAmountMinor ?? null,
+          currency_code: currencyCode,
           sort,
         },
         transactions,

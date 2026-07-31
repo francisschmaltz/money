@@ -15,15 +15,18 @@ import {
   PLANNING_WRITE_TOOL_NAMES,
   FinanceMcpError,
   assertCanonicalJsonCopy,
+  amountToMinorUnits,
   assertFinanceToolResult,
   canonicalJsonByteLength,
   canonicalJsonEquals,
   canonicalStringify,
   createFinanceEnvelope,
   createFinanceToolResult,
+  financeCardValue,
   financeCardKindForTool,
   normalizeFinanceToolName,
   parseFinanceToolInput,
+  percentageToBasisPoints,
 } from "../app/mcp/index.js";
 
 const NOW = new Date("2026-07-27T01:02:03.000Z");
@@ -60,7 +63,7 @@ test("README MCP table matches the tools exposed by each credential", () => {
   assert.match(
     README,
     new RegExp(
-      `Fifteen read tools plus nine audited planning-write MCP tools`,
+      `${FINANCE_TOOL_NAMES.length + PLANNING_READ_TOOL_NAMES.length} read tools plus ${PLANNING_WRITE_TOOL_NAMES.length} audited planning-write MCP tools`,
     ),
   );
 });
@@ -145,7 +148,7 @@ test("MCP instructions forbid guessed optimistic versions", () => {
   );
   assert.match(
     README,
-    /get_safe_to_spend` \| Liquid cash minus positive card balances, active bills expected in the next 30 days/i,
+    /get_safe_to_spend` \| Current Safe to Spend, calculation factors including active bills expected in the next 30 days/i,
   );
 });
 
@@ -153,7 +156,7 @@ test("goal write schemas preserve purpose and finish outcome", () => {
   assert.deepEqual(
     parseFinanceToolInput("create_finance_goal", {
       name: "Family vacation",
-      target_amount_minor: 500_000,
+      target_amount: 5_000,
       idempotency_key: "family-vacation-create",
     }),
     {
@@ -263,17 +266,17 @@ test("builds a versioned, same-host, snake-case finance envelope", () => {
         web_url: "https://money.example.com/transactions?period=month",
       },
       data: {
-        total: { amount_minor: 123_45, currency: "USD" },
+        total: { amount: 123.45, currency: "USD" },
         trend: {
-          amount: { amount_minor: -25_00, currency: "USD" },
-          percent_basis_points: 1689,
+          amount: { amount: -25, currency: "USD" },
+          percentage: 16.89,
           direction: "down",
         },
         segments: [
           {
             category: "Dining",
-            share_basis_points: 2500,
-            total: { amount_minor: 30_86, currency: "USD" },
+            share_percentage: 25,
+            total: { amount: 30.86, currency: "USD" },
           },
         ],
       },
@@ -361,7 +364,7 @@ test("rejects card fields that can break or poison native cards", () => {
         ...base,
         serviceResult: {
           data: {
-            total: { amount_minor: 12.34, currency: "USD" },
+            total: { amount: 12.345, currency: "USD" },
           },
         },
       }),
@@ -369,7 +372,7 @@ test("rejects card fields that can break or poison native cards", () => {
   );
 });
 
-test("permits fractional holding quantities but requires integer money and basis points", () => {
+test("permits fractional quantities, decimal money, and percentages", () => {
   const envelope = createFinanceEnvelope({
     kind: "portfolio",
     generatedAt: NOW,
@@ -379,8 +382,8 @@ test("permits fractional holding quantities but requires integer money and basis
           {
             symbol: "VOO",
             quantity: 2.125,
-            value: { amount_minor: 120_000, currency: "USD" },
-            allocation_basis_points: 4200,
+            value: { amount: 1_200, currency: "USD" },
+            allocation_percentage: 42,
           },
         ],
       },
@@ -389,7 +392,44 @@ test("permits fractional holding quantities but requires integer money and basis
   assert.equal(envelope.data.holdings[0].quantity, 2.125);
 });
 
-test("strictly validates Money, bounded confidence/share basis points, dates, IDs, and findings", () => {
+test("converts internal minor units and basis points at the MCP v2 boundary", () => {
+  assert.equal(amountToMinorUnits(0, "USD"), 0);
+  assert.equal(amountToMinorUnits(-5.21, "USD"), -521);
+  assert.equal(amountToMinorUnits(10_000, "USD"), 1_000_000);
+  assert.equal(amountToMinorUnits(521, "JPY"), 521);
+  assert.equal(amountToMinorUnits(5.213, "BHD"), 5_213);
+  assert.equal(percentageToBasisPoints(-2.5), -250);
+  assert.equal(percentageToBasisPoints(0), 0);
+  assert.equal(percentageToBasisPoints(110.25), 11_025);
+
+  const converted = financeCardValue({
+    zero: { amount_minor: 0, currency: "USD" },
+    refund: { amount_minor: -521, currency: "USD" },
+    safe_to_spend: { amount_minor: 1_000_000, currency: "USD" },
+    yen: { amount_minor: 521, currency: "JPY" },
+    dinar: { amount_minor: 5_213, currency: "BHD" },
+    progress_basis_points: 4_255,
+    variance_basis_points: -250,
+    estimated_return_basis_points: null,
+  });
+
+  assert.deepEqual(converted, {
+    zero: { amount: 0, currency: "USD" },
+    refund: { amount: -5.21, currency: "USD" },
+    safe_to_spend: { amount: 10_000, currency: "USD" },
+    yen: { amount: 521, currency: "JPY" },
+    dinar: { amount: 5.213, currency: "BHD" },
+    progress_percentage: 42.55,
+    variance_percentage: -2.5,
+    estimated_return_percentage: null,
+  });
+  assert.doesNotMatch(
+    JSON.stringify(converted),
+    /"(?:[^"]*_minor|[^"]*_basis_points)"/,
+  );
+});
+
+test("strictly validates Money, bounded percentages, dates, IDs, and findings", () => {
   const build = (data) =>
     createFinanceEnvelope({
       kind: "insights",
@@ -398,11 +438,15 @@ test("strictly validates Money, bounded confidence/share basis points, dates, ID
     });
 
   assert.throws(
-    () => build({ total: { amount_minor: 100, currency: "usd" } }),
+    () => build({ total: { amount: 1, currency: "usd" } }),
     FinanceMcpError,
   );
   assert.throws(
-    () => build({ confidence_basis_points: 10_001 }),
+    () => build({ total: { amount: "5.21", currency: "USD" } }),
+    FinanceMcpError,
+  );
+  assert.throws(
+    () => build({ confidence_percentage: 100.01 }),
     FinanceMcpError,
   );
   assert.throws(
@@ -431,8 +475,8 @@ test("strictly validates Money, bounded confidence/share basis points, dates, ID
   assert.doesNotThrow(() =>
     build({
       currency: "USD",
-      trend: { percent_basis_points: -25_000 },
-      estimated_return_basis_points: null,
+      trend: { percentage: -250 },
+      estimated_return_percentage: null,
     }),
   );
   assert.doesNotThrow(() =>
@@ -446,7 +490,7 @@ test("strictly validates Money, bounded confidence/share basis points, dates, ID
               id: "stream_1",
               cadence: "biweekly",
               expected_amount: {
-                amount_minor: 2500,
+                amount: 25,
                 currency: "USD",
               },
             },
@@ -467,13 +511,13 @@ test("strictly validates Money, bounded confidence/share basis points, dates, ID
           period_start: "2026-07-20",
           period_end: "2026-07-27",
           metrics: {
-            change: { amount_minor: 3500, currency: "USD" },
+            change: { amount: 35, currency: "USD" },
           },
           rule: {
-            threshold_basis_points: 1500,
-            minimum_change: { amount_minor: 2500, currency: "USD" },
+            threshold_percentage: 15,
+            minimum_change: { amount: 25, currency: "USD" },
           },
-          confidence_basis_points: 9200,
+          confidence_percentage: 92,
           evidence: [
             {
               entity_type: "transaction",
@@ -538,7 +582,7 @@ test("strictly validates Money, bounded confidence/share basis points, dates, ID
             explanation: "This intentionally incomplete fixture must fail.",
             metrics: {},
             rule: "weekly_change",
-            confidence_basis_points: 9000,
+            confidence_percentage: 90,
           },
         ],
       }),
@@ -558,14 +602,14 @@ test("allows nullable optional dates and date-only series timestamps", () => {
             account_id: null,
             date: "2026-07-26",
             authorized_at: null,
-            amount: { amount_minor: -500, currency: "USD" },
+            amount: { amount: -5, currency: "USD" },
             split_version: 3,
           },
         ],
         series: [
           {
             timestamp: "2026-07-26",
-            value: { amount_minor: 500, currency: "USD" },
+            value: { amount: 5, currency: "USD" },
           },
         ],
       },
@@ -600,7 +644,7 @@ test("creates exactly two text blocks with an identical canonical compatibility 
     generatedAt: NOW,
     serviceResult: {
       data: {
-        net_worth: { amount_minor: 1_234_56, currency: "USD" },
+        net_worth: { amount: 1_234.56, currency: "USD" },
       },
     },
   });
@@ -666,7 +710,7 @@ test("input schemas apply defaults, bounds, strict keys, and range ordering", ()
   assert.deepEqual(
     parseFinanceToolInput("set_category_budget", {
       category: "Dining",
-      amount_minor: 40_000,
+      amount: 400,
       expected_version: 0,
       idempotency_key: "budget-dining-v1",
     }),
@@ -680,12 +724,14 @@ test("input schemas apply defaults, bounds, strict keys, and range ordering", ()
   assert.deepEqual(
     parseFinanceToolInput("split_transaction", {
       transaction_id: "transaction-1",
+      currency: "USD",
       expected_version: 2,
       lines: [],
       idempotency_key: "split-clear-v2",
     }),
     {
       transaction_id: "transaction-1",
+      currency: "USD",
       expected_version: 2,
       lines: [],
       idempotency_key: "split-clear-v2",
@@ -704,7 +750,7 @@ test("input schemas apply defaults, bounds, strict keys, and range ordering", ()
       transaction_id: "transaction-1",
       goal_id: "goal-house",
       source: "cash",
-      amount_minor: 25_000,
+      amount: 250,
       expected_goal_version: 4,
       expected_transaction_version: 2,
       idempotency_key: "goal-spend-transaction-1-v2",
@@ -739,7 +785,7 @@ test("input schemas apply defaults, bounds, strict keys, and range ordering", ()
     () =>
       parseFinanceToolInput("set_category_budget", {
         category: "Dining",
-        amount_minor: 40_000,
+        amount: 400,
         idempotency_key: "budget-dining-v1",
       }),
     /expected_version/i,
@@ -753,7 +799,7 @@ test("input schemas apply defaults, bounds, strict keys, and range ordering", ()
       () =>
         parseFinanceToolInput("set_category_budget", {
           category: "Dining",
-          amount_minor: 40_000,
+          amount: 400,
           expected_version: 0,
           idempotency_key: "budget-dining-v1",
           [legacyField[0]]: legacyField[1],
@@ -765,6 +811,7 @@ test("input schemas apply defaults, bounds, strict keys, and range ordering", ()
     () =>
       parseFinanceToolInput("split_transaction", {
         transaction_id: "transaction-1",
+        currency: "USD",
         expected_version: -1,
         lines: [],
         idempotency_key: "split-clear-v2",
@@ -777,7 +824,7 @@ test("input schemas apply defaults, bounds, strict keys, and range ordering", ()
         transaction_id: "transaction-1",
         goal_id: "goal-house",
         source: "cash",
-        amount_minor: 25_000,
+        amount: 250,
         expected_goal_version: 4,
         idempotency_key: "goal-spend-transaction-1-v2",
       }),
@@ -801,11 +848,82 @@ test("input schemas apply defaults, bounds, strict keys, and range ordering", ()
         expected_version: 1,
         source: "cash",
         cadence: "biweekly_friday",
-        amount_minor: 10_000,
+        amount: 100,
         anchor_on: "2026-07-30",
         idempotency_key: "schedule-house-2026-07-27",
       }),
     /Friday/i,
+  );
+});
+
+test("v2 inputs reject legacy units, excess precision, missing currency, and unsafe values", () => {
+  assert.throws(
+    () => parseFinanceToolInput("get_finance_overview", { as_of: "2026-07-01" }),
+    /Unrecognized key/i,
+  );
+  assert.throws(
+    () =>
+      parseFinanceToolInput("create_finance_goal", {
+        name: "Legacy",
+        target_amount_minor: 521,
+        idempotency_key: "legacy-goal-units",
+      }),
+    /Unrecognized key/i,
+  );
+  assert.throws(
+    () =>
+      parseFinanceToolInput("create_finance_goal", {
+        name: "Too precise",
+        target_amount: 5.211,
+        idempotency_key: "precise-goal-units",
+      }),
+    /two decimal places/i,
+  );
+  assert.throws(
+    () =>
+      parseFinanceToolInput("list_transactions", {
+        min_amount: 5.21,
+      }),
+    /currency is required/i,
+  );
+  assert.throws(
+    () =>
+      parseFinanceToolInput("list_transactions", {
+        min_amount: 5.5,
+        currency: "JPY",
+      }),
+    /too many decimal places/i,
+  );
+  assert.throws(
+    () =>
+      parseFinanceToolInput("model_finance_plan", {
+        brokerage_change_percentage: 1.001,
+      }),
+    /two decimal places/i,
+  );
+  assert.throws(
+    () =>
+      parseFinanceToolInput("set_category_budget", {
+        category: "Dining",
+        amount: Number.MAX_SAFE_INTEGER,
+        expected_version: 0,
+        idempotency_key: "unsafe-budget-value",
+      }),
+    /less than or equal to|too big/i,
+  );
+  assert.deepEqual(
+    parseFinanceToolInput("list_transactions", {
+      min_amount: -5.21,
+      max_amount: 10,
+      currency: "USD",
+    }),
+    {
+      min_amount_minor: -521,
+      max_amount_minor: 1_000,
+      currency: "USD",
+      status: "all",
+      limit: 20,
+    },
   );
 });
 
@@ -820,7 +938,7 @@ test("refuses an envelope over 20KB instead of truncating financial facts", () =
             transactions: Array.from({ length: 100 }, (_, index) => ({
               id: `transaction_${index}`,
               description: "x".repeat(300),
-              amount: { amount_minor: -100, currency: "USD" },
+              amount: { amount: -1, currency: "USD" },
             })),
           },
         },

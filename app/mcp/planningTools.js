@@ -15,10 +15,12 @@ import {
   FINANCE_TOOL_OUTPUT_SCHEMAS,
   parseFinanceToolInput,
 } from "./schemas.js";
+import { financeCardValue } from "./units.js";
 
 const READ_METHODS = Object.freeze({
   get_safe_to_spend: "getSafeToSpend",
   list_finance_goals: "listFinanceGoals",
+  get_finance_goal: "getFinanceGoal",
   get_budget_status: "getBudgetStatus",
   model_finance_plan: "modelFinancePlan",
   get_transaction_goal_spending: "getTransactionGoalSpending",
@@ -42,12 +44,17 @@ const DEFINITIONS = Object.freeze({
   get_safe_to_spend: {
     title: "Get Safe to Spend",
     description:
-      "Get liquid USD checking and savings minus positive current credit-card balances, active USD bills expected in the next 30 days, and cash-backed goal earmarks. Subscriptions, brokerage, and budgets are deliberately excluded. Expected bill dates and amounts are estimates from recurring history. Use the returned window, exclusions, formula, and warnings; never hide a negative result.",
+      "Get only the current Safe to Spend amount, calculation factors, bills expected in the next 30 days, alerts, and IDs of cash-backed goals. Subscriptions are excluded; bill dates and amounts are estimates from recurring history. Use get_finance_goal for a contributing goal's details.",
   },
   list_finance_goals: {
     title: "List finance goals",
     description:
-      "List a bounded page of shared-household goals, funding, attributed actual spending, non-negative remaining plan, positive overage, schedules, and shortfalls. Use status archived or all for finished history, purpose to narrow comparisons, and next_cursor to continue. Purpose insights use the full history independently of the returned page. Brokerage earmarks are virtual and never imply a trade or transfer.",
+      "List a bounded page of compact shared-household goal records for discovery. Use each returned ID with get_finance_goal for funding, spending, schedules, and history.",
+  },
+  get_finance_goal: {
+    title: "Get finance goal",
+    description:
+      "Get one active or finished goal by ID with its target, funding, attributed spending, remaining plan, overage, schedules, brokerage backing, optimistic version, history, and alerts.",
   },
   get_budget_status: {
     title: "Get monthly budget status",
@@ -57,7 +64,7 @@ const DEFINITIONS = Object.freeze({
   model_finance_plan: {
     title: "Model finance plan",
     description:
-      "Run a deterministic goal-funding and brokerage-change scenario using explicit editable assumptions. This is arithmetic, not investment, tax, or suitability advice.",
+      "Run a deterministic goal-funding and brokerage percentage-change scenario using explicit editable assumptions. This does not model a Safe-to-Spend after-state and is not investment, tax, or suitability advice.",
   },
   get_transaction_goal_spending: {
     title: "Get transaction goal spending",
@@ -138,8 +145,7 @@ function validatePlanningService(planningService) {
 function writeServiceResult(result) {
   return {
     data: {
-      change: planningCardValue(result?.changed ?? {}),
-      safe_to_spend: result?.safe_to_spend ?? null,
+      change: result?.changed ?? {},
       audit_event_id: result?.audit_event_id ?? null,
     },
     data_as_of: result?.data_as_of,
@@ -151,36 +157,105 @@ function writeServiceResult(result) {
   };
 }
 
-function planningCardValue(value, inheritedCurrency = "USD") {
-  if (Array.isArray(value)) {
-    return value.map((item) =>
-      planningCardValue(item, inheritedCurrency),
-    );
+function goalWarningFlags(goal) {
+  return [
+    ...(goal?.brokerage_under_backed
+      ? ["brokerage_under_backed"]
+      : []),
+    ...((goal?.over_by?.amount_minor ?? 0) > 0
+      ? ["over_target"]
+      : []),
+    ...((goal?.unfunded_spend?.amount_minor ?? 0) > 0
+      ? ["unfunded_spend"]
+      : []),
+  ];
+}
+
+function compactGoal(goal) {
+  return {
+    id: goal.id,
+    name: goal.name,
+    purpose: goal.purpose,
+    status: goal.status,
+    target_on: goal.target_on ?? null,
+    progress_basis_points: goal.progress_basis_points ?? 0,
+    version: Number(goal.version),
+    warning_flags: goalWarningFlags(goal),
+  };
+}
+
+function safeToSpendServiceResult(serviceResult) {
+  const snapshot = serviceResult?.data ?? {};
+  const goalIds = (snapshot.goals ?? [])
+    .filter(
+      (goal) =>
+        (goal?.cash_earmarked?.amount_minor ??
+          goal?.cash_earmarked_minor ??
+          0) > 0,
+    )
+    .map((goal) => goal.id);
+  const boundedGoalIds = goalIds.slice(0, 50);
+  return {
+    ...serviceResult,
+    data: {
+      safe_to_spend: snapshot.safe_to_spend,
+      status:
+        (snapshot.safe_to_spend?.amount_minor ?? 0) < 0
+          ? "negative"
+          : "available",
+      formula: snapshot.formula,
+      calculation: {
+        factors: [
+          "liquid_cash",
+          "current_credit_card_balances",
+          "expected_bills",
+          "cash_backed_goals",
+        ],
+        expected_bills_through_on:
+          snapshot.expected_bills_through_on,
+        expected_bill_occurrence_count:
+          snapshot.expected_bill_occurrence_count ?? 0,
+        excluded_expected_bill_count:
+          snapshot.excluded_expected_bill_count ?? 0,
+        contributing_goal_count: goalIds.length,
+        contributing_goal_ids: boundedGoalIds,
+        contributing_goal_ids_truncated:
+          goalIds.length > boundedGoalIds.length,
+      },
+      alerts: snapshot.alerts ?? [],
+    },
+  };
+}
+
+function goalListServiceResult(serviceResult) {
+  const data = serviceResult?.data ?? {};
+  return {
+    ...serviceResult,
+    data: {
+      goals: (data.goals ?? []).map(compactGoal),
+      page_info: data.page_info,
+    },
+  };
+}
+
+function scenarioServiceResult(serviceResult) {
+  const data = { ...(serviceResult?.data ?? {}) };
+  delete data.safe_to_spend_after;
+  return { ...serviceResult, data };
+}
+
+function preparePlanningServiceResult(toolName, serviceResult, write) {
+  if (write) return writeServiceResult(serviceResult);
+  if (toolName === "get_safe_to_spend") {
+    return safeToSpendServiceResult(serviceResult);
   }
-  if (!value || typeof value !== "object") return value;
-  if (
-    Object.keys(value).length === 2 &&
-    Number.isSafeInteger(value.amount_minor) &&
-    typeof value.currency === "string"
-  ) {
-    return value;
+  if (toolName === "list_finance_goals") {
+    return goalListServiceResult(serviceResult);
   }
-  const currency =
-    typeof value.currency_code === "string"
-      ? value.currency_code
-      : inheritedCurrency;
-  const normalized = {};
-  for (const [key, child] of Object.entries(value)) {
-    if (key.endsWith("_minor") && Number.isSafeInteger(child)) {
-      normalized[key.replace(/_minor$/, "")] = {
-        amount_minor: child,
-        currency,
-      };
-    } else {
-      normalized[key] = planningCardValue(child, currency);
-    }
+  if (toolName === "model_finance_plan") {
+    return scenarioServiceResult(serviceResult);
   }
-  return normalized;
+  return serviceResult;
 }
 
 function fallbackSummary(kind, envelope) {
@@ -229,12 +304,15 @@ function handler({
             )
           : await planningService[method](parsed, writeActor)
         : await planningService[method](parsed);
-      const serviceResult = write
-        ? writeServiceResult(result)
-        : {
-            ...result,
-            data: planningCardValue(result?.data ?? {}),
-          };
+      const prepared = preparePlanningServiceResult(
+        toolName,
+        result,
+        write,
+      );
+      const serviceResult = {
+        ...prepared,
+        data: financeCardValue(prepared?.data ?? {}),
+      };
       const envelope = createFinanceEnvelope({
         kind,
         serviceResult,

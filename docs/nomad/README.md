@@ -184,7 +184,7 @@ Then perform the authenticated checks:
 2. Plaid Link or update mode from Settings.
 3. A manual sync followed by recent transactions.
 4. The Money task remains running and consumes queued sync/insight jobs.
-5. The read bearer discovers 15 tools and the planning bearer discovers 24
+5. The read bearer discovers 16 tools and the planning bearer discovers 27
    under connection `money`.
 6. A fresh chat receives each of the 15 finance card kinds.
 

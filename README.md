@@ -40,7 +40,7 @@ Redis, GraphQL, or frontend framework hiding under the couch.
 - Duo OIDC login. Every Duo-authorized user sees the same workspace; only admins
   may connect institutions or change shared finance data. Each member may
   manage only their own manually tracked credit-score sources.
-- Fifteen read tools plus nine audited planning-write MCP tools at `POST /mcp`.
+- 16 read tools plus 11 audited planning-write MCP tools at `POST /mcp`.
   Read and `plan:write` credentials are separate.
 - Optional LM Studio narratives generated only from precomputed findings.
   Balances, metrics, MCP data, and detector decisions never come from the model.
@@ -192,13 +192,13 @@ configuration, discovery, curl, and SDK smoke tests.
 
 ### Tools
 
-The read credential discovers the fifteen read tools. The `plan:write`
-credential discovers those same tools plus all nine writes.
+The read credential discovers 16 read tools. The `plan:write`
+credential discovers those same tools plus 11 audited planning-write MCP tools.
 
 <!-- mcp-tool-table:start -->
 | Access | Area | Tool | Capability |
 | --- | --- | --- | --- |
-| `read` | Finance | `get_finance_overview` | Current net worth, assets, liabilities, cash, spending, and cash-flow headline. |
+| `read` | Finance | `get_finance_overview` | Current Safe to Spend, wealth headlines, compact goal status, and supporting finance details. |
 | `read` | Finance | `get_finance_insights` | Deterministic weekly spending, investment, and subscription findings. |
 | `read` | Finance | `list_accounts` | Paginated bank, credit, loan, and investment accounts with balances and sync freshness. |
 | `read` | Finance | `list_transactions` | Paginated ledger search by date, text, account, category, status, and amount. |
@@ -208,8 +208,9 @@ credential discovers those same tools plus all nine writes.
 | `read` | Finance | `get_net_worth_history` | Historical asset, liability, and net-worth snapshots. |
 | `read` | Finance | `get_portfolio_summary` | Holdings, allocation, value history, cash flows, and supported performance evidence. |
 | `read` | Finance | `get_credit_score_summary` | Manually tracked scores, freshness, household average, and history; not an underwriting score. |
-| `read` | Planning | `get_safe_to_spend` | Liquid cash minus positive card balances, active bills expected in the next 30 days, and cash-backed goal earmarks. |
-| `read` | Planning | `list_finance_goals` | Active or finished goals, funding, schedules, attributed spending, remaining amounts, and shortfalls. |
+| `read` | Planning | `get_safe_to_spend` | Current Safe to Spend, calculation factors including active bills expected in the next 30 days, alerts, and contributing goal IDs. |
+| `read` | Planning | `list_finance_goals` | Paginated compact active or finished goal records with IDs and status. |
+| `read` | Planning | `get_finance_goal` | Complete funding, spending, schedule, backing, version, and history details for one goal ID. |
 | `read` | Planning | `get_budget_status` | Hierarchical budgets, taxonomy-wide category actuals, goal-attributed offsets, income, and leftover for one Plan month. |
 | `read` | Planning | `model_finance_plan` | Deterministic goal-funding and brokerage-change scenario arithmetic. |
 | `read` | Planning | `get_transaction_goal_spending` | A transaction's goal-spending links, unassigned amount, and current write versions. |
@@ -232,11 +233,17 @@ Each successful tool call returns:
 2. A minified canonical JSON compatibility block.
 3. The identical rich object in MCP `structuredContent`.
 
-The structured envelope uses schema `com.yaboiii.finance-card`, version `1`,
+The structured envelope uses schema `com.yaboiii.finance-card`, version `2`,
 and is capped at 20,000 UTF-8 bytes. The JSON block exists because some
 intermediaries serialize MCP output and discard native `structuredContent`.
 Native clients should prefer `structuredContent`, fall back only to the JSON
 block, and never scrape the prose.
+
+MCP money values use decimal major units such as
+`{"amount": 5.21, "currency": "USD"}`. Percentage fields use ordinary
+percentages such as `"allocation_percentage": 42.5`. Minor units and basis
+points remain internal implementation details and are rejected by the v2 MCP
+contract.
 
 ## Operations
 

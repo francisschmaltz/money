@@ -88,7 +88,7 @@ test("only the plan credential can execute an idempotent audited write", async (
       name: "create_finance_goal",
       arguments: {
         name: "Roof",
-        target_amount_minor: 500_000,
+        target_amount: 5_000,
         idempotency_key: "roof-goal-2026-07-27",
       },
     },
@@ -116,6 +116,13 @@ test("only the plan credential can execute an idempotent audited write", async (
     { ...requestBody, id: 3 },
   ).expect(200);
   assert.equal(first.body.result.structuredContent.kind, "plan_change");
+  assert.equal(
+    Object.hasOwn(
+      first.body.result.structuredContent.data,
+      "safe_to_spend",
+    ),
+    false,
+  );
   assert.equal(
     first.body.result.structuredContent.data.audit_event_id,
     replay.body.result.structuredContent.data.audit_event_id,

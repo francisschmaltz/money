@@ -15,12 +15,13 @@ import {
   parseFinanceToolInput,
 } from "./schemas.js";
 import { formatMinorMoney } from "../currency.js";
+import { financeCardValue } from "./units.js";
 
 const TOOL_DEFINITIONS = Object.freeze({
   get_finance_overview: {
     title: "Get finance overview",
     description:
-      "Get the shared workspace's current net worth, assets, liabilities, cash, spending, and cash-flow headline. Use this for user-specific overall financial status; never invent or estimate missing values.",
+      "Get the shared workspace's current Safe to Spend first, then cash, short-term worth, retirement, net worth, compact goal status, and supporting finance details. This tool is current-only; use get_net_worth_history for historical wealth.",
   },
   get_finance_insights: {
     title: "Get finance insights",
@@ -30,7 +31,7 @@ const TOOL_DEFINITIONS = Object.freeze({
   list_accounts: {
     title: "List finance accounts",
     description:
-      "List bounded shared-workspace bank, credit, loan, and investment accounts with balances and sync freshness. Use for user-specific account facts; never guess balances or institutions.",
+      "List bounded shared-workspace bank, credit, loan, and investment accounts with their balances and sync freshness. Use get_finance_overview for household totals.",
   },
   list_transactions: {
     title: "List finance transactions",
@@ -97,15 +98,19 @@ function displayLabel(value) {
 function displayMoney(value) {
   if (
     !value ||
-    !Number.isSafeInteger(value.amount_minor) ||
+    typeof value.amount !== "number" ||
+    !Number.isFinite(value.amount) ||
     typeof value.currency !== "string"
   ) {
     return undefined;
   }
   try {
-    return formatMinorMoney(value);
+    return new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: value.currency,
+    }).format(value.amount);
   } catch {
-    return `${value.amount_minor} ${value.currency} minor units`;
+    return `${value.amount} ${value.currency}`;
   }
 }
 
@@ -119,10 +124,11 @@ function firstMetricSnippet(metrics) {
       return `${displayLabel(key)} ${money}`;
     }
     if (
-      key.endsWith("_basis_points") &&
-      Number.isSafeInteger(value)
+      key.endsWith("_percentage") &&
+      typeof value === "number" &&
+      Number.isFinite(value)
     ) {
-      return `${displayLabel(key.replace(/_basis_points$/, ""))} ${(value / 100).toFixed(1)}%`;
+      return `${displayLabel(key.replace(/_percentage$/, ""))} ${value}%`;
     }
   }
   return undefined;
@@ -233,9 +239,7 @@ function errorSummary(error) {
 function serviceInput(toolName, input) {
   switch (toolName) {
     case "get_finance_overview":
-      return {
-        ...(input.as_of ? { asOf: input.as_of } : {}),
-      };
+      return {};
     case "get_finance_insights":
       return {
         section: input.section,
@@ -270,6 +274,9 @@ function serviceInput(toolName, input) {
           : {}),
         ...(input.max_amount_minor !== undefined
           ? { maxAmountMinor: input.max_amount_minor }
+          : {}),
+        ...(input.currency
+          ? { currencyCode: input.currency }
           : {}),
         limit: input.limit,
         ...(input.cursor ? { cursor: input.cursor } : {}),
@@ -381,7 +388,140 @@ function scopeInsightData(data, section) {
   return scoped;
 }
 
-function prepareServiceResult(toolName, serviceResult, input) {
+function compactGoal(goal) {
+  const warningFlags = [];
+  if (goal?.brokerage_under_backed) {
+    warningFlags.push("brokerage_under_backed");
+  }
+  if ((goal?.over_by?.amount_minor ?? 0) > 0) {
+    warningFlags.push("over_target");
+  }
+  if ((goal?.unfunded_spend?.amount_minor ?? 0) > 0) {
+    warningFlags.push("unfunded_spend");
+  }
+  return {
+    id: goal.id,
+    name: goal.name,
+    purpose: goal.purpose,
+    status: goal.status,
+    target_on: goal.target_on ?? null,
+    progress_basis_points: goal.progress_basis_points ?? 0,
+    version: Number(goal.version),
+    warning_flags: warningFlags,
+  };
+}
+
+function overviewDetails(data) {
+  const excluded = new Set([
+    "cash",
+    "cash_balance",
+    "short_term_worth",
+    "retirement_assets",
+    "retirement_investments",
+    "net_worth",
+    "assets",
+    "liabilities",
+  ]);
+  return Object.fromEntries(
+    Object.entries(data ?? {}).filter(([key]) => !excluded.has(key)),
+  );
+}
+
+function earlierTimestamp(left, right) {
+  if (!left) return right;
+  if (!right) return left;
+  return new Date(left) <= new Date(right) ? left : right;
+}
+
+function overviewServiceResult(financeResult, planningResult) {
+  const financeData = financeResult?.data ?? {};
+  const planningData = planningResult?.data ?? null;
+  const safeToSpend = planningData?.safe_to_spend ?? null;
+  const goals = planningData?.goals ?? [];
+  const planningMissing = planningResult == null;
+  const warnings = [
+    ...(financeResult?.warnings ?? []),
+    ...(planningResult?.warnings ?? []),
+    ...(planningMissing
+      ? ["Safe to Spend and goal status are temporarily unavailable."]
+      : []),
+  ];
+  const dataAsOf = earlierTimestamp(
+    financeResult?.data_as_of,
+    planningResult?.data_as_of,
+  );
+  const summaryBody = safeToSpend
+    ? `Safe to Spend is ${formatMinorMoney(safeToSpend)}. Cash is ${formatMinorMoney(financeData.cash_balance ?? financeData.cash)}, short-term worth is ${formatMinorMoney(financeData.short_term_worth)}, retirement is ${formatMinorMoney(financeData.retirement_assets ?? financeData.retirement_investments)}, and net worth is ${formatMinorMoney(financeData.net_worth)}. ${goals.length} active goal${goals.length === 1 ? "" : "s"} returned.`
+    : "Safe to Spend is unavailable. Current wealth details were returned.";
+  const summary = `${summaryBody} Data as of ${dataAsOf}.`;
+  return {
+    ...financeResult,
+    data: {
+      safe_to_spend: safeToSpend,
+      wealth: {
+        cash: financeData.cash_balance ?? financeData.cash ?? null,
+        short_term: financeData.short_term_worth ?? null,
+        retirement:
+          financeData.retirement_assets ??
+          financeData.retirement_investments ??
+          null,
+        net_worth: financeData.net_worth ?? null,
+      },
+      goals: {
+        active_count:
+          planningData?.active_goal_count ?? goals.length,
+        returned_count: Math.min(goals.length, 8),
+        has_more: goals.length > 8,
+        items: goals.slice(0, 8).map(compactGoal),
+      },
+      details: overviewDetails(financeData),
+    },
+    data_as_of: dataAsOf,
+    partial:
+      financeResult?.partial === true ||
+      planningResult?.partial === true ||
+      planningMissing,
+    warnings,
+    summary,
+  };
+}
+
+function accountListServiceResult(serviceResult) {
+  const data = serviceResult?.data ?? {};
+  return {
+    ...serviceResult,
+    data: {
+      ...(Array.isArray(data.groups) ? { groups: data.groups } : {}),
+      ...(Array.isArray(data.accounts) ? { accounts: data.accounts } : {}),
+      account_count:
+        data.account_count ??
+        data.accounts?.length ??
+        data.groups?.reduce(
+          (count, group) => count + (group.accounts?.length ?? 0),
+          0,
+        ) ??
+        0,
+      page_info: data.page_info ?? {
+        has_more: false,
+        next_cursor: null,
+      },
+    },
+    summary: undefined,
+  };
+}
+
+function prepareServiceResult(
+  toolName,
+  serviceResult,
+  input,
+  planningResult,
+) {
+  if (toolName === "get_finance_overview") {
+    return overviewServiceResult(serviceResult, planningResult);
+  }
+  if (toolName === "list_accounts") {
+    return accountListServiceResult(serviceResult);
+  }
   if (toolName !== "get_finance_insights") {
     return serviceResult;
   }
@@ -395,6 +535,7 @@ function prepareServiceResult(toolName, serviceResult, input) {
 function toolHandler({
   toolName,
   financeService,
+  planningService,
   now,
   baseUrl,
 }) {
@@ -406,22 +547,46 @@ function toolHandler({
     try {
       const parsedInput = parseFinanceToolInput(toolName, input);
       generatedAt = now();
-      const rawServiceResult = await financeService[serviceMethod](
+      const financePromise = financeService[serviceMethod](
         serviceInput(toolName, parsedInput),
       );
+      let rawServiceResult;
+      let planningResult = null;
+      if (toolName === "get_finance_overview") {
+        const [financeRead, planningRead] = await Promise.allSettled([
+          financePromise,
+          planningService?.getSafeToSpend?.() ??
+            Promise.reject(new Error("Planning service unavailable.")),
+        ]);
+        if (financeRead.status === "rejected") {
+          throw financeRead.reason;
+        }
+        rawServiceResult = financeRead.value;
+        planningResult =
+          planningRead.status === "fulfilled"
+            ? planningRead.value
+            : null;
+      } else {
+        rawServiceResult = await financePromise;
+      }
       const serviceResult = prepareServiceResult(
         toolName,
         rawServiceResult,
         parsedInput,
+        planningResult,
       );
+      const cardServiceResult = {
+        ...serviceResult,
+        data: financeCardValue(serviceResult?.data ?? {}),
+      };
       const envelope = createFinanceEnvelope({
         kind,
-        serviceResult,
+        serviceResult: cardServiceResult,
         generatedAt,
         baseUrl,
       });
       return createFinanceToolResult({
-        summary: serviceResult?.summary,
+        summary: cardServiceResult?.summary,
         fallbackSummary: fallbackSummary(
           kind,
           envelope.data,
@@ -452,6 +617,7 @@ export function registerFinanceTools(
   server,
   {
     financeService,
+    planningService = null,
     now = () => new Date(),
     baseUrl = "https://money.example.com",
   },
@@ -481,6 +647,7 @@ export function registerFinanceTools(
       toolHandler({
         toolName,
         financeService,
+        planningService,
         now,
         baseUrl,
       }),
