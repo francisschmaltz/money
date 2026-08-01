@@ -894,8 +894,11 @@ async function demoPageModel(
         ? await financeService.getInsightStatus()
         : {
             state: "ready",
+            enabled: true,
             can_run: true,
             pause_reasons: [],
+            data_stale: false,
+            data_warnings: [],
             freshness_data_as_of: null,
             current_job_type: null,
             last_run_at: null,
@@ -958,12 +961,21 @@ async function demoPageModel(
       wealthLabels: history.labels,
       netWorthSeries: history.series.net_worth,
       netWorthLabels: history.labels,
+      insightsPaused: insightResult?.insights_enabled === false,
+      insightsDataStale: Boolean(insightResult?.partial),
       ...(insightResult?.data
         ? {
-            insights: demoInsightSectionsForWeb(
-              insightResult.data,
-              [demo.insights, demo.archivedInsights],
-            ),
+            insights:
+              insightResult.insights_enabled === false
+                ? {
+                    weekly: [],
+                    investments: [],
+                    subscriptions: [],
+                  }
+                : demoInsightSectionsForWeb(
+                    insightResult.data,
+                    [demo.insights, demo.archivedInsights],
+                  ),
           }
         : {}),
     };
@@ -1244,7 +1256,15 @@ async function demoPageModel(
     return {
       insights: displayedInsights,
       insightView,
-      insightData: insightResult?.data ?? { view: insightView },
+      insightData: insightResult?.data
+        ? {
+            ...insightResult.data,
+            enabled: insightResult.insights_enabled !== false,
+            partial: Boolean(insightResult.partial),
+            warnings: insightResult.warnings ?? [],
+            dataAsOf: insightResult.data_as_of ?? null,
+          }
+        : { view: insightView },
       selectedInsight:
         Object.values(displayedInsights)
           .flat()

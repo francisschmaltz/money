@@ -7364,6 +7364,50 @@ export class PgFinanceRepository {
     };
   }
 
+  async getInsightSettings(
+    workspaceId = DEFAULT_WORKSPACE_ID,
+  ) {
+    const result = await this.#pool.query(
+      `
+        SELECT enabled, updated_by, updated_at
+        FROM insight_settings
+        WHERE workspace_id = $1
+      `,
+      [workspaceId],
+    );
+    return result.rows[0]
+      ? mapInsightSettings(result.rows[0])
+      : {
+          enabled: true,
+          updated_by: null,
+          updated_at: null,
+        };
+  }
+
+  async updateInsightSettings(
+    workspaceId = DEFAULT_WORKSPACE_ID,
+    { enabled, updatedBy = null },
+  ) {
+    const result = await this.#pool.query(
+      `
+        INSERT INTO insight_settings (
+          workspace_id,
+          enabled,
+          updated_by,
+          updated_at
+        )
+        VALUES ($1, $2, $3, now())
+        ON CONFLICT (workspace_id) DO UPDATE SET
+          enabled = EXCLUDED.enabled,
+          updated_by = EXCLUDED.updated_by,
+          updated_at = now()
+        RETURNING enabled, updated_by, updated_at
+      `,
+      [workspaceId, enabled, updatedBy],
+    );
+    return mapInsightSettings(result.rows[0]);
+  }
+
   async getInsightLlmSettings(
     workspaceId = DEFAULT_WORKSPACE_ID,
   ) {
@@ -9193,6 +9237,14 @@ function mapInsightFinding(row) {
     state_changed_by: row.state_changed_by ?? null,
     generated_at: dateValue(row.generated_at),
     data_as_of: dateValue(row.data_as_of),
+  };
+}
+
+function mapInsightSettings(row) {
+  return {
+    enabled: row.enabled !== false,
+    updated_by: row.updated_by ?? null,
+    updated_at: dateValue(row.updated_at),
   };
 }
 

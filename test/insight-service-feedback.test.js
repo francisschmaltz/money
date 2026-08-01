@@ -272,7 +272,7 @@ test("nightly insight generation re-reads active findings and uses one settings 
   );
 });
 
-test("partial freshness preserves stored findings and skips transaction and model work", async () => {
+test("partial freshness still generates from the latest available data", async () => {
   const calls = [];
   const repository = {
     async takeDailySnapshots() {},
@@ -302,20 +302,48 @@ test("partial freshness preserves stored findings and skips transaction and mode
       calls.push("replace");
     },
   };
+  const service = new InsightService({ repository });
+
+  const result = await service.generateAll();
+
+  assert.equal(result.skipped, undefined);
+  assert.deepEqual(Object.keys(result), [
+    "weekly",
+    "investments",
+    "subscriptions",
+  ]);
+  assert.deepEqual(calls, [
+    "transactions",
+    "replace",
+    "replace",
+    "replace",
+  ]);
+});
+
+test("manual pause skips insight generation before any data work", async () => {
+  const calls = [];
   const service = new InsightService({
-    repository,
-    narrativeService: {
-      async generate() {
-        calls.push("model");
+    repository: {
+      async getInsightSettings(workspaceId) {
+        calls.push(["settings", workspaceId]);
+        return { enabled: false };
+      },
+      async takeDailySnapshots() {
+        calls.push(["snapshots"]);
       },
     },
   });
 
   const result = await service.generateAll();
 
-  assert.equal(result.skipped, true);
-  assert.equal(result.reason, "partial_freshness");
-  assert.deepEqual(calls, []);
+  assert.deepEqual(result, {
+    weekly: [],
+    investments: [],
+    subscriptions: [],
+    skipped: true,
+    reason: "manual_pause",
+  });
+  assert.deepEqual(calls, [["settings", "shared"]]);
 });
 
 test("healthy generation uses a 90-day weekly window and ID-only subscription evidence", async () => {

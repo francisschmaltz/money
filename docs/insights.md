@@ -35,6 +35,17 @@ Feedback sent to LM Studio is aggregated by stable finding key, contains no
 transaction evidence or amounts, is limited to recent patterns, and is used
 only to rank deterministic actions.
 
+## Run control and data freshness
+
+Insight generation is on by default and can be paused or turned back on by an
+administrator in Settings. When it is on, scheduled and manual runs use the
+latest available finance data even if a connection is stale, incomplete, or
+needs attention. Those connection warnings stay visible but do not block a
+run.
+
+Pausing stops future insight generation without stopping connection syncs or
+deleting stored findings. A job that is already running may still finish.
+
 ## Investment boundary
 
 Money can currently identify portfolio concentration, allocation movement,

@@ -49,6 +49,24 @@ test("paused demo data still previews and is labeled stale", async () => {
   assert.ok(preview.request_body);
 });
 
+test("demo manual insight control persists across status and page reads", async () => {
+  const service = createDemoFinanceService();
+
+  await service.setInsightsEnabled({ enabled: false });
+  assert.equal((await service.getInsightStatus()).state, "paused");
+  assert.equal(
+    (await service.getFinanceInsights()).insights_enabled,
+    false,
+  );
+
+  await service.setInsightsEnabled({ enabled: true });
+  assert.equal((await service.getInsightStatus()).state, "ready");
+  assert.equal(
+    (await service.getFinanceInsights()).insights_enabled,
+    true,
+  );
+});
+
 test("demo test draft is side-effect free while save increments revision", async () => {
   const service = createDemoFinanceService();
   const before = await service.getInsightLlmAdminState();

@@ -65,7 +65,7 @@ test("dismissible notifications persist for the browser session", async () => {
   assert.match(money, /notification\.hidden = true/);
 });
 
-test("Settings insight controls call the protected run and clear endpoints", async () => {
+test("Settings insight controls call the protected toggle, run, and clear endpoints", async () => {
   const money = await readFile(
     path.resolve("app/public/js/money.js"),
     "utf8",
@@ -76,6 +76,9 @@ test("Settings insight controls call the protected run and clear endpoints", asy
 
   assert.ok(start >= 0);
   assert.ok(end > start);
+  assert.match(controls, /data-insights-toggle/);
+  assert.match(controls, /\/api\/v1\/settings\/insights\/status/);
+  assert.match(controls, /method: "PUT"/);
   assert.match(controls, /data-insights-run/);
   assert.match(controls, /\/api\/v1\/settings\/insights\/run/);
   assert.match(controls, /data-insights-clear/);

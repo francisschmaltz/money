@@ -23,8 +23,11 @@
         ? insightStatus
         : {
             state: "never_run",
+            enabled: true,
             can_run: true,
             pause_reasons: [],
+            data_stale: false,
+            data_warnings: [],
             last_run_at: null,
             last_run_status: null,
             next_scheduled_at: null,
@@ -42,13 +45,23 @@
       never_run: "Never run",
     };
     const insightStatusCopy = {
-      paused: "Connected data is stale or incomplete, so the last good findings stay in place.",
+      paused: "Scheduled and manual insight runs are off.",
       running: "Recurring detection and insight generation are running now.",
       queued: "An insight run is waiting for the worker.",
       failed: "The last insight job failed. Check connections, then run it again.",
-      ready: "Insights run after fresh syncs and during the nightly refresh.",
+      ready: currentInsightStatus.data_stale
+        ? "Insights are on and use the latest available data."
+        : "Insights run after syncs and during the nightly refresh.",
       never_run: "No insight run has completed yet.",
     };
+    const insightDataWarnings =
+      currentInsightStatus.data_warnings?.length
+        ? currentInsightStatus.data_warnings
+        : [
+            {
+              message: "Some connected finance data is stale or incomplete.",
+            },
+          ];
     const insightTimestamp = (value) => {
       if (!value) return "Never";
       const date = new Date(value);
@@ -129,7 +142,7 @@
           .filter(Boolean)
           .join(" ") ||
         insightStatusCopy[currentInsightStatus.state] ||
-        "Insights cannot run until connected data is fresh."
+        "Insights cannot run right now."
       : "";
     const settingsAccounts =
       typeof accounts !== "undefined" ? accounts : [];
@@ -503,6 +516,17 @@
         </div>
       <% } %>
 
+      <% if (currentInsightStatus.data_stale) { %>
+        <div class="insight-admin__pause-reasons" role="status">
+          <strong><%= currentInsightStatus.enabled === false ? "Connection warnings" : "Using the latest available data" %></strong>
+          <ul>
+            <% insightDataWarnings.forEach((warning) => { %>
+              <li><%= warning.message || warning %></li>
+            <% }) %>
+          </ul>
+        </div>
+      <% } %>
+
       <dl class="insight-admin__facts">
         <div>
           <dt>Last run</dt>
@@ -551,6 +575,15 @@
             <small id="insight-run-disabled-reason"><%= insightRunReason %></small>
           <% } %>
         </div>
+        <button
+          class="button <%= currentInsightStatus.enabled === false ? "button--dark" : "button--secondary" %>"
+          type="button"
+          data-insights-toggle
+          data-insights-enabled="<%= currentInsightStatus.enabled === false ? "false" : "true" %>"
+        >
+          <i class="ph <%= currentInsightStatus.enabled === false ? "ph-play" : "ph-pause" %>" aria-hidden="true"></i>
+          <%= currentInsightStatus.enabled === false ? "Turn on insights" : "Pause insights" %>
+        </button>
         <button
           class="button button--dark"
           type="button"

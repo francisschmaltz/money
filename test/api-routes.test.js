@@ -903,7 +903,7 @@ test("bulk insight actions validate one atomic admin request", async () => {
   assert.equal(middlewareCalls.length, 16);
 });
 
-test("insight admin controls expose status and protect run and clear mutations", async () => {
+test("insight admin controls expose status and protect toggle, run, and clear mutations", async () => {
   const calls = [];
   const middlewareCalls = [];
   const actor = {
@@ -936,6 +936,14 @@ test("insight admin controls expose status and protect run and clear mutations",
             active_count: 4,
           };
         },
+        setInsightsEnabled(input, routeActor) {
+          calls.push(["toggle", input, routeActor]);
+          return {
+            updated: true,
+            enabled: input.enabled,
+            updated_by: routeActor.id,
+          };
+        },
         forceRunInsights(input, routeActor) {
           calls.push(["run", input, routeActor]);
           return {
@@ -964,6 +972,14 @@ test("insight admin controls expose status and protect run and clear mutations",
       active_count: 4,
     });
   await request(app)
+    .put("/api/v1/settings/insights/status")
+    .send({ enabled: false })
+    .expect(200, {
+      updated: true,
+      enabled: false,
+      updated_by: "user_admin",
+    });
+  await request(app)
     .post("/api/v1/settings/insights/run")
     .send({})
     .expect(202, {
@@ -981,11 +997,14 @@ test("insight admin controls expose status and protect run and clear mutations",
 
   assert.deepEqual(calls, [
     ["status", {}],
+    ["toggle", { enabled: false }, actor],
     ["run", {}, actor],
     ["clear", {}, actor],
   ]);
   assert.deepEqual(middlewareCalls, [
     "admin:GET",
+    "admin:PUT",
+    "csrf:PUT",
     "admin:POST",
     "csrf:POST",
     "admin:DELETE",

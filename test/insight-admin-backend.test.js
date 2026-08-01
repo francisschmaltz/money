@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 
 import { PgFinanceRepository } from "../app/db/financeRepository.js";
 import { PgJobQueue } from "../app/db/jobQueue.js";
@@ -52,6 +53,59 @@ function emptyInsightStorage(overrides = {}) {
     ...overrides,
   };
 }
+
+test("insight settings migration stores a manual workspace control", async () => {
+  const migration = await readFile(
+    new URL("../migrations/030_insight_settings.sql", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(migration, /CREATE TABLE insight_settings/);
+  assert.match(migration, /workspace_id text PRIMARY KEY/);
+  assert.match(migration, /enabled boolean NOT NULL DEFAULT true/);
+  assert.match(migration, /updated_by text REFERENCES users/);
+});
+
+test("insight settings default on and persist a manual pause", async () => {
+  const db = fakePool(async (sql, params) => {
+    assert.equal(params[0], "shared");
+    if (sql.startsWith("SELECT enabled")) {
+      return { rows: [] };
+    }
+    if (sql.startsWith("INSERT INTO insight_settings")) {
+      assert.deepEqual(params, ["shared", false, "admin-1"]);
+      return {
+        rows: [
+          {
+            enabled: false,
+            updated_by: "admin-1",
+            updated_at: "2026-07-31T18:00:00.000Z",
+          },
+        ],
+      };
+    }
+    return { rows: [] };
+  });
+  const repository = new PgFinanceRepository(db.pool);
+
+  assert.deepEqual(await repository.getInsightSettings("shared"), {
+    enabled: true,
+    updated_by: null,
+    updated_at: null,
+  });
+  assert.deepEqual(
+    await repository.updateInsightSettings("shared", {
+      enabled: false,
+      updatedBy: "admin-1",
+    }),
+    {
+      enabled: false,
+      updated_by: "admin-1",
+      updated_at: "2026-07-31T18:00:00.000Z",
+    },
+  );
+  assert.match(db.calls[1].sql, /ON CONFLICT \(workspace_id\)/);
+});
 
 test("insight job status separates active work, the last result, and the next nightly run", async () => {
   const db = fakePool(async (sql) => {
@@ -282,8 +336,11 @@ test("insight status reports completed output, counts, and the next scheduled ru
 
   assert.deepEqual(status, {
     state: "ready",
+    enabled: true,
     can_run: true,
     pause_reasons: [],
+    data_stale: false,
+    data_warnings: [],
     freshness_data_as_of: "2026-07-28T15:00:00.000Z",
     current_job_type: null,
     last_run_at: "2026-07-28T15:46:00.000Z",
@@ -298,7 +355,7 @@ test("insight status reports completed output, counts, and the next scheduled ru
   });
 });
 
-test("partial freshness pauses insights even when a job is still running", async () => {
+test("partial freshness stays visible without pausing a running insight job", async () => {
   const repository = {
     async getDataFreshness() {
       return freshData({
@@ -331,13 +388,16 @@ test("partial freshness pauses insights even when a job is still running", async
 
   const status = await service.getInsightStatus();
 
-  assert.equal(status.state, "paused");
+  assert.equal(status.state, "running");
+  assert.equal(status.enabled, true);
   assert.equal(status.can_run, false);
   assert.equal(
     status.current_job_type,
     "finance.generate_insights",
   );
-  assert.deepEqual(status.pause_reasons, [
+  assert.deepEqual(status.pause_reasons, []);
+  assert.equal(status.data_stale, true);
+  assert.deepEqual(status.data_warnings, [
     {
       code: "sync_in_progress",
       message: "A connection is still syncing.",
@@ -401,7 +461,7 @@ test("force run queues recurring detection with the requesting admin and a stabl
   ]);
 });
 
-test("force run rejects stale data without enqueueing more work", async () => {
+test("force run queues with stale data when insights are on", async () => {
   let enqueued = false;
   const service = createFinanceService({
     repository: {
@@ -430,6 +490,45 @@ test("force run rejects stale data without enqueueing more work", async () => {
       },
       async enqueue() {
         enqueued = true;
+        return { id: "job-stale-data" };
+      },
+    },
+  });
+
+  const result = await service.forceRunInsights(
+    {},
+    { id: "admin-1" },
+  );
+
+  assert.equal(result.queued, true);
+  assert.equal(result.job_id, "job-stale-data");
+  assert.equal(enqueued, true);
+});
+
+test("manual pause blocks force runs until insights are turned on", async () => {
+  let enqueued = false;
+  const service = createFinanceService({
+    repository: {
+      async getDataFreshness() {
+        return freshData();
+      },
+      async getInsightSettings() {
+        return { enabled: false };
+      },
+      async getInsightStorageSummary() {
+        return emptyInsightStorage();
+      },
+    },
+    jobQueue: {
+      async getInsightJobStatus() {
+        return {
+          current: null,
+          latest: null,
+          nextScheduledAt: null,
+        };
+      },
+      async enqueue() {
+        enqueued = true;
       },
     },
   });
@@ -438,12 +537,54 @@ test("force run rejects stale data without enqueueing more work", async () => {
     service.forceRunInsights({}, { id: "admin-1" }),
     (error) => {
       assert.equal(error.statusCode, 409);
-      assert.equal(error.expose, true);
-      assert.match(error.message, /Bank data is stale/);
+      assert.match(error.message, /paused manually/);
       return true;
     },
   );
   assert.equal(enqueued, false);
+});
+
+test("manual insight control persists the admin choice", async () => {
+  const calls = [];
+  const service = createFinanceService({
+    repository: {
+      async updateInsightSettings(workspaceId, input) {
+        calls.push({ workspaceId, ...input });
+        return {
+          enabled: input.enabled,
+          updated_by: input.updatedBy,
+          updated_at: "2026-07-31T18:00:00.000Z",
+        };
+      },
+    },
+  });
+
+  const result = await service.setInsightsEnabled(
+    { enabled: false },
+    { id: "admin-1" },
+  );
+
+  assert.deepEqual(calls, [
+    {
+      workspaceId: "shared",
+      enabled: false,
+      updatedBy: "admin-1",
+    },
+  ]);
+  assert.deepEqual(result, {
+    updated: true,
+    enabled: false,
+    updated_by: "admin-1",
+    updated_at: "2026-07-31T18:00:00.000Z",
+  });
+  await assert.rejects(
+    service.setInsightsEnabled({ enabled: "false" }),
+    (error) => {
+      assert.equal(error.statusCode, 400);
+      assert.equal(error.expose, true);
+      return true;
+    },
+  );
 });
 
 test("clearing insights reports deleted output and explicitly preserves feedback", async () => {

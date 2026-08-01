@@ -37,6 +37,19 @@ export class InsightService {
   }
 
   async generateAll({ workspaceId = this.#workspaceId } = {}) {
+    const generationSettings =
+      (await this.#repository.getInsightSettings?.(workspaceId)) ?? {
+        enabled: true,
+      };
+    if (generationSettings.enabled === false) {
+      return {
+        weekly: [],
+        investments: [],
+        subscriptions: [],
+        skipped: true,
+        reason: "manual_pause",
+      };
+    }
     const now = this.#now();
     // Nightly insight generation also advances local history on quiet days;
     // otherwise unchanged balances would leave holes and make performance
@@ -72,16 +85,6 @@ export class InsightService {
           activeAccountsOnly: true,
         }),
       ]);
-    if (freshness.partial) {
-      return {
-        weekly: [],
-        investments: [],
-        subscriptions: [],
-        skipped: true,
-        reason: "partial_freshness",
-        freshness,
-      };
-    }
     const weeklyTransactions =
       await this.#repository.getTransactionsForPeriod(workspaceId, {
         startOn: shiftDateOnly(now, -89),

@@ -4,8 +4,23 @@ import AxeBuilder from "@axe-core/playwright";
 test("Settings shows insight state and wires run and clear controls", async ({
   page,
 }) => {
+  let toggleRequest;
   let runRequest;
   let clearRequest;
+  await page.route(
+    "**/api/v1/settings/insights/status",
+    async (route) => {
+      toggleRequest = route.request();
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          updated: true,
+          enabled: false,
+        }),
+      });
+    },
+  );
   await page.route(
     "**/api/v1/settings/insights/run",
     async (route) => {
@@ -48,12 +63,23 @@ test("Settings shows insight state and wires run and clear controls", async ({
     card.getByText("Next scheduled run", { exact: true }),
   ).toBeVisible();
 
-  const runInsights = card.getByRole("button", {
+  await card.getByRole("button", { name: "Pause insights" }).click();
+  await expect(card.getByRole("status")).toContainText(
+    "Insights paused.",
+  );
+  expect(toggleRequest.method()).toBe("PUT");
+  expect(toggleRequest.headers()["x-csrf-token"]).toBeTruthy();
+  expect(toggleRequest.postDataJSON()).toEqual({ enabled: false });
+
+  await page.reload();
+
+  const refreshedCard = page.locator("[data-insight-admin]");
+  const runInsights = refreshedCard.getByRole("button", {
     name: "Run insights now",
   });
   await runInsights.focus();
   await page.keyboard.press("Enter");
-  await expect(card.getByRole("status")).toContainText(
+  await expect(refreshedCard.getByRole("status")).toContainText(
     "Insight run queued.",
   );
   expect(runRequest.method()).toBe("POST");

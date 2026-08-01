@@ -1146,6 +1146,9 @@
     const insightAdminStatus = document.querySelector(
       "[data-insight-admin-status]",
     );
+    const toggleInsights = document.querySelector(
+      "[data-insights-toggle]",
+    );
     const runInsights = document.querySelector("[data-insights-run]");
     const clearInsights = document.querySelector(
       "[data-insights-clear]",
@@ -1201,6 +1204,39 @@
     });
     clearInsightsDialog?.addEventListener("close", () => {
       clearInsightsDialogOpener?.focus();
+    });
+
+    toggleInsights?.addEventListener("click", async () => {
+      const enabled = toggleInsights.dataset.insightsEnabled !== "true";
+      toggleInsights.disabled = true;
+      if (runInsights) runInsights.disabled = true;
+      if (insightAdminStatus) {
+        insightAdminStatus.textContent = enabled
+          ? "Turning on insights…"
+          : "Pausing insights…";
+      }
+      try {
+        await requestJson("/api/v1/settings/insights/status", {
+          method: "PUT",
+          body: { enabled },
+        });
+        if (insightAdminStatus) {
+          insightAdminStatus.textContent = enabled
+            ? "Insights turned on."
+            : "Insights paused.";
+        }
+        window.setTimeout(() => window.location.reload(), 600);
+      } catch (error) {
+        toggleInsights.disabled = false;
+        if (runInsights) {
+          runInsights.disabled =
+            runInsights.dataset.insightsCanRun === "false";
+        }
+        if (insightAdminStatus) {
+          insightAdminStatus.textContent =
+            error.message || "Couldn’t update insight settings.";
+        }
+      }
     });
 
     runInsights?.addEventListener("click", async () => {

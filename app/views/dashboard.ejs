@@ -123,13 +123,13 @@
       actionIcon: "ph-bank"
     }) %>
 
-    <% if (typeof insightsStale !== "undefined" && insightsStale) { %>
+    <% if (typeof insightsPaused !== "undefined" && insightsPaused) { %>
       <%- include("partials/notification", {
         id: "insights-paused",
         tone: "warning",
         icon: "ph-pause-circle",
         title: "Insights are paused",
-        message: "Your last successful insights remain available on the Insights page, but none are promoted here until every finance connection is fresh."
+        message: "Your last insights remain available on the Insights page. Turn insights on in Settings to resume runs and dashboard promotion."
       }) %>
     <% } %>
 

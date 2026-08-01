@@ -31,7 +31,7 @@ function finding(family, index) {
   };
 }
 
-function repository(queries = []) {
+function repository(queries = [], overrides = {}) {
   const findings = [
     ...Array.from({ length: 5 }, (_, index) =>
       finding("weekly", index + 1),
@@ -69,6 +69,7 @@ function repository(queries = []) {
     async listRecurringStreams() {
       return [];
     },
+    ...overrides,
   };
 }
 
@@ -119,4 +120,45 @@ test("Insights archive requests archived rows without changing MCP delivery", as
   assert.equal(page.insightView, "archive");
   assert.equal(page.insightData.view, "archive");
   assert.equal(queries[0].scope, "archive");
+});
+
+test("Insights page keeps connection freshness separate from manual pause", async () => {
+  let enabled = true;
+  const service = createFinanceService({
+    repository: repository([], {
+      async getDataFreshness() {
+        return {
+          ...FRESHNESS,
+          partial: true,
+          warnings: [
+            {
+              code: "stale_connections",
+              message: "Vehicle loan is out of date.",
+            },
+          ],
+        };
+      },
+      async getInsightSettings() {
+        return { enabled };
+      },
+    }),
+    now: () => new Date("2026-07-26T20:00:00.000Z"),
+  });
+
+  const runningPage = await service.getPageData("insights", {
+    query: {},
+  });
+  assert.equal(runningPage.insightsPaused, false);
+  assert.equal(runningPage.insightsDataStale, true);
+  assert.equal(runningPage.insightData.enabled, true);
+  assert.equal(runningPage.insights.weekly.length, 5);
+
+  enabled = false;
+  const pausedPage = await service.getPageData("insights", {
+    query: {},
+  });
+  assert.equal(pausedPage.insightsPaused, true);
+  assert.equal(pausedPage.insightsDataStale, true);
+  assert.equal(pausedPage.insightData.enabled, false);
+  assert.equal(pausedPage.insights.weekly.length, 5);
 });

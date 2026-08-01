@@ -888,8 +888,11 @@ export class DemoFinanceService {
   #creditScoreObservationSequence = 5;
   #insightStatus = {
     state: "ready",
+    enabled: true,
     can_run: true,
     pause_reasons: [],
+    data_stale: false,
+    data_warnings: [],
     freshness_data_as_of: DATA_AS_OF,
     current_job_type: null,
     last_run_at: "2026-07-27T09:02:00.000Z",
@@ -984,8 +987,16 @@ export class DemoFinanceService {
       this.#insightStatus = {
         ...this.#insightStatus,
         state: "paused",
+        enabled: false,
         can_run: false,
         pause_reasons: [
+          {
+            code: "manual_pause",
+            message: "Insights were paused manually.",
+          },
+        ],
+        data_stale: true,
+        data_warnings: [
           {
             code: "connection_attention",
             message:
@@ -1443,19 +1454,25 @@ export class DemoFinanceService {
       (total, value) => total + value.findings.length,
       0,
     );
-    return result({
-      title: section === "all" ? "Finance insights" : `${section} insights`,
-      subtitle: `${count} findings`,
-      path: section === "all" ? "/insights" : `/insights#${section}`,
-      summary: `${count} ${insightView === "archive" ? "past" : "active"} finance finding${count === 1 ? "" : "s"} ${count === 1 ? "is" : "are"} available. Data is fresh as of July 26 at 6:42 PM UTC.`,
-      data: {
-        section,
-        view: insightView,
-        ...selected,
-        finding_count: count,
-        freshness: FRESHNESS,
-      },
-    });
+    return {
+      ...result({
+        title:
+          section === "all" ? "Finance insights" : `${section} insights`,
+        subtitle: `${count} findings`,
+        path: section === "all" ? "/insights" : `/insights#${section}`,
+        summary: `${count} ${insightView === "archive" ? "past" : "active"} finance finding${count === 1 ? "" : "s"} ${count === 1 ? "is" : "are"} available. Data is fresh as of July 26 at 6:42 PM UTC.`,
+        data: {
+          section,
+          view: insightView,
+          ...selected,
+          finding_count: count,
+          freshness: FRESHNESS,
+        },
+        partial: this.#insightStatus.data_stale,
+        warnings: this.#insightStatus.data_warnings,
+      }),
+      insights_enabled: this.#insightStatus.enabled,
+    };
   }
 
   async listAccounts(options = {}) {
@@ -3252,6 +3269,33 @@ export class DemoFinanceService {
     return structuredClone(this.#insightStatus);
   }
 
+  async setInsightsEnabled(input = {}) {
+    if (typeof input.enabled !== "boolean") {
+      throw demoInsightLlmError("enabled must be a boolean");
+    }
+    this.#insightStatus = {
+      ...this.#insightStatus,
+      state: input.enabled ? "ready" : "paused",
+      enabled: input.enabled,
+      can_run: input.enabled,
+      pause_reasons: input.enabled
+        ? []
+        : [
+            {
+              code: "manual_pause",
+              message: "Insights were paused manually.",
+            },
+          ],
+    };
+    return {
+      updated: true,
+      enabled: input.enabled,
+      updated_by: null,
+      updated_at: new Date().toISOString(),
+      demo: true,
+    };
+  }
+
   async getInsightLlmAdminState() {
     const defaults = structuredClone(DEFAULT_INSIGHT_LLM_SETTINGS);
     delete defaults.revision;
@@ -3411,17 +3455,23 @@ export class DemoFinanceService {
       )
       .slice(0, settings.candidate_limit);
     const staleReason =
-      this.#insightStatus.pause_reasons[0]?.message ?? null;
+      this.#insightStatus.data_warnings[0]?.message ?? null;
     return {
       family,
       settings,
       findings,
-      dataStale: this.#insightStatus.state === "paused",
+      dataStale: this.#insightStatus.data_stale,
       staleReason,
     };
   }
 
   async forceRunInsights() {
+    if (!this.#insightStatus.enabled) {
+      throw demoInsightLlmError(
+        "Insights are paused: Insights were paused manually.",
+        409,
+      );
+    }
     const completedAt = new Date().toISOString();
     this.#insightStatus = {
       ...this.#insightStatus,

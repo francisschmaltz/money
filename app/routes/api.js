@@ -1708,6 +1708,22 @@ export function createApiRouter({
     },
   );
 
+  router.put(
+    "/api/v1/settings/insights/status",
+    requireAdmin,
+    requireCsrf,
+    (request, response, next) => {
+      invokeWithActor(
+        financeService,
+        "setInsightsEnabled",
+        request.body ?? {},
+        request.user,
+        response,
+        next,
+      );
+    },
+  );
+
   router.post(
     "/api/v1/settings/insights/run",
     requireAdmin,

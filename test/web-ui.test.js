@@ -275,16 +275,16 @@ test("dashboard insight actions are obvious to admins and absent for members", a
   assert.doesNotMatch(memberHtml, /aria-label="Actions for /);
 });
 
-test("dashboard replaces stale insight promotion with a dismissible notification", async () => {
+test("dashboard hides insight promotion only when insights are manually paused", async () => {
   const html = await render("dashboard", {
     pageTitle: "Overview",
     activePath: "/",
-    insightsStale: true,
+    insightsPaused: true,
     insights: { weekly: [], investments: [], subscriptions: [] },
   });
 
   assert.match(html, /Insights are paused/);
-  assert.match(html, /none are promoted here/);
+  assert.match(html, /Turn insights on in Settings/);
   assert.match(html, /class="notification notification--warning"/);
   assert.match(
     html,
@@ -971,14 +971,21 @@ test("settings exposes account grouping and manual asset CRUD controls", async (
   assert.doesNotMatch(html, /data-category-manager/);
 });
 
-test("settings shows insight status, timestamps, and admin run and clear controls", async () => {
+test("settings shows insight status, timestamps, and admin toggle, run, and clear controls", async () => {
   const html = await render("settings", {
     pageTitle: "Settings",
     activePath: "/settings",
     insightStatus: {
       state: "paused",
+      enabled: false,
       can_run: false,
       pause_reasons: [
+        {
+          message: "Insights were paused manually.",
+        },
+      ],
+      data_stale: true,
+      data_warnings: [
         {
           message: "Everyday checking has not finished syncing.",
         },
@@ -997,12 +1004,17 @@ test("settings shows insight status, timestamps, and admin run and clear control
   assert.match(html, /<h2>Insight status<\/h2>/);
   assert.match(html, />\s*Paused\s*</);
   assert.match(html, /Why it’s paused/);
+  assert.match(html, /Insights were paused manually\./);
+  assert.match(html, /Connection warnings/);
   assert.match(html, /Everyday checking has not finished syncing\./);
   assert.match(html, /<dt>Last run<\/dt>/);
   assert.match(html, /Job succeeded/);
   assert.match(html, /<dt>Next scheduled run<\/dt>/);
   assert.match(html, /4 active · 2 archived/);
   assert.match(html, /data-insights-run/);
+  assert.match(html, /data-insights-toggle/);
+  assert.match(html, /data-insights-enabled="false"/);
+  assert.match(html, />\s*Turn on insights\s*</);
   assert.match(
     html,
     /<button[^>]*data-insights-run[^>]*data-insights-can-run="false"[^>]*disabled[^>]*>/,
@@ -1022,6 +1034,42 @@ test("settings shows insight status, timestamps, and admin run and clear control
   assert.match(
     html,
     /Feedback, ignored patterns, and classification corrections remain/,
+  );
+});
+
+test("stale connection data warns without disabling insights", async () => {
+  const html = await render("settings", {
+    pageTitle: "Settings",
+    activePath: "/settings",
+    insightStatus: {
+      state: "ready",
+      enabled: true,
+      can_run: true,
+      pause_reasons: [],
+      data_stale: true,
+      data_warnings: [
+        {
+          message: "Vehicle loan is more than 24 hours out of date.",
+        },
+      ],
+      last_run_at: null,
+      last_run_status: null,
+      next_scheduled_at: null,
+      last_findings_generated_at: null,
+      active_count: 0,
+      archived_count: 0,
+      total_count: 0,
+    },
+  });
+
+  assert.match(html, /Insights are on and use the latest available data/);
+  assert.match(html, /Using the latest available data/);
+  assert.match(html, /Vehicle loan is more than 24 hours out of date/);
+  assert.match(html, /data-insights-enabled="true"/);
+  assert.match(html, />\s*Pause insights\s*</);
+  assert.match(
+    html,
+    /<button[^>]*data-insights-run[^>]*data-insights-can-run="true"[^>]*>/,
   );
 });
 
@@ -1492,17 +1540,19 @@ test("active insights lead with actions and keep lifecycle controls compact", as
   assert.doesNotMatch(memberHtml, /data-insight-select/);
 });
 
-test("stale insights use the shared dismissible notification", async () => {
+test("stale insight data warns without claiming generation is paused", async () => {
   const html = await render("insights", {
     pageTitle: "Insights",
     activePath: "/insights",
-    insightData: { partial: true },
+    insightData: { enabled: true, partial: true },
   });
 
   assert.match(html, /class="notification notification--warning"/);
-  assert.match(html, /data-dismissible-notification="insights-paused"/);
+  assert.match(html, /data-dismissible-notification="insights-stale"/);
   assert.match(html, /data-notification-dismiss/);
-  assert.match(html, /The last successful findings are shown below/);
+  assert.match(html, /Some data may be out of date/);
+  assert.match(html, /Insights still run with the latest available data/);
+  assert.doesNotMatch(html, /Insights are paused/);
 });
 
 test("insight archive exposes restore, incorrect, and confirmed delete actions", async () => {

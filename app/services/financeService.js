@@ -1087,13 +1087,20 @@ export class FinanceService {
       limit: 200,
       ...(pageDelivery ? { scope: insightView } : {}),
     };
-    const [storedFindings, repositoryFreshness] = await Promise.all([
-      this.#repository.listInsightFindings(
-        this.#workspaceId,
-        findingQuery,
-      ),
-      this.#repository.getDataFreshness(this.#workspaceId),
-    ]);
+    const [storedFindings, repositoryFreshness, insightSettings] =
+      await Promise.all([
+        this.#repository.listInsightFindings(
+          this.#workspaceId,
+          findingQuery,
+        ),
+        this.#repository.getDataFreshness(this.#workspaceId),
+        optionalRepositoryCall(
+          this.#repository,
+          "getInsightSettings",
+          { enabled: true },
+          this.#workspaceId,
+        ),
+      ]);
     const cutoff = requestedAsOf ? effectiveAsOf.getTime() : null;
     const findings = cutoff
       ? storedFindings.filter(
@@ -1208,17 +1215,21 @@ export class FinanceService {
         "Historical insight summaries use stored findings only; live portfolio and subscription totals were not substituted.",
       );
     }
-    return this.#result({
-      data,
-      freshness,
-      warnings,
-      title: section === "all" ? "Finance insights" : insightTitle(section),
-      subtitle: `${selectedFindings.length} findings`,
-      path: section === "all" ? "/insights" : `/insights#${section}`,
-      summary: selectedFindings.length
-        ? `${selectedFindings.length} ${section === "all" ? "finance" : section} finding${selectedFindings.length === 1 ? "" : "s"}: ${top}. ${freshnessSentence(freshness)}`
-        : `No ${section === "all" ? "finance" : section} findings currently need attention. ${freshnessSentence(freshness)}`,
-    });
+    return {
+      ...this.#result({
+        data,
+        freshness,
+        warnings,
+        title:
+          section === "all" ? "Finance insights" : insightTitle(section),
+        subtitle: `${selectedFindings.length} findings`,
+        path: section === "all" ? "/insights" : `/insights#${section}`,
+        summary: selectedFindings.length
+          ? `${selectedFindings.length} ${section === "all" ? "finance" : section} finding${selectedFindings.length === 1 ? "" : "s"}: ${top}. ${freshnessSentence(freshness)}`
+          : `No ${section === "all" ? "finance" : section} findings currently need attention. ${freshnessSentence(freshness)}`,
+      }),
+      insights_enabled: insightSettings.enabled !== false,
+    };
   }
 
   async search(query, options = {}) {
@@ -2251,6 +2262,31 @@ export class FinanceService {
     return this.#buildInsightStatus(freshness);
   }
 
+  async setInsightsEnabled(input = {}, actor = null) {
+    if (typeof input.enabled !== "boolean") {
+      throw badRequest("enabled must be a boolean");
+    }
+    if (
+      typeof this.#repository.updateInsightSettings !== "function"
+    ) {
+      const error = new Error("Insight settings are unavailable.");
+      error.statusCode = 503;
+      error.expose = true;
+      throw error;
+    }
+    const settings = await this.#repository.updateInsightSettings(
+      this.#workspaceId,
+      {
+        enabled: input.enabled,
+        updatedBy: actor?.id ?? null,
+      },
+    );
+    return {
+      updated: true,
+      ...settings,
+    };
+  }
+
   async getInsightLlmAdminState() {
     const [
       storedSettings,
@@ -2574,7 +2610,7 @@ export class FinanceService {
     if (status.state === "paused") {
       const reason =
         status.pause_reasons[0]?.message ??
-        "Connected finance data is not fresh enough.";
+        "Insights were paused manually.";
       throw insightRunConflict(`Insights are paused: ${reason}`);
     }
     if (["running", "queued"].includes(status.state)) {
@@ -2627,7 +2663,7 @@ export class FinanceService {
   }
 
   async #buildInsightStatus(freshness) {
-    const [storage, jobs] = await Promise.all([
+    const [storage, jobs, settings] = await Promise.all([
       optionalRepositoryCall(
         this.#repository,
         "getInsightStorageSummary",
@@ -2646,11 +2682,18 @@ export class FinanceService {
             latest: null,
             nextScheduledAt: null,
           },
+      optionalRepositoryCall(
+        this.#repository,
+        "getInsightSettings",
+        { enabled: true },
+        this.#workspaceId,
+      ),
     ]);
     const current = jobs.current ?? null;
     const latest = jobs.latest ?? null;
+    const enabled = settings.enabled !== false;
     let state = "never_run";
-    if (freshness.partial) {
+    if (!enabled) {
       state = "paused";
     } else if (current?.status === "running") {
       state = "running";
@@ -2667,10 +2710,18 @@ export class FinanceService {
     }
     return {
       state,
-      can_run:
-        !freshness.partial &&
-        !["running", "queued"].includes(state),
-      pause_reasons: freshness.warnings ?? [],
+      enabled,
+      can_run: enabled && !["running", "queued"].includes(state),
+      pause_reasons: enabled
+        ? []
+        : [
+            {
+              code: "manual_pause",
+              message: "Insights were paused manually.",
+            },
+          ],
+      data_stale: Boolean(freshness.partial),
+      data_warnings: freshness.warnings ?? [],
       freshness_data_as_of: freshness.data_as_of ?? null,
       current_job_type: current?.type ?? null,
       last_run_at: isoDateTime(latest?.updatedAt),
@@ -3436,11 +3487,13 @@ export class FinanceService {
       return {
         ...base,
         insights: mappedInsights,
-        insightsStale: insights.partial,
+        insightsPaused: insights.insights_enabled === false,
+        insightsDataStale: insights.partial,
         insightView,
         insightData: {
           ...insights.data,
           view: insights.data.view ?? insightView,
+          enabled: insights.insights_enabled !== false,
           partial: insights.partial,
           warnings: insights.warnings,
           dataAsOf: insights.data_as_of,
@@ -3535,10 +3588,11 @@ export class FinanceService {
       categories: spending.data.segments.map((segment, index) =>
         webCategory(segment, index, categoryDefinitions),
       ),
-      insights: insights.partial
+      insights: insights.insights_enabled === false
         ? { weekly: [], investments: [], subscriptions: [] }
         : webInsights(insights.data),
-      insightsStale: insights.partial,
+      insightsPaused: insights.insights_enabled === false,
+      insightsDataStale: insights.partial,
       transactions: transactions.data.transactions.map(webTransaction),
       netWorthSeries: displayedWealthHistory.map(
         (point) => point.net_worth.amount_minor,

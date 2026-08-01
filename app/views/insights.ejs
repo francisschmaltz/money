@@ -6,6 +6,8 @@
       typeof insightView !== "undefined" && insightView === "archive"
         ? "archive"
         : "active";
+    const insightGenerationEnabled =
+      typeof insightData === "undefined" || insightData.enabled !== false;
     const allInsights = [
       ...(insights.weekly || []),
       ...(insights.investments || []),
@@ -72,13 +74,21 @@
       actionIcon: "ph-sliders-horizontal"
     }) %>
 
-    <% if (typeof insightData !== "undefined" && insightData.partial) { %>
+    <% if (!insightGenerationEnabled) { %>
       <%- include("partials/notification", {
         id: "insights-paused",
         tone: "warning",
         icon: "ph-pause-circle",
         title: "Insights are paused",
-        message: "The last successful findings are shown below, but they are not promoted on the dashboard until every finance connection is fresh again."
+        message: "The last findings are shown below. Turn insights on in Settings to resume scheduled and manual runs."
+      }) %>
+    <% } else if (typeof insightData !== "undefined" && insightData.partial) { %>
+      <%- include("partials/notification", {
+        id: "insights-stale",
+        tone: "warning",
+        icon: "ph-warning-circle",
+        title: "Some data may be out of date",
+        message: "Insights still run with the latest available data. Connection warnings remain visible in Settings."
       }) %>
     <% } %>
 
