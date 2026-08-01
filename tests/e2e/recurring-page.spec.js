@@ -29,11 +29,19 @@ test("admins can create and remove a bill pattern from transaction details", asy
   const transactionUrl =
     "/transactions?period=365&transaction=txn_whole_foods";
   await page.goto(transactionUrl);
+  const recurring = page.locator("details.transaction-recurring-pattern");
+  await recurring.locator("summary").click();
   const form = page.locator("[data-transaction-recurring-form]");
   await expect(form).toBeVisible();
   await form.getByLabel("Type").selectOption("bill");
   await form.getByLabel("Frequency").selectOption("monthly");
   await form.getByRole("button", { name: "Mark recurring" }).click();
+  await expect(
+    page.locator('[data-transaction-recurring-form][data-manual="true"]'),
+  ).toHaveCount(1);
+  await page
+    .locator("details.transaction-recurring-pattern > summary")
+    .click();
   await expect(
     page.getByRole("button", { name: "Remove manual pattern" }),
   ).toBeVisible();
@@ -46,11 +54,14 @@ test("admins can create and remove a bill pattern from transaction details", asy
 
   await page.goto(transactionUrl);
   await page
+    .locator("details.transaction-recurring-pattern > summary")
+    .click();
+  await page
     .getByRole("button", { name: "Remove manual pattern" })
     .click();
   await expect(
-    page.getByRole("button", { name: "Mark recurring" }),
-  ).toBeVisible();
+    page.locator('[data-transaction-recurring-form][data-manual="false"]'),
+  ).toHaveCount(1);
 
   await page.goto("/recurring");
   await expect(

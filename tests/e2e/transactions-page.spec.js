@@ -260,15 +260,9 @@ test("one transaction can change category without creating a rule", async ({
   );
   await page.goto("/transactions?transaction=txn_whole_foods");
 
-  const section = page.locator(".transaction-organize");
-  const form = section.locator("[data-transaction-organize-form]");
+  const form = page.locator("[data-transaction-category-form]");
   await expect(form).toBeVisible();
-  await expect(
-    section.getByText("No automatic cleanup rule is created"),
-  ).toBeVisible();
-  await page
-    .getByLabel("Spending category")
-    .selectOption({ label: "Dining" });
+  await form.getByLabel("Spending category").selectOption({ label: "Dining" });
   await Promise.all([
     page.waitForRequest(
       (request) =>
@@ -277,7 +271,7 @@ test("one transaction can change category without creating a rule", async ({
           "/api/v1/transactions/batch-edit",
     ),
     form
-      .getByRole("button", { name: "Save changes" })
+      .getByRole("button", { name: "Save category" })
       .click(),
   ]);
 
@@ -305,6 +299,7 @@ test("a posted transaction can move to an exact adjacent Plan month on mobile", 
   );
   await page.goto("/transactions?transaction=txn_whole_foods");
 
+  await page.locator("details.transaction-organize > summary").click();
   const form = page.locator("[data-transaction-organize-form]");
   const planMonth = form.getByLabel("Apply to Plan month");
   await expect(planMonth.locator("option")).toHaveText([
@@ -396,12 +391,98 @@ test("transaction notes save and the detail body uses the full modal width", asy
   ]);
   expect(Math.abs(widths[0] - widths[1])).toBeLessThanOrEqual(1);
 
+  const noteDetails = dialog.locator("details.transaction-note-editor");
+  await noteDetails.locator(":scope > summary").click();
   const form = dialog.locator("[data-transaction-note-form]");
   await form.getByLabel("Transaction note").fill("Dinner with Sam");
   await form.getByRole("button", { name: "Save note" }).click();
   await expect(form.getByRole("status")).toHaveText("Note saved");
+  await noteDetails.locator(":scope > summary").click();
+  await expect(
+    noteDetails.locator(".transaction-disclosure__preview"),
+  ).toHaveText("Dinner with Sam");
   expect(write).toEqual({
     note: "Dinner with Sam",
     expected_note_version: 1,
   });
+});
+
+test("transaction details keep custom controls compact and ahead of provider data", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1200, height: 900 });
+  await page.goto("/transactions?transaction=txn_whole_foods");
+  const desktopSizing = await page
+    .locator(".entity-detail-dialog__body--transaction")
+    .evaluate((element) => ({
+      width: element.getBoundingClientRect().width,
+      categoryButtonWidth: element
+        .querySelector("[data-transaction-category-form] button")
+        ?.getBoundingClientRect().width,
+      mapHeight: getComputedStyle(
+        element.querySelector("[data-mapkit-map]"),
+      ).height,
+    }));
+  expect(desktopSizing.categoryButtonWidth).toBeLessThan(
+    desktopSizing.width * 0.6,
+  );
+  expect(desktopSizing.mapHeight).toBe("160px");
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/transactions?transaction=txn_whole_foods");
+
+  const body = page.locator(".entity-detail-dialog__body--transaction");
+  const note = body.locator("details.transaction-note-editor");
+  const organize = body.locator("details.transaction-organize");
+  const recurring = body.locator("details.transaction-recurring-pattern");
+  const provider = body.locator(".transaction-provider-details");
+
+  await expect(
+    body.getByRole("heading", { name: "Spending allocation" }),
+  ).toBeVisible();
+  await expect(note).not.toHaveAttribute("open", "");
+  await expect(organize).not.toHaveAttribute("open", "");
+  await expect(recurring).not.toHaveAttribute("open", "");
+  await expect(provider).toBeVisible();
+  await expect(body.locator("[data-transaction-location]")).toBeVisible();
+
+  const ordered = await body.evaluate((element) => {
+    const selectors = [
+      ".transaction-allocation",
+      ".transaction-note-editor",
+      ".transaction-organize",
+      ".transaction-recurring-pattern",
+      ".transaction-location",
+      ".transaction-provider-details",
+    ];
+    return selectors.map((selector) =>
+      element.querySelector(selector)?.getBoundingClientRect().top,
+    );
+  });
+  expect(ordered.every((position) => Number.isFinite(position))).toBe(true);
+  expect(ordered).toEqual([...ordered].sort((left, right) => left - right));
+
+  await note.locator("summary").click();
+  await organize.locator("summary").click();
+  const sizing = await body.evaluate((element) => {
+    const width = element.getBoundingClientRect().width;
+    const buttonWidths = [
+      element.querySelector("[data-transaction-category-form] button"),
+      element.querySelector("[data-transaction-note-form] button"),
+      element.querySelector("[data-transaction-organize-form] button"),
+    ].map((button) => button?.getBoundingClientRect().width);
+    return {
+      width,
+      buttonWidths,
+      overflow: element.scrollWidth - element.clientWidth,
+      mapHeight: getComputedStyle(
+        element.querySelector("[data-mapkit-map]"),
+      ).height,
+    };
+  });
+  expect(sizing.overflow).toBeLessThanOrEqual(1);
+  expect(sizing.buttonWidths.every((width) => width < sizing.width * 0.6)).toBe(
+    true,
+  );
+  expect(sizing.mapHeight).toBe("140px");
 });

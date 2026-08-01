@@ -150,6 +150,35 @@ test("Plan month overrides are nullable month starts on transaction metadata", a
   );
 });
 
+test("transaction provider locations are private JSON and active Plaid cursors are rebuilt", async () => {
+  const migration = await readFile(
+    fileURLToPath(
+      new URL(
+        "../migrations/031_transaction_provider_location.sql",
+        import.meta.url,
+      ),
+    ),
+    "utf8",
+  );
+
+  assert.match(
+    migration,
+    /ADD COLUMN provider_location jsonb/,
+  );
+  assert.match(
+    migration,
+    /jsonb_typeof\(provider_location\) = 'object'/,
+  );
+  assert.match(
+    migration,
+    /UPDATE plaid_connection_details AS details[\s\S]*SET transactions_cursor = NULL/,
+  );
+  assert.match(
+    migration,
+    /connection\.provider = 'plaid'[\s\S]*connection\.ingestion_method = 'plaid'[\s\S]*connection\.status = 'active'/,
+  );
+});
+
 test("transaction sync inserts and updates normalized provider names", async () => {
   const db = fakePool();
   const repository = new PgFinanceRepository(db.pool);
@@ -170,6 +199,16 @@ test("transaction sync inserts and updates normalized provider names", async () 
         posted_on: "2026-07-27",
         pending: false,
         excluded_from_spending: false,
+        provider_location: {
+          address: "123 Main St",
+          city: "New York",
+          region: "NY",
+          postal_code: "10001",
+          country: "US",
+          lat: 40.7505,
+          lon: -73.9934,
+          store_number: "42",
+        },
       },
     ],
     cursor: "cursor-1",
@@ -185,6 +224,97 @@ test("transaction sync inserts and updates normalized provider names", async () 
     /normalized_name = EXCLUDED\.normalized_name/,
   );
   assert.equal(JSON.parse(insert.params[0])[0].normalized_name, "cafe");
+  assert.match(insert.sql, /payment_channel, provider_location/);
+  assert.match(
+    insert.sql,
+    /provider_location = EXCLUDED\.provider_location/,
+  );
+  assert.deepEqual(
+    JSON.parse(insert.params[0])[0].provider_location,
+    {
+      address: "123 Main St",
+      city: "New York",
+      region: "NY",
+      postal_code: "10001",
+      country: "US",
+      lat: 40.7505,
+      lon: -73.9934,
+      store_number: "42",
+    },
+  );
+});
+
+test("transaction sync clears a provider location when Plaid removes it", async () => {
+  const db = fakePool();
+  const repository = new PgFinanceRepository(db.pool);
+
+  await repository.applyTransactionSync({
+    itemId: "item-1",
+    modified: [
+      {
+        id: "transaction-1",
+        provider_account_id: "provider-account-1",
+        provider_transaction_id: "provider-transaction-1",
+        name: "Store",
+        normalized_name: "store",
+        amount_minor: -1_234,
+        currency_code: "USD",
+        posted_on: "2026-07-27",
+        pending: false,
+        excluded_from_spending: false,
+        provider_location: null,
+      },
+    ],
+    cursor: "cursor-2",
+  });
+
+  const insert = db.calls.find((call) =>
+    call.sql.includes("INSERT INTO transactions"),
+  );
+  assert.equal(
+    JSON.parse(insert.params[0])[0].provider_location,
+    null,
+  );
+  assert.match(
+    insert.sql,
+    /provider_location = EXCLUDED\.provider_location/,
+  );
+});
+
+test("repository transaction reads include provider location only when requested", async () => {
+  const row = {
+    id: "transaction-1",
+    account_id: "account-1",
+    name: "Store",
+    amount_minor: "-1234",
+    currency_code: "USD",
+    posted_on: "2026-07-27",
+    pending: false,
+    provider_location: {
+      address: "123 Main St",
+      lat: 40.7505,
+      lon: -73.9934,
+    },
+  };
+  const db = fakePool(async (sql) =>
+    sql.includes("FROM transactions t")
+      ? { rows: [row], rowCount: 1 }
+      : { rows: [], rowCount: 0 },
+  );
+  const repository = new PgFinanceRepository(db.pool);
+
+  const ordinary = await repository.getTransaction(
+    "workspace-1",
+    row.id,
+  );
+  const selected = await repository.getTransaction(
+    "workspace-1",
+    row.id,
+    { includeProviderLocation: true },
+  );
+
+  assert.equal(Object.hasOwn(ordinary, "provider_location"), false);
+  assert.deepEqual(selected.provider_location, row.provider_location);
 });
 
 test("transaction sync carries a pending note to its posted replacement before deletion", async () => {

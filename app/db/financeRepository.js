@@ -1946,7 +1946,7 @@ export class PgFinanceRepository {
               currency_code, authorized_at, authorized_on, posted_at,
               posted_on, pending,
               excluded_from_spending, original_transaction_id,
-              payment_channel
+              payment_channel, provider_location
             )
             SELECT
               r.id, a.workspace_id, a.id, r.provider_transaction_id,
@@ -1956,7 +1956,7 @@ export class PgFinanceRepository {
               r.authorized_at, r.authorized_on, r.posted_at,
               r.posted_on, r.pending,
               r.excluded_from_spending, r.original_transaction_id,
-              r.payment_channel
+              r.payment_channel, r.provider_location
             FROM jsonb_to_recordset($1::jsonb) AS r(
               id text,
               provider_account_id text,
@@ -1977,7 +1977,8 @@ export class PgFinanceRepository {
               pending boolean,
               excluded_from_spending boolean,
               original_transaction_id text,
-              payment_channel text
+              payment_channel text,
+              provider_location jsonb
             )
             JOIN accounts a
               ON a.provider_account_id = r.provider_account_id
@@ -2004,6 +2005,7 @@ export class PgFinanceRepository {
                 transactions.original_transaction_id
               ),
               payment_channel = EXCLUDED.payment_channel,
+              provider_location = EXCLUDED.provider_location,
               updated_at = now()
           `,
           [JSON.stringify(changed), itemId],
@@ -3698,6 +3700,7 @@ export class PgFinanceRepository {
   async getTransaction(
     workspaceId = DEFAULT_WORKSPACE_ID,
     transactionId,
+    { includeProviderLocation = false } = {},
   ) {
     const result = await this.#pool.query(
       `
@@ -3839,7 +3842,9 @@ export class PgFinanceRepository {
       `,
       [workspaceId, transactionId],
     );
-    return result.rows[0] ? mapTransaction(result.rows[0]) : null;
+    return result.rows[0]
+      ? mapTransaction(result.rows[0], { includeProviderLocation })
+      : null;
   }
 
   async getTransactionsByIds(
@@ -8951,7 +8956,10 @@ function mapAccount(row) {
   };
 }
 
-function mapTransaction(row) {
+function mapTransaction(
+  row,
+  { includeProviderLocation = false } = {},
+) {
   const projectedSplitCategory = row.split_category ?? null;
   const providerAmountMinor = integer(row.amount_minor);
   return {
@@ -8961,6 +8969,9 @@ function mapTransaction(row) {
     account_name: row.account_name,
     account_mask: row.account_mask,
     institution_name: row.institution_name,
+    ...(includeProviderLocation
+      ? { provider_location: row.provider_location ?? null }
+      : {}),
     merchant_name: row.merchant_name,
     normalized_merchant: row.normalized_merchant,
     name: row.name,

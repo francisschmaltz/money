@@ -21,9 +21,9 @@ test("first-party asset revisions change with the current deployment", async () 
     path.resolve("app/views/partials/head.ejs"),
     "utf8",
   );
-  assert.match(head, /\/css\/money\.css\?v=33/);
+  assert.match(head, /\/css\/money\.css\?v=34/);
   assert.match(head, /\/js\/charts\.js\?v=6/);
-  assert.match(head, /\/js\/money\.js\?v=29/);
+  assert.match(head, /\/js\/money\.js\?v=31/);
   assert.match(head, /\/js\/transactions\.js\?v=3/);
 });
 
@@ -200,6 +200,8 @@ test("transaction detail organization sends one scoped batch edit", async () => 
   assert.ok(start >= 0);
   assert.ok(end > start);
   assert.match(organization, /data-transaction-organize-form/);
+  assert.match(organization, /data-transaction-category-form/);
+  assert.match(organization, /data-transaction-category-status/);
   assert.match(
     organization,
     /transaction_ids: \[transactionId\]/,
@@ -245,6 +247,8 @@ test("transaction notes save with an optimistic version", async () => {
   assert.match(notes, /data-transaction-note-form/);
   assert.match(notes, /expected_note_version: expectedVersion/);
   assert.match(notes, /\/note`/);
+  assert.match(notes, /transaction-disclosure__preview/);
+  assert.match(notes, /"No note"/);
 });
 
 test("transaction selection controls stay hidden outside edit mode", async () => {

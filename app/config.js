@@ -167,6 +167,12 @@ export function loadConfig(environment = process.env, argv = process.argv.slice(
         `${new URL(publicBaseUrl).origin}/webhooks/plaid`,
       redirectUri: plaidRedirectUri,
     },
+    maps: {
+      teamId: String(environment.APPLE_TEAM_ID || "").trim(),
+      keyId: String(environment.APPLE_MAPS_KEY_ID || "").trim(),
+      privateKey: String(environment.APPLE_MAPS_PRIVATE_KEY || ""),
+      origin: publicOrigin,
+    },
     mcp: {
       bearerToken: environment.MCP_BEARER_TOKEN || "",
       planWriteToken: environment.MCP_PLAN_WRITE_TOKEN || "",

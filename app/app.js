@@ -10,6 +10,7 @@ import { createAuth, createSessionMiddleware, requireAdmin, requireUser } from "
 import { readiness } from "./config.js";
 import { checkDatabase } from "./db/pool.js";
 import { log } from "./log.js";
+import { createMapKitTokenProvider } from "./mapKitToken.js";
 import { createFinanceMcpServer } from "./mcp/index.js";
 import { createApiRouter, createPlaidWebhookRouter } from "./routes/api.js";
 import { createWebRouter } from "./routes/web.js";
@@ -45,6 +46,31 @@ export function stableAssetCacheOptions(config) {
   return {
     immutable: false,
     maxAge: config.production ? "1h" : 0,
+  };
+}
+
+export function contentSecurityPolicyDirectives(config) {
+  return {
+    defaultSrc: ["'self'"],
+    baseUri: ["'self'"],
+    connectSrc: [
+      "'self'",
+      "https://*.plaid.com",
+      "https://*.apple-mapkit.com",
+    ],
+    fontSrc: ["'self'", "data:"],
+    formAction: ["'self'"],
+    frameAncestors: ["'none'"],
+    frameSrc: ["'self'", "https://*.plaid.com"],
+    imgSrc: ["'self'", "data:", "https:"],
+    objectSrc: ["'none'"],
+    scriptSrc: [
+      "'self'",
+      "https://cdn.plaid.com",
+      "https://cdn.apple-mapkit.com",
+    ],
+    styleSrc: ["'self'", "'unsafe-inline'"],
+    upgradeInsecureRequests: config.production ? [] : null,
   };
 }
 
@@ -92,8 +118,18 @@ export function createApp({
   plaidSyncService,
   appleCardImportService,
   oidcConfiguration = null,
+  mapkitTokenProvider = null,
 } = {}) {
   if (!config) throw new TypeError("config is required.");
+
+  const effectiveMapkitTokenProvider =
+    mapkitTokenProvider ||
+    createMapKitTokenProvider({
+      teamId: config.maps?.teamId,
+      keyId: config.maps?.keyId,
+      privateKey: config.maps?.privateKey,
+      origin: config.publicBaseUrl,
+    });
 
   const app = express();
   app.disable("x-powered-by");
@@ -110,20 +146,7 @@ export function createApp({
   app.use(
     helmet({
       contentSecurityPolicy: {
-        directives: {
-          defaultSrc: ["'self'"],
-          baseUri: ["'self'"],
-          connectSrc: ["'self'", "https://*.plaid.com"],
-          fontSrc: ["'self'", "data:"],
-          formAction: ["'self'"],
-          frameAncestors: ["'none'"],
-          frameSrc: ["'self'", "https://*.plaid.com"],
-          imgSrc: ["'self'", "data:", "https:"],
-          objectSrc: ["'none'"],
-          scriptSrc: ["'self'", "https://cdn.plaid.com"],
-          styleSrc: ["'self'", "'unsafe-inline'"],
-          upgradeInsecureRequests: config.production ? [] : null,
-        },
+        directives: contentSecurityPolicyDirectives(config),
       },
       crossOriginEmbedderPolicy: false,
       hsts: config.production
@@ -323,6 +346,7 @@ export function createApp({
       planningService,
       demoMode: config.demoMode,
       demoScenario: config.demoScenario,
+      mapkitTokenProvider: effectiveMapkitTokenProvider,
     }),
   );
 

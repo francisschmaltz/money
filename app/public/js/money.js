@@ -7,6 +7,71 @@
     "manual_asset",
     "insight",
   ]);
+  const mapKitScriptUrl =
+    "https://cdn.apple-mapkit.com/mk/6/mapkit.core.js";
+  const mapKitTokenEndpoint = "/api/mapkit-token";
+  const mapKitAuthorizationFailureListeners = new Set();
+  let mapKitLoadPromise = null;
+  let mapKitInitialized = false;
+
+  async function fetchMapKitAuthorizationToken() {
+    const response = await fetch(mapKitTokenEndpoint, {
+      method: "GET",
+      headers: { Accept: "application/json" },
+      credentials: "same-origin",
+      cache: "no-store",
+    });
+    if (!response.ok) {
+      throw new Error("MapKit authorization is unavailable.");
+    }
+    const payload = await response.json().catch(() => null);
+    const token =
+      typeof payload?.token === "string" ? payload.token.trim() : "";
+    if (!token) {
+      throw new Error("MapKit authorization is unavailable.");
+    }
+    return token;
+  }
+
+  function notifyMapKitAuthorizationFailure() {
+    for (const listener of mapKitAuthorizationFailureListeners) {
+      try {
+        listener();
+      } catch {
+        // Authorization failure must stay isolated to the map.
+      }
+    }
+  }
+
+  function configureMapKit(mapkit) {
+    if (mapKitInitialized) return mapkit;
+    if (typeof mapkit?.init !== "function") {
+      throw new Error("MapKit JS did not initialize.");
+    }
+    mapkit.init({
+      authorizationCallback(done) {
+        void fetchMapKitAuthorizationToken().then(
+          (token) => {
+            try {
+              done(token);
+            } catch {
+              notifyMapKitAuthorizationFailure();
+            }
+          },
+          () => {
+            notifyMapKitAuthorizationFailure();
+            try {
+              done("");
+            } catch {
+              // MapKit exposes no error callback for authorization.
+            }
+          },
+        );
+      },
+    });
+    mapKitInitialized = true;
+    return mapkit;
+  }
 
   const normalizedSearchQuery = (value) =>
     String(value ?? "").trim().slice(0, 120);
@@ -3783,6 +3848,15 @@
               "[data-transaction-note-updated]",
             );
             if (updated) updated.textContent = "Updated just now";
+            const preview = form
+              .closest(".transaction-note-editor")
+              ?.querySelector(".transaction-disclosure__preview");
+            if (preview) {
+              preview.textContent =
+                String(payload.note || "")
+                  .replace(/\s+/g, " ")
+                  .trim() || "No note";
+            }
           } catch (error) {
             if (status) {
               status.textContent =
@@ -3799,14 +3873,16 @@
     const csrfToken =
       document.querySelector('meta[name="csrf-token"]')?.content || "";
     document
-      .querySelectorAll("[data-transaction-organize-form]")
+      .querySelectorAll(
+        "[data-transaction-category-form], [data-transaction-organize-form]",
+      )
       .forEach((form) => {
         form.addEventListener("submit", async (event) => {
           event.preventDefault();
           const transactionId = form.dataset.transactionId;
           const submit = form.querySelector('button[type="submit"]');
           const status = form.querySelector(
-            "[data-transaction-organize-status]",
+            "[data-transaction-category-status], [data-transaction-organize-status]",
           );
           if (!transactionId || !submit) return;
 
@@ -3900,6 +3976,255 @@
             submit.disabled = false;
           }
         });
+      });
+  }
+
+  function loadMapKit() {
+    if (
+      window.mapkit?.Map &&
+      window.mapkit?.Coordinate &&
+      window.mapkit?.MarkerAnnotation
+    ) {
+      try {
+        return Promise.resolve(configureMapKit(window.mapkit));
+      } catch (error) {
+        return Promise.reject(error);
+      }
+    }
+    if (mapKitLoadPromise) return mapKitLoadPromise;
+
+    mapKitLoadPromise = new Promise((resolve, reject) => {
+      const callbackName =
+        `__moneyMapKitReady${Date.now()}` +
+        Math.random().toString(16).slice(2);
+      const script = document.createElement("script");
+      let settled = false;
+      let timeoutId;
+
+      const cleanupCallback = () => {
+        try {
+          delete window[callbackName];
+        } catch {
+          window[callbackName] = undefined;
+        }
+      };
+      const finish = (error = null) => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timeoutId);
+        cleanupCallback();
+        if (error) {
+          script.remove();
+          reject(error);
+          return;
+        }
+        try {
+          resolve(configureMapKit(window.mapkit));
+        } catch (initializationError) {
+          reject(initializationError);
+        }
+      };
+
+      window[callbackName] = () => {
+        if (
+          !window.mapkit?.Map ||
+          !window.mapkit?.Coordinate ||
+          !window.mapkit?.MarkerAnnotation
+        ) {
+          finish(new Error("MapKit JS did not initialize."));
+          return;
+        }
+        finish();
+      };
+      script.src = mapKitScriptUrl;
+      script.async = true;
+      script.crossOrigin = "anonymous";
+      script.dataset.callback = callbackName;
+      script.dataset.libraries = "map,annotations,services";
+      script.addEventListener(
+        "error",
+        () => finish(new Error("MapKit JS did not load.")),
+        { once: true },
+      );
+      timeoutId = window.setTimeout(
+        () => finish(new Error("MapKit JS timed out.")),
+        12_000,
+      );
+      document.head.append(script);
+    });
+
+    return mapKitLoadPromise;
+  }
+
+  function validLocationCoordinate(latitude, longitude) {
+    return (
+      Number.isFinite(latitude) &&
+      Number.isFinite(longitude) &&
+      latitude >= -90 &&
+      latitude <= 90 &&
+      longitude >= -180 &&
+      longitude <= 180
+    );
+  }
+
+  function directTransactionCoordinate(root) {
+    const latitudeText = String(root.dataset.locationLat || "").trim();
+    const longitudeText = String(root.dataset.locationLon || "").trim();
+    if (!latitudeText || !longitudeText) return null;
+    const latitude = Number(latitudeText);
+    const longitude = Number(longitudeText);
+    return validLocationCoordinate(latitude, longitude)
+      ? { latitude, longitude }
+      : null;
+  }
+
+  function geocodedCoordinate(result) {
+    const places = Array.isArray(result) ? result : result?.results;
+    const coordinate = places?.[0]?.coordinate;
+    const latitude = Number(coordinate?.latitude);
+    const longitude = Number(coordinate?.longitude);
+    return validLocationCoordinate(latitude, longitude)
+      ? { latitude, longitude }
+      : null;
+  }
+
+  function renderTransactionMap(mapkit, mapElement, coordinate, title) {
+    const center = new mapkit.Coordinate(
+      coordinate.latitude,
+      coordinate.longitude,
+    );
+    const region = new mapkit.CoordinateRegion(
+      center,
+      new mapkit.CoordinateSpan(0.008, 0.008),
+    );
+    const hidden = mapkit.FeatureVisibility?.Hidden || "hidden";
+    const map = new mapkit.Map(mapElement, {
+      region,
+      isRotationEnabled: false,
+      isScrollEnabled: false,
+      isZoomEnabled: false,
+      showsCompass: hidden,
+      showsMapTypeControl: false,
+      showsPointsOfInterest: false,
+      showsScale: hidden,
+      showsUserLocation: false,
+      showsZoomControl: false,
+    });
+    const markerTitle = title || "Transaction location";
+    const marker = new mapkit.MarkerAnnotation(center, {
+      title: markerTitle,
+      accessibilityLabel: `${markerTitle} location`,
+    });
+    map.addAnnotation(marker);
+    return map;
+  }
+
+  function transactionLocations() {
+    document
+      .querySelectorAll("[data-transaction-location]")
+      .forEach((root) => {
+        const mapElement = root.querySelector("[data-mapkit-map]");
+        if (!mapElement) return;
+
+        const directCoordinate = directTransactionCoordinate(root);
+        // The server sets this attribute only from Plaid's street-address
+        // field. Locality-only display text intentionally never reaches the
+        // geocoder.
+        const streetAddress = String(
+          root.dataset.locationAddress || "",
+        )
+          .trim()
+          .slice(0, 500);
+        if (!directCoordinate && !streetAddress) {
+          root.dataset.mapkitState = "unavailable";
+          mapElement.hidden = true;
+          return;
+        }
+
+        const dialog = root.closest("dialog");
+        const state = {
+          cancelled: false,
+          failed: false,
+          map: null,
+          mapkit: null,
+        };
+        const active = () =>
+          !state.cancelled &&
+          !state.failed &&
+          root.isConnected !== false &&
+          (!dialog || dialog.open);
+        const handleMapKitFailure = () => {
+          if (state.cancelled) return;
+          state.failed = true;
+          state.map?.destroy?.();
+          state.map = null;
+          root.dataset.mapkitState = "unavailable";
+          mapElement.hidden = true;
+        };
+        const removeMapKitListeners = () => {
+          mapKitAuthorizationFailureListeners.delete(
+            handleMapKitFailure,
+          );
+          state.mapkit?.removeEventListener?.(
+            "error",
+            handleMapKitFailure,
+          );
+          state.mapkit?.removeEventListener?.(
+            "load-error",
+            handleMapKitFailure,
+          );
+        };
+        const teardown = () => {
+          state.cancelled = true;
+          state.map?.destroy?.();
+          state.map = null;
+          removeMapKitListeners();
+          window.removeEventListener("pagehide", teardown);
+        };
+        dialog?.addEventListener("close", teardown, { once: true });
+        window.addEventListener("pagehide", teardown, { once: true });
+        mapKitAuthorizationFailureListeners.add(handleMapKitFailure);
+        root.dataset.mapkitState = "loading";
+        mapElement.hidden = true;
+
+        (async () => {
+          try {
+            const mapkit = await loadMapKit();
+            state.mapkit = mapkit;
+            mapkit.addEventListener?.("error", handleMapKitFailure);
+            mapkit.addEventListener?.(
+              "load-error",
+              handleMapKitFailure,
+            );
+            if (!active()) return;
+
+            let coordinate = directCoordinate;
+            if (!coordinate) {
+              if (!mapkit.Geocoder) return;
+              const geocoder = new mapkit.Geocoder();
+              coordinate = geocodedCoordinate(
+                await geocoder.lookup(streetAddress),
+              );
+            }
+            if (!coordinate || !active()) return;
+
+            mapElement.hidden = false;
+            state.map = renderTransactionMap(
+              mapkit,
+              mapElement,
+              coordinate,
+              String(root.dataset.locationTitle || "").trim(),
+            );
+            root.dataset.mapkitState = "ready";
+          } catch {
+            // The address and Apple Maps link remain useful without the map.
+          } finally {
+            if (root.dataset.mapkitState !== "ready") {
+              root.dataset.mapkitState = "unavailable";
+              mapElement.hidden = true;
+            }
+          }
+        })();
       });
   }
 
@@ -6169,6 +6494,7 @@
     creditScoreTracking();
     planningForms();
     detailDialogs();
+    transactionLocations();
   }
 
   if (document.readyState === "loading") {

@@ -1003,6 +1003,20 @@ export function buildDemoModel({ scenario = "default" } = {}) {
     categories,
     spendingDetails,
     transactions: modelTransactions,
+    transactionLocations: {
+      txn_whole_foods: {
+        address: "525 N Lamar Blvd",
+        city: "Austin",
+        region: "TX",
+        postalCode: "78703",
+        country: "US",
+        latitude: 30.2707,
+        longitude: -97.7534,
+        storeNumber: "1024",
+        formattedAddress:
+          "525 N Lamar Blvd, Austin, TX 78703, United States",
+      },
+    },
     transactionRules,
     subscriptions,
     bills,

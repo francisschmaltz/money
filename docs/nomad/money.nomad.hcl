@@ -88,6 +88,9 @@ job "money" {
           PLAID_CLIENT_ID={{ .plaid_client_id | toJSON }}
           PLAID_SECRET={{ .plaid_secret | toJSON }}
           PLAID_WEBHOOK_URL={{ .plaid_webhook_url | toJSON }}
+          APPLE_TEAM_ID={{ .apple_team_id | toJSON }}
+          APPLE_MAPS_KEY_ID={{ .apple_maps_key_id | toJSON }}
+          APPLE_MAPS_PRIVATE_KEY={{ .apple_maps_private_key | toJSON }}
           DUO_OIDC_ISSUER={{ .duo_oidc_issuer | toJSON }}
           DUO_CLIENT_ID={{ .duo_client_id | toJSON }}
           DUO_CLIENT_SECRET={{ .duo_client_secret | toJSON }}

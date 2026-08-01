@@ -103,6 +103,7 @@ export function createWebRouter({
   planningService = null,
   demoMode = false,
   demoScenario = "default",
+  mapkitTokenProvider = null,
 } = {}) {
   const router = express.Router();
   const demo = buildDemoModel({ scenario: demoScenario });
@@ -367,6 +368,28 @@ export function createWebRouter({
         dataView: "settings",
         locals: { formatRulesSection: "categories" },
       }).catch(next),
+  );
+
+  router.get(
+    "/api/mapkit-token",
+    (_req, res, next) => {
+      res.set("Cache-Control", "no-store");
+      next();
+    },
+    requireAuth,
+    (_req, res) => {
+      try {
+        if (typeof mapkitTokenProvider?.getToken !== "function") {
+          throw new Error("MapKit token signing is unavailable.");
+        }
+        res.json(mapkitTokenProvider.getToken());
+      } catch {
+        res.status(503).json({
+          error: "map_unavailable",
+          message: "The map preview is unavailable.",
+        });
+      }
+    },
   );
 
   router.get("/api/search", requireAuth, async (req, res, next) => {
@@ -1053,6 +1076,19 @@ async function demoPageModel(
         }),
       )
       .map((label) => ({ value: label, label }));
+    const selectedDemoTransaction =
+      pageTransactions.find(
+        (transaction) => transaction.id === query.transaction,
+      ) ??
+      (!query.category
+        ? currentTransactions.find(
+            (transaction) => transaction.id === query.transaction,
+          )
+        : null) ??
+      null;
+    const selectedDemoLocation = selectedDemoTransaction
+      ? demo.transactionLocations?.[selectedDemoTransaction.id] ?? null
+      : null;
     return {
       transactions: pageTransactions,
       transactionPageInfo: {
@@ -1077,16 +1113,14 @@ async function demoPageModel(
           activeSegmentKey: null,
         },
       ),
-      selectedTransaction:
-        pageTransactions.find(
-          (transaction) => transaction.id === query.transaction,
-        ) ??
-        (!query.category
-          ? currentTransactions.find(
-              (transaction) => transaction.id === query.transaction,
-            )
-          : null) ??
-        null,
+      selectedTransaction: selectedDemoTransaction
+        ? {
+            ...selectedDemoTransaction,
+            ...(selectedDemoLocation
+              ? { location: { ...selectedDemoLocation } }
+              : {}),
+          }
+        : null,
     };
   }
   if (view === "recurring") {

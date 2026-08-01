@@ -180,6 +180,85 @@ test("normalizer preserves real transaction precision without inventing midnight
   assert.equal(dateOnly.posted_at, null);
 });
 
+test("Plaid locations keep useful address data and only valid coordinate pairs", () => {
+  const normalizeLocation = (location) =>
+    normalizePlaidTransaction({
+      transaction_id: "location-test",
+      account_id: "account",
+      amount: 1,
+      name: "Store",
+      date: "2026-07-27",
+      location,
+    }).provider_location;
+  assert.deepEqual(
+    normalizeLocation({
+      address: " 123 Main St ",
+      city: "New York",
+      region: "NY",
+      postal_code: "10001",
+      country: "US",
+      lat: 40.7505,
+      lon: -73.9934,
+      store_number: " 42 ",
+    }),
+    {
+      address: "123 Main St",
+      city: "New York",
+      region: "NY",
+      postal_code: "10001",
+      country: "US",
+      lat: 40.7505,
+      lon: -73.9934,
+      store_number: "42",
+    },
+  );
+  assert.deepEqual(
+    normalizeLocation({
+      address: "123 Main St",
+      lat: 40.7,
+    }),
+    {
+      address: "123 Main St",
+      city: null,
+      region: null,
+      postal_code: null,
+      country: null,
+      lat: null,
+      lon: null,
+      store_number: null,
+    },
+  );
+  assert.deepEqual(
+    normalizeLocation({
+      city: "New York",
+      lat: 91,
+      lon: -73.9,
+    }),
+    {
+      address: null,
+      city: "New York",
+      region: null,
+      postal_code: null,
+      country: null,
+      lat: null,
+      lon: null,
+      store_number: null,
+    },
+  );
+  assert.equal(normalizeLocation({}), null);
+  assert.equal(normalizeLocation(null), null);
+
+  const cleared = normalizePlaidTransaction({
+    transaction_id: "no-location",
+    account_id: "account",
+    amount: 1,
+    name: "Store",
+    date: "2026-07-27",
+    location: null,
+  });
+  assert.equal(cleared.provider_location, null);
+});
+
 test("transaction names normalize for stable fuzzy matching", () => {
   assert.equal(
     normalizeTransactionName("  Café Nørth #482910  "),

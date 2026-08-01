@@ -762,6 +762,16 @@ test("category drill-down keeps split ledger, detail, and summary on the same am
     merchant: "Family market",
     splitVersion: 3,
   });
+  parent.provider_location = {
+    address: "123 Main St",
+    city: "New York",
+    region: "NY",
+    postal_code: "10001",
+    country: "US",
+    lat: 40.7505,
+    lon: -73.9934,
+    store_number: "42",
+  };
   const projected = {
     ...parent,
     amount_minor: -4_250,
@@ -819,7 +829,8 @@ test("category drill-down keeps split ledger, detail, and summary on the same am
     async listTransactionCategories() {
       return ["Dining", "Groceries"];
     },
-    async getTransaction() {
+    async getTransaction(_workspaceId, _transactionId, options) {
+      assert.deepEqual(options, { includeProviderLocation: true });
       return parent;
     },
   };
@@ -846,6 +857,7 @@ test("category drill-down keeps split ledger, detail, and summary on the same am
   );
   assert.equal(result.transactions[0].isSplitCategoryProjection, true);
   assert.equal(result.transactions[0].splitCategoryLineCount, 2);
+  assert.equal(Object.hasOwn(result.transactions[0], "location"), false);
   assert.equal(result.selectedTransaction.category, "Dining");
   assert.equal(
     result.selectedTransaction.amount.amount_minor,
@@ -855,6 +867,17 @@ test("category drill-down keeps split ledger, detail, and summary on the same am
     result.selectedTransaction.providerAmount.amount_minor,
     -10_000,
   );
+  assert.deepEqual(result.selectedTransaction.location, {
+    address: "123 Main St",
+    city: "New York",
+    region: "NY",
+    postalCode: "10001",
+    country: "US",
+    latitude: 40.7505,
+    longitude: -73.9934,
+    storeNumber: "42",
+    formattedAddress: "123 Main St, New York, NY 10001, US",
+  });
   assert.equal(result.spendingDetails.total.amount_minor, 4_250);
   assert.equal(result.spendingDetails.transactionCount, 1);
   assert.deepEqual(

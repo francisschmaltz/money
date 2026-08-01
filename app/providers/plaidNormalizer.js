@@ -39,6 +39,48 @@ export function normalizeTransactionName(value) {
     .trim();
 }
 
+function normalizedLocationText(value) {
+  if (value == null) return null;
+  const normalized = String(value).trim();
+  return normalized || null;
+}
+
+function normalizedCoordinate(value, minimum, maximum) {
+  if (
+    typeof value !== "number" &&
+    typeof value !== "string"
+  ) {
+    return null;
+  }
+  if (typeof value === "string" && !value.trim()) return null;
+  const normalized = Number(value);
+  return Number.isFinite(normalized) &&
+    normalized >= minimum &&
+    normalized <= maximum
+    ? normalized
+    : null;
+}
+
+function normalizePlaidLocation(location) {
+  if (!location || typeof location !== "object") return null;
+  const latitude = normalizedCoordinate(location.lat, -90, 90);
+  const longitude = normalizedCoordinate(location.lon, -180, 180);
+  const hasValidCoordinates = latitude != null && longitude != null;
+  const normalized = {
+    address: normalizedLocationText(location.address),
+    city: normalizedLocationText(location.city),
+    region: normalizedLocationText(location.region),
+    postal_code: normalizedLocationText(location.postal_code),
+    country: normalizedLocationText(location.country),
+    lat: hasValidCoordinates ? latitude : null,
+    lon: hasValidCoordinates ? longitude : null,
+    store_number: normalizedLocationText(location.store_number),
+  };
+  return Object.values(normalized).some((value) => value != null)
+    ? normalized
+    : null;
+}
+
 export function normalizePlaidAccount(account, institutionName = null) {
   const currency =
     account.balances?.iso_currency_code ??
@@ -115,6 +157,7 @@ export function normalizePlaidTransaction(transaction) {
     pending: Boolean(transaction.pending),
     excluded_from_spending: excluded,
     payment_channel: transaction.payment_channel ?? null,
+    provider_location: normalizePlaidLocation(transaction.location),
   };
 }
 

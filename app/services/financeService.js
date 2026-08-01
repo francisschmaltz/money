@@ -3238,6 +3238,7 @@ export class FinanceService {
             ? this.#repository.getTransaction(
                 this.#workspaceId,
                 query.transaction,
+                { includeProviderLocation: true },
               )
             : null,
           query.transaction
@@ -3290,11 +3291,26 @@ export class FinanceService {
             (transaction) => transaction.id === query.transaction,
           )
         : null;
-      const selectedTransactionModel = selectedLedgerTransaction
-        ? webTransaction(selectedLedgerTransaction)
+      const selectedTransactionCard = selectedLedgerTransaction
+        ? {
+            ...selectedLedgerTransaction,
+            location: transactionLocation(
+              selectedTransaction?.provider_location,
+            ),
+          }
         : selectedTransaction
-          ? webTransaction(transactionCard(selectedTransaction))
+          ? {
+              ...transactionCard(selectedTransaction),
+              location: transactionLocation(
+                selectedTransaction.provider_location,
+              ),
+            }
           : null;
+      const selectedTransactionModel = selectedTransactionCard
+        ? webTransaction(selectedTransactionCard, {
+            includeLocation: true,
+          })
+        : null;
       if (selectedTransactionModel) {
         selectedTransactionModel.recurringPattern =
           webTransactionRecurringContext(
@@ -5052,7 +5068,10 @@ function monthStartForDate(value) {
   return `${dateOnly(value).slice(0, 7)}-01`;
 }
 
-function webTransaction(transaction) {
+function webTransaction(
+  transaction,
+  { includeLocation = false } = {},
+) {
   const categoryValue = transaction.category ?? "Uncategorized";
   const category = transaction.category_id
     ? categoryValue
@@ -5125,7 +5144,70 @@ function webTransaction(transaction) {
     isFixed: transaction.is_fixed,
     splitVersion: Number(transaction.split_version ?? 0),
     icon: categoryIcon(category),
+    ...(includeLocation
+      ? { location: transaction.location ?? null }
+      : {}),
   };
+}
+
+function transactionLocation(location) {
+  if (
+    !location ||
+    typeof location !== "object" ||
+    Array.isArray(location)
+  ) {
+    return null;
+  }
+  const text = (value) => {
+    if (value == null) return null;
+    const normalized = String(value).trim();
+    return normalized || null;
+  };
+  const address = text(location.address);
+  const city = text(location.city);
+  const region = text(location.region);
+  const postalCode = text(location.postal_code);
+  const country = text(location.country);
+  const storeNumber = text(location.store_number);
+  const coordinate = (value, minimum, maximum) => {
+    if (
+      typeof value !== "number" &&
+      typeof value !== "string"
+    ) {
+      return null;
+    }
+    if (typeof value === "string" && !value.trim()) return null;
+    const normalized = Number(value);
+    return Number.isFinite(normalized) &&
+      normalized >= minimum &&
+      normalized <= maximum
+      ? normalized
+      : null;
+  };
+  const latitude = coordinate(location.lat, -90, 90);
+  const longitude = coordinate(location.lon, -180, 180);
+  const hasCoordinates = latitude != null && longitude != null;
+  const cityAndRegion = [city, region].filter(Boolean).join(", ");
+  const locality = [cityAndRegion, postalCode]
+    .filter(Boolean)
+    .join(" ");
+  const formattedAddress = [address, locality, country]
+    .filter(Boolean)
+    .join(", ") || null;
+  const normalized = {
+    address,
+    city,
+    region,
+    postalCode,
+    country,
+    latitude: hasCoordinates ? latitude : null,
+    longitude: hasCoordinates ? longitude : null,
+    storeNumber,
+    formattedAddress,
+  };
+  return Object.values(normalized).some((value) => value != null)
+    ? normalized
+    : null;
 }
 
 function webTransactionRecurringContext(transaction, context) {

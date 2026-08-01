@@ -106,7 +106,7 @@ test("Plaid OAuth callback renders a resumable authenticated return page", async
   assert.match(response.text, /data-page="plaid-oauth"/);
   assert.match(response.text, /data-plaid-oauth-return/);
   assert.match(response.text, /Returning to Plaid/);
-  assert.match(response.text, /\/js\/money\.js\?v=29/);
+  assert.match(response.text, /\/js\/money\.js\?v=31/);
   assert.doesNotMatch(response.text, /data-search-dialog/);
 });
 
@@ -473,6 +473,8 @@ test("selected transactions expose notes and one-time organization", async () =>
   assert.match(html, /Edit similar transactions or create a rule/);
   assert.match(html, /data-transaction-note-form/);
   assert.match(html, /maxlength="2000"/);
+  assert.match(html, /data-transaction-category-form/);
+  assert.match(html, /data-transaction-category-status/);
   assert.match(html, /data-transaction-organize-form/);
   assert.match(html, /data-transaction-organize-category/);
   assert.match(html, /data-transaction-recurring-form/);
@@ -480,7 +482,10 @@ test("selected transactions expose notes and one-time organization", async () =>
     html,
     /data-endpoint="\/api\/v1\/transactions\/txn_whole_foods\/recurring-pattern"/,
   );
-  assert.match(html, /<h3 id="transaction-recurring-heading">Recurring pattern<\/h3>/);
+  assert.match(
+    html,
+    /<strong id="transaction-recurring-heading">Mark as recurring<\/strong>/,
+  );
   assert.match(html, /<option value="subscription"/);
   assert.match(html, /<option value="bill"/);
   assert.match(html, /<option value="monthly"/);
@@ -494,6 +499,7 @@ test("selected transactions expose notes and one-time organization", async () =>
     /Only Plan actuals move\. The posted date and every other report stay unchanged\./,
   );
   assert.match(html, /data-transaction-id="txn_whole_foods"/);
+  assert.match(html, /Save category/);
   assert.match(html, /Save note/);
   assert.match(html, /Save changes/);
   assert.match(
@@ -507,9 +513,31 @@ test("selected transactions expose notes and one-time organization", async () =>
   assert.match(html, /data-detail-auto-open/);
   assert.match(html, /<dt>Original merchant<\/dt><dd>WHOLE FOODS MKT #1024<\/dd>/);
   assert.match(html, /<dt>Statement description<\/dt><dd>WHOLE FOODS MKT #1024<\/dd>/);
+  assert.match(html, /<h3 id="transaction-provider-heading">Provider details<\/h3>/);
   assert.match(html, /data-detail-dialog-close aria-label="Close transaction details"/);
   assert.match(html, /data-detail-dialog-link/);
   assert.doesNotMatch(html, /data-transaction-classification/);
+
+  const bodyOrder = [
+    "Spending allocation",
+    'class="plan-disclosure transaction-disclosure transaction-note-editor"',
+    'class="plan-disclosure transaction-disclosure transaction-organize"',
+    'class="plan-disclosure transaction-disclosure transaction-recurring-pattern"',
+    "Provider details",
+  ].map((needle) => html.indexOf(needle));
+  assert.ok(bodyOrder.every((position) => position >= 0));
+  assert.deepEqual(bodyOrder, [...bodyOrder].sort((left, right) => left - right));
+  assert.match(
+    html,
+    /<details class="plan-disclosure transaction-disclosure transaction-note-editor">/,
+  );
+  const providerStart = html.indexOf("transaction-provider-details");
+  const providerEnd = html.indexOf("</section>", providerStart);
+  const providerHtml = html.slice(providerStart, providerEnd);
+  assert.doesNotMatch(providerHtml, /<dt>Spending category<\/dt>/);
+  assert.doesNotMatch(providerHtml, /<dt>Plan month<\/dt>/);
+  assert.doesNotMatch(providerHtml, /<dt>Excluded from spending<\/dt>/);
+  assert.doesNotMatch(providerHtml, /<dt>Fixed expense<\/dt>/);
 
   const memberHtml = await render("transactions", {
     pageTitle: "Transactions",
@@ -542,8 +570,48 @@ test("transactions visibly mark a manually overridden Plan month", async () => {
   );
   assert.match(
     html,
-    /<dt>Plan month<\/dt><dd>June 2026 · Manually applied<\/dd>/,
+    /Name, tags, included in spending · June 2026/,
   );
+  assert.doesNotMatch(html, /<dt>Plan month<\/dt>/);
+});
+
+test("selected transaction location renders a compact MapKit handoff", async () => {
+  const selectedTransaction = {
+    ...demo.transactions[0],
+    location: {
+      address: "123 Main Street",
+      city: "Oakland",
+      region: "CA",
+      postalCode: "94612",
+      country: "US",
+      latitude: 37.8044,
+      longitude: -122.2712,
+      formattedAddress: "123 Main Street, Oakland, CA 94612, US",
+    },
+  };
+  const html = await render("transactions", {
+    pageTitle: "Transactions",
+    activePath: "/transactions",
+    selectedTransaction,
+  });
+
+  assert.match(html, /data-transaction-location/);
+  assert.doesNotMatch(html, /data-mapkit-token/);
+  assert.match(html, /data-location-address="123 Main Street, Oakland, CA 94612, US"/);
+  assert.match(html, /data-location-lat="37\.8044"/);
+  assert.match(html, /data-location-lon="-122\.2712"/);
+  assert.match(html, /data-location-title="Whole Foods Market"/);
+  assert.match(html, /data-mapkit-map/);
+  assert.match(html, /data-mapkit-map\s+hidden/);
+  assert.match(html, /Open in Maps\s*<i/);
+  assert.match(html, /https:\/\/maps\.apple\.com\/\?ll=/);
+
+  const noLocationHtml = await render("transactions", {
+    pageTitle: "Transactions",
+    activePath: "/transactions",
+    selectedTransaction: { ...demo.transactions[0], location: null },
+  });
+  assert.doesNotMatch(noLocationHtml, /data-transaction-location/);
 });
 
 test("manual recurring patterns render editable type, cadence, and removal", async () => {

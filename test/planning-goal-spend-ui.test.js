@@ -87,7 +87,7 @@ test("posted USD purchases can be partially spent from active goals", async () =
     ],
   });
 
-  assert.match(html, /<summary>Spend from goal<\/summary>/);
+  assert.match(html, /<strong>Spend from goal<\/strong>/);
   assert.match(
     html,
     /data-endpoint="\/api\/v1\/transactions\/txn_whole_foods\/goal-spends"/,
@@ -159,7 +159,7 @@ test("blocked posted outflows disclose why goal spending is unavailable", async 
     selectedTransactionGoals: [],
   });
 
-  assert.match(html, /<summary>Spend from goal<\/summary>/);
+  assert.match(html, /<strong>Spend from goal<\/strong>/);
   assert.match(
     html,
     /Mark this transaction Include in spending before assigning it to a goal\./,
@@ -197,7 +197,7 @@ test("existing goal spending stays reversible after the transaction becomes inel
     selectedTransactionGoals: [],
   });
 
-  assert.match(html, /<summary>Spend from goal<\/summary>/);
+  assert.match(html, /<strong>Spend from goal<\/strong>/);
   assert.match(html, /Vacation[\s\S]*?Cash · \$138\.42/);
   assert.match(
     html,

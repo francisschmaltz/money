@@ -60,6 +60,7 @@ Required static values:
 | `ghcr_token` | GitHub personal access token (classic) scoped to `read:packages` |
 | `plaid_client_id`, `plaid_secret` | Plaid environment credentials |
 | `plaid_webhook_url` | Public signed-webhook endpoint |
+| `apple_team_id`, `apple_maps_key_id`, `apple_maps_private_key` | Optional Apple Maps signing credentials used to mint short-lived MapKit JS tokens |
 | `duo_oidc_issuer` | Duo Generic OIDC issuer and discovery base |
 | `duo_client_id`, `duo_client_secret` | OIDC relying-party credentials |
 | `duo_authorization_url`, `duo_token_url` | Optional exact discovery consistency checks; empty is valid |
@@ -70,9 +71,22 @@ Required static values:
 | `mcp_plan_write_token` | Read plus audited family-plan writes; must differ from the read token |
 | `lm_studio_*` | Optional aggregate narrative service |
 
-Leave the optional Duo endpoint checks and LM Studio values as empty strings if
-unused. Do not remove their keys from the variable document: the job template
-references them.
+Leave the optional Apple Maps signing credentials, Duo endpoint checks, and LM
+Studio values as empty strings if unused. Do not remove their keys from the
+variable document: the job template references them.
+
+MapKit JS is progressive enhancement for transaction locations. Populate
+`apple_team_id`, `apple_maps_key_id`, and `apple_maps_private_key` with an Apple
+Maps identifier and private key. They may contain the same values already used
+by `yb-mcp`, but keep a separate copy under `nomad/jobs/money` so neither job
+depends on access to the other's Nomad Variable path.
+
+Money keeps the private key server-side. The authenticated web client fetches a
+short-lived JWT from `/api/mapkit-token`; every JWT is limited to the
+`mapkit_js` scope and the exact origin in `PUBLIC_BASE_URL`. The private key is
+never rendered into HTML or sent to the browser. For local testing, set
+`PUBLIC_BASE_URL` to the exact local origin you open in the browser. Missing or
+invalid credentials leave the address visible and omit only the map.
 
 For GHCR, create a **personal access token (classic)** with only
 `read:packages`, then put it in `ghcr_token`. The job uses the fixed GitHub
@@ -199,6 +213,8 @@ Update the secure variable document, then run `nomad var put` again. The job's
 - Rotating `session_secret` signs everyone out.
 - Rotating `mcp_bearer_token` requires updating Open WebUI immediately.
 - Rotating `mcp_plan_write_token` requires updating the authorized Open WebUI connection immediately.
+- If Money and `yb-mcp` share an Apple Maps key, rotate its key ID and private
+  key in both Nomad Variable paths before restarting either job.
 - Rotate Plaid/Duo credentials in their provider consoles first, then update
   Nomad.
 - Never print variable contents into CI logs or ticket attachments.

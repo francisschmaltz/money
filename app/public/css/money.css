@@ -1882,100 +1882,6 @@ h3 {
   gap: 8px;
 }
 
-.transaction-note-editor,
-.transaction-organize {
-  display: grid;
-  grid-template-columns: minmax(160px, 0.6fr) minmax(0, 1.4fr);
-  align-items: start;
-  gap: 12px 18px;
-  padding: 14px;
-  margin-top: 14px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: var(--surface-muted);
-}
-
-.transaction-note-editor {
-  margin-top: 0;
-}
-
-.transaction-note-editor h3,
-.transaction-organize h3 {
-  font-size: 0.84rem;
-}
-
-.transaction-note-editor p,
-.transaction-organize p {
-  margin-top: 3px;
-  color: var(--ink-faint);
-  font-size: 0.7rem;
-}
-
-.transaction-note-editor form,
-.transaction-organize form {
-  display: grid;
-  gap: 8px;
-}
-
-.transaction-note-editor textarea,
-.transaction-organize input,
-.transaction-organize select,
-.entity-detail-grid__category select {
-  width: 100%;
-  min-height: 38px;
-  padding: 8px 10px;
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  background: var(--surface);
-  color: var(--ink);
-}
-
-.transaction-note-editor textarea {
-  min-height: 82px;
-  resize: vertical;
-  line-height: 1.45;
-}
-
-.transaction-note-editor__footer,
-.transaction-organize__footer {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.transaction-note-editor__footer > small {
-  color: var(--ink-faint);
-  font-size: 0.68rem;
-}
-
-.transaction-note-editor__footer [data-transaction-note-updated],
-.transaction-note-editor__footer .form-status,
-.transaction-organize__footer .form-status {
-  margin-right: auto;
-}
-
-.transaction-organize label {
-  display: grid;
-  gap: 4px;
-  color: var(--ink-soft);
-  font-size: 0.72rem;
-}
-
-.transaction-organize form {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.transaction-organize__footer {
-  grid-column: 1 / -1;
-  justify-content: flex-end;
-}
-
-.entity-detail-grid__category select {
-  min-height: 34px;
-  padding-block: 6px;
-  font-weight: 650;
-}
-
 .pagination {
   display: flex;
   align-items: center;
@@ -6224,23 +6130,6 @@ kbd {
     grid-template-columns: 1fr 1fr;
   }
 
-  .transaction-note-editor,
-  .transaction-organize,
-  .transaction-organize form {
-    grid-template-columns: 1fr;
-  }
-
-  .transaction-note-editor__footer,
-  .transaction-organize__footer {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .transaction-note-editor__footer .button,
-  .transaction-organize__footer .button {
-    width: 100%;
-  }
-
   .insight-summary {
     padding: 24px;
   }
@@ -8029,140 +7918,6 @@ kbd {
   color: var(--ink-soft);
 }
 
-.transaction-split-editor,
-.transaction-goal-editor {
-  margin-top: 10px;
-}
-
-.transaction-split-editor summary,
-.transaction-goal-editor summary {
-  cursor: pointer;
-  color: var(--green-dark);
-  font-size: 0.76rem;
-  font-weight: 650;
-}
-
-.transaction-split-editor form {
-  display: grid;
-  gap: 8px;
-  margin-top: 10px;
-}
-
-.transaction-split-editor [data-split-line] {
-  display: grid;
-  grid-template-columns: minmax(150px, 1fr) minmax(120px, 0.7fr);
-  gap: 8px;
-}
-
-.transaction-split-editor label {
-  display: grid;
-  gap: 4px;
-  color: var(--ink-soft);
-  font-size: 0.72rem;
-}
-
-.transaction-split-editor select {
-  min-height: 38px;
-  padding: 7px 9px;
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  background: var(--surface);
-}
-
-.transaction-split-editor .money-input {
-  display: flex;
-  align-items: center;
-  min-height: 38px;
-  padding-left: 8px;
-  border: 1px solid var(--line);
-  border-radius: 9px;
-}
-
-.transaction-split-editor .money-input input {
-  min-width: 0;
-  border: 0;
-  outline: 0;
-}
-
-.transaction-goal-spends {
-  display: grid;
-  gap: 0;
-  padding: 0;
-  margin: 10px 0 0;
-  list-style: none;
-}
-
-.transaction-goal-spends li {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 8px 0;
-  border-bottom: 1px solid var(--line);
-}
-
-.transaction-goal-spends li > span {
-  display: grid;
-  min-width: 0;
-  gap: 2px;
-}
-
-.transaction-goal-spends small {
-  color: var(--ink-soft);
-  font-size: 0.72rem;
-}
-
-.transaction-goal-spends form {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-}
-
-.transaction-goal-spends .form-status:empty {
-  display: none;
-}
-
-.transaction-goal-spend-form {
-  display: grid;
-  grid-template-columns: minmax(150px, 1fr) minmax(110px, 0.55fr) minmax(120px, 0.65fr);
-  gap: 8px;
-  padding-top: 10px;
-}
-
-.transaction-goal-spend-form label {
-  display: grid;
-  gap: 4px;
-  color: var(--ink-soft);
-  font-size: 0.72rem;
-}
-
-.transaction-goal-spend-form select {
-  min-height: 38px;
-  padding: 7px 9px;
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  background: var(--surface);
-}
-
-.transaction-goal-spend-form .money-input {
-  display: flex;
-  align-items: center;
-  min-height: 38px;
-  padding-left: 8px;
-  border: 1px solid var(--line);
-  border-radius: 9px;
-}
-
-.transaction-goal-spend-form .money-input input {
-  min-width: 0;
-  border: 0;
-  outline: 0;
-}
-
-.transaction-goal-spend-form .selected-detail__actions {
-  grid-column: 1 / -1;
-}
-
 @media (max-width: 760px) {
   .credit-overview-grid {
     grid-template-columns: minmax(0, 1fr);
@@ -8266,6 +8021,389 @@ svg {
 
 .button {
   min-height: 44px;
+}
+
+/* Transaction detail: household controls first, provider data second. */
+.entity-detail-dialog__body--transaction {
+  display: grid;
+  gap: 0;
+}
+
+.transaction-custom-stack,
+.transaction-allocation {
+  display: grid;
+  gap: 12px;
+}
+
+.transaction-section-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.transaction-section-heading h3 {
+  margin-top: 3px;
+  font-size: 1rem;
+}
+
+.transaction-section-heading > small {
+  display: grid;
+  gap: 2px;
+  padding-top: 16px;
+  color: var(--ink-soft);
+  font-size: 0.72rem;
+  font-weight: 650;
+  text-align: right;
+}
+
+.transaction-allocation__category-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 7px 10px;
+  padding: 13px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-muted);
+}
+
+.transaction-allocation__category-form label,
+.transaction-organize label,
+.transaction-recurring-pattern label,
+.transaction-split-editor label,
+.transaction-goal-spend-form label {
+  display: grid;
+  gap: 4px;
+  color: var(--ink-soft);
+  font-size: 0.72rem;
+}
+
+.transaction-allocation__category-form select,
+.transaction-organize input,
+.transaction-organize select,
+.transaction-recurring-pattern select,
+.transaction-split-editor select,
+.transaction-goal-spend-form select {
+  width: 100%;
+  min-height: 40px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.transaction-allocation__category-form .form-status {
+  grid-column: 1 / -1;
+  grid-row: 2;
+}
+
+.transaction-allocation__category-form .form-status:empty,
+.transaction-detail-actions .form-status:empty,
+.transaction-organize__footer .form-status:empty,
+.transaction-note-editor__footer .form-status:empty {
+  display: none;
+}
+
+.transaction-allocation__category-readonly {
+  display: flex;
+  min-height: 56px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-muted);
+}
+
+.transaction-allocation__category-readonly span {
+  color: var(--ink-soft);
+  font-size: 0.72rem;
+}
+
+.transaction-allocation__split-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  align-items: start;
+  gap: 14px;
+  padding: 13px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-muted);
+}
+
+.transaction-allocation__split-summary > div,
+.transaction-allocation__split-summary ul {
+  display: grid;
+  gap: 4px;
+}
+
+.transaction-allocation__split-summary small {
+  color: var(--ink-soft);
+  font-size: 0.72rem;
+}
+
+.transaction-allocation__split-summary ul {
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.transaction-allocation__split-summary li {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 0.78rem;
+}
+
+.transaction-allocation__split-summary li strong {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.transaction-allocation__notice {
+  margin: 0;
+}
+
+.transaction-disclosure,
+.transaction-note-editor,
+.transaction-organize {
+  display: block;
+  overflow: hidden;
+  padding: 0;
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.transaction-disclosure > summary {
+  min-height: 58px;
+}
+
+.transaction-disclosure > summary > span {
+  min-width: 0;
+}
+
+.transaction-disclosure__preview {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.transaction-disclosure__body {
+  display: grid;
+  gap: 12px;
+}
+
+.transaction-disclosure__body > .card-note,
+.transaction-organize .selected-detail__link {
+  margin: 0;
+}
+
+.transaction-note-editor form,
+.transaction-split-editor form {
+  display: grid;
+  gap: 10px;
+}
+
+.transaction-note-editor textarea {
+  width: 100%;
+  min-height: 88px;
+  padding: 9px 10px;
+  resize: vertical;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface);
+  color: var(--ink);
+  line-height: 1.45;
+}
+
+.transaction-organize form,
+.transaction-recurring-pattern form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.transaction-note-editor__footer,
+.transaction-organize__footer,
+.transaction-detail-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.transaction-note-editor__footer > small {
+  color: var(--ink-faint);
+  font-size: 0.68rem;
+}
+
+.transaction-note-editor__footer .form-status,
+.transaction-organize__footer .form-status,
+.transaction-detail-actions .form-status {
+  margin-right: auto;
+}
+
+.transaction-organize__footer {
+  grid-column: 1 / -1;
+}
+
+.entity-detail-dialog__body--transaction .button,
+.transaction-note-editor__footer .button,
+.transaction-organize__footer .button {
+  width: auto;
+  min-height: 44px;
+}
+
+.transaction-split-editor,
+.transaction-goal-editor {
+  margin-top: 0;
+}
+
+.transaction-split-editor summary,
+.transaction-goal-editor summary {
+  color: var(--ink);
+  font-size: inherit;
+}
+
+.transaction-split-editor [data-split-line] {
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) minmax(120px, 0.7fr);
+  gap: 8px;
+}
+
+.transaction-split-editor .money-input,
+.transaction-goal-spend-form .money-input {
+  display: flex;
+  min-height: 40px;
+  align-items: center;
+  padding-left: 8px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface);
+}
+
+.transaction-split-editor .money-input input,
+.transaction-goal-spend-form .money-input input {
+  min-width: 0;
+  border: 0;
+  outline: 0;
+}
+
+.transaction-goal-spends {
+  display: grid;
+  gap: 0;
+  padding: 0;
+  margin-top: 0;
+  list-style: none;
+}
+
+.transaction-goal-spends li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.transaction-goal-spends li > span {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.transaction-goal-spends small {
+  color: var(--ink-soft);
+  font-size: 0.72rem;
+}
+
+.transaction-goal-spends form {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.transaction-goal-spends .form-status:empty {
+  display: none;
+}
+
+.transaction-goal-spend-form {
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) minmax(110px, 0.55fr) minmax(120px, 0.65fr);
+  gap: 8px;
+  padding-top: 0;
+}
+
+.transaction-goal-spend-form .transaction-detail-actions {
+  grid-column: 1 / -1;
+}
+
+.transaction-location {
+  display: grid;
+  gap: 10px;
+  margin-top: 20px;
+}
+
+.transaction-location__address {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.78rem;
+}
+
+.transaction-location__address i {
+  flex: none;
+  margin-top: 2px;
+}
+
+.transaction-location__link {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  gap: 5px;
+  color: var(--green-dark);
+  font-size: 0.76rem;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.transaction-location__map {
+  width: 100%;
+  height: 160px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-muted);
+  touch-action: pan-y;
+}
+
+.transaction-location__map[hidden] {
+  display: none;
+}
+
+.transaction-provider-details {
+  padding-top: 20px;
+  margin-top: 20px;
+  border-top: 1px solid var(--line);
+}
+
+.transaction-provider-details .entity-detail-grid--transaction {
+  margin-top: 10px;
+  border-top: 0;
+}
+
+.transaction-provider-details .entity-detail-grid__wide {
+  padding-left: 0;
+  border-left: 0;
 }
 
 .icon-button {
@@ -8830,6 +8968,36 @@ svg {
   .transaction-selection-bar [data-bulk-select-all] {
     width: 17px;
     height: 17px;
+  }
+
+  .transaction-allocation__split-summary,
+  .transaction-organize form,
+  .transaction-recurring-pattern form,
+  .transaction-split-editor [data-split-line],
+  .transaction-goal-spend-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .transaction-allocation__category-form {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .transaction-note-editor__footer,
+  .transaction-organize__footer,
+  .transaction-detail-actions {
+    align-items: center;
+    flex-direction: row;
+    justify-content: flex-end;
+  }
+
+  .transaction-note-editor__footer .button,
+  .transaction-organize__footer .button,
+  .transaction-detail-actions .button {
+    width: auto;
+  }
+
+  .transaction-location__map {
+    height: 140px;
   }
 }
 
