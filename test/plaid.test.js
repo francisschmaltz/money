@@ -8,7 +8,10 @@ import {
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { PlaidProvider } from "../app/providers/plaidProvider.js";
+import {
+  PlaidApiError,
+  PlaidProvider,
+} from "../app/providers/plaidProvider.js";
 import {
   normalizePlaidTransaction,
   normalizeTransactionName,
@@ -306,6 +309,56 @@ test("sync service keeps credentials at the secret boundary and preserves pendin
   assert.ok(states.some((state) => state.status === "active"));
 });
 
+test("sync service does not request unsupported liability details for auto loans", async () => {
+  let liabilityRequests = 0;
+  const { service, states } = liabilitySyncHarness({
+    account: {
+      account_id: "auto-loan",
+      name: "Auto loan",
+      type: "loan",
+      subtype: "auto",
+      balances: { current: 25_000, iso_currency_code: "USD" },
+    },
+    getLiabilities: async () => {
+      liabilityRequests += 1;
+      throw new Error("auto loans must not request Plaid Liabilities");
+    },
+  });
+
+  const stats = await service.syncItem("local-item");
+
+  assert.equal(liabilityRequests, 0);
+  assert.deepEqual(stats.optional_product_warnings, []);
+  assert.ok(states.some((state) => state.status === "active"));
+});
+
+test("unsupported Plaid Liabilities products remain non-fatal", async () => {
+  const { service, states } = liabilitySyncHarness({
+    account: {
+      account_id: "mortgage",
+      name: "Mortgage",
+      type: "loan",
+      subtype: "mortgage",
+      balances: { current: 250_000, iso_currency_code: "USD" },
+    },
+    getLiabilities: async () => {
+      throw new PlaidApiError("liabilities unsupported", {
+        status: 400,
+        errorType: "ITEM_ERROR",
+        errorCode: "PRODUCTS_NOT_SUPPORTED",
+      });
+    },
+  });
+
+  const stats = await service.syncItem("local-item");
+
+  assert.deepEqual(stats.optional_product_warnings, [
+    { product: "liabilities", code: "PRODUCTS_NOT_SUPPORTED" },
+  ]);
+  assert.ok(states.some((state) => state.status === "active"));
+  assert.equal(states.some((state) => state.status === "error"), false);
+});
+
 test("Plaid webhook verifier checks ES256 signature, age, and raw body hash", async () => {
   const { publicKey, privateKey } = generateKeyPairSync("ec", {
     namedCurve: "P-256",
@@ -438,4 +491,57 @@ async function sourceFiles(directory) {
     else if (entry.name.endsWith(".js")) files.push(target);
   }
   return files;
+}
+
+function liabilitySyncHarness({ account, getLiabilities }) {
+  const states = [];
+  const repository = {
+    async getPlaidItem() {
+      return {
+        id: "local-item",
+        workspace_id: "shared",
+        institution_name: "Bank",
+        transactions_cursor: null,
+        status: "active",
+      };
+    },
+    async startSyncRun() {
+      return "run";
+    },
+    async updatePlaidItemState(_id, state) {
+      states.push(state);
+    },
+    async upsertAccounts() {},
+    async deactivateMissingAccounts() {},
+    async applyTransactionSync() {},
+    async replaceLiabilities() {},
+    async takeDailySnapshots() {},
+    async rebuildSearchDocuments() {},
+    async finishSyncRun() {},
+  };
+  const provider = {
+    async getAccounts() {
+      return { accounts: [account] };
+    },
+    async syncTransactions() {
+      return {
+        added: [],
+        modified: [],
+        removed: [],
+        nextCursor: "cursor",
+      };
+    },
+    getLiabilities,
+  };
+  const service = new PlaidSyncService({
+    provider,
+    repository,
+    secretRepository: {
+      async get() {
+        return "access-token";
+      },
+    },
+    now: () => new Date("2026-08-01T12:00:00Z"),
+  });
+  return { service, states };
 }

@@ -13,6 +13,7 @@ const OPTIONAL_PRODUCT_ERRORS = new Set([
   "PRODUCT_NOT_READY",
   "NO_INVESTMENT_ACCOUNTS",
   "NO_LIABILITY_ACCOUNTS",
+  "PRODUCTS_NOT_SUPPORTED",
   "ADDITIONAL_CONSENT_REQUIRED",
 ]);
 
@@ -216,11 +217,7 @@ export class PlaidSyncService {
         }
       }
 
-      if (
-        normalizedAccounts.some((account) =>
-          ["credit", "loan"].includes(account.type),
-        )
-      ) {
+      if (normalizedAccounts.some(supportsPlaidLiabilities)) {
         const liabilityResult = await this.#optionalProduct(
           "liabilities",
           () => this.#provider.getLiabilities(accessToken),
@@ -415,6 +412,15 @@ export class PlaidSyncService {
       throw error;
     }
   }
+}
+
+function supportsPlaidLiabilities(account) {
+  return (
+    (account.type === "credit" &&
+      ["credit card", "paypal"].includes(account.subtype)) ||
+    (account.type === "loan" &&
+      ["student", "mortgage"].includes(account.subtype))
+  );
 }
 
 function dateOnly(date) {
