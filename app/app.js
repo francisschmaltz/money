@@ -15,6 +15,9 @@ import { createFinanceMcpServer } from "./mcp/index.js";
 import { createApiRouter, createPlaidWebhookRouter } from "./routes/api.js";
 import { createWebRouter } from "./routes/web.js";
 import {
+  createAppearancePreferenceResolver,
+} from "./services/appearancePreferenceService.js";
+import {
   allowedHost,
   ensureCsrfToken,
   requireCsrf,
@@ -113,6 +116,7 @@ export function createApp({
   config,
   pool = null,
   repository = null,
+  appearancePreferenceService = null,
   financeService,
   planningService = null,
   plaidSyncService,
@@ -331,11 +335,17 @@ export function createApp({
       requireAuth: requireUser,
       requireAdmin,
       requireCsrf,
+      appearancePreferenceService,
       financeService,
       planningService,
       plaidSyncService,
       plaidRedirectUri: config.plaid.redirectUri,
       appleCardImportService,
+    }),
+  );
+  app.use(
+    createAppearancePreferenceResolver({
+      appearancePreferenceService,
     }),
   );
   app.use(

@@ -21,10 +21,11 @@ test("first-party asset revisions change with the current deployment", async () 
     path.resolve("app/views/partials/head.ejs"),
     "utf8",
   );
-  assert.match(head, /\/css\/money\.css\?v=36/);
-  assert.match(head, /\/js\/charts\.js\?v=6/);
-  assert.match(head, /\/js\/money\.js\?v=32/);
-  assert.match(head, /\/js\/transactions\.js\?v=3/);
+  assert.match(head, /\/css\/money\.css\?v=37/);
+  assert.match(head, /\/js\/theme\.js\?v=1/);
+  assert.match(head, /\/js\/charts\.js\?v=7/);
+  assert.match(head, /\/js\/money\.js\?v=34/);
+  assert.match(head, /\/js\/transactions\.js\?v=4/);
 });
 
 test("Calibre is limited to display typography", async () => {
@@ -166,8 +167,8 @@ test("account sync times are formatted in the browser timezone", async () => {
   assert.match(money, /new Date\(element\.dataset\.localDateTime\)/);
   assert.doesNotMatch(
     money.slice(
-      money.indexOf("function localDateTimes()"),
-      money.indexOf("function accountAliases()"),
+      money.indexOf("function localDateTimes("),
+      money.indexOf("function accountAliases("),
     ),
     /timeZone:/,
   );
@@ -185,18 +186,33 @@ test("page centering reserves a stable scrollbar gutter", async () => {
   );
 });
 
-test("entity detail dialogs open natively and clear their selection URL on close", async () => {
-  const money = await readFile(
-    path.resolve("app/public/js/money.js"),
-    "utf8",
-  );
+test("transaction detail links enhance native deep links with modal history", async () => {
+  const [money, transactions, transactionRow, transactionsView] =
+    await Promise.all([
+      readFile(path.resolve("app/public/js/money.js"), "utf8"),
+      readFile(path.resolve("app/public/js/transactions.js"), "utf8"),
+      readFile(
+        path.resolve("app/views/partials/transaction-row.ejs"),
+        "utf8",
+      ),
+      readFile(path.resolve("app/views/transactions.ejs"), "utf8"),
+    ]);
+  const scripts = `${money}\n${transactions}`;
 
-  assert.match(money, /function detailDialogs\(\)/);
-  assert.match(money, /dialog\.showModal\(\)/);
-  assert.match(money, /directUrl\.searchParams\.delete\(queryKey\)/);
-  assert.match(money, /openedFromInPageLink/);
-  assert.match(money, /window\.history\.back\(\)/);
-  assert.match(money, /selectedLink\?\.focus\(\)/);
+  assert.match(
+    transactionRow,
+    /href="\/transactions\?<%= transactionDetailQuery\.toString\(\) %>"[\s\S]*data-detail-dialog-link/,
+  );
+  assert.match(
+    transactionsView,
+    /<dialog[\s\S]*data-detail-dialog[\s\S]*data-detail-auto-open[\s\S]*data-detail-query-key="transaction"/,
+  );
+  assert.match(scripts, /dialog\.showModal\(\)/);
+  assert.match(scripts, /\bfetch\s*\(/);
+  assert.match(scripts, /history\.pushState\(/);
+  assert.match(scripts, /addEventListener\(["']popstate["']/);
+  assert.match(scripts, /history\.(?:back|replaceState)\(/);
+  assert.match(scripts, /\.focus\(\)/);
 });
 
 test("transaction bulk editing sends only selected override fields", async () => {
@@ -224,7 +240,7 @@ test("transaction detail organization sends one scoped batch edit", async () => 
     path.resolve("app/public/js/money.js"),
     "utf8",
   );
-  const start = money.indexOf("function transactionOrganization()");
+  const start = money.indexOf("function transactionOrganization(");
   const end = money.indexOf("function insightActions()", start);
   const organization = money.slice(start, end);
 
@@ -269,8 +285,8 @@ test("transaction notes save with an optimistic version", async () => {
     path.resolve("app/public/js/money.js"),
     "utf8",
   );
-  const start = money.indexOf("function transactionNotes()");
-  const end = money.indexOf("function transactionOrganization()", start);
+  const start = money.indexOf("function transactionNotes(");
+  const end = money.indexOf("function transactionOrganization(", start);
   const notes = money.slice(start, end);
 
   assert.ok(start >= 0);

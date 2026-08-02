@@ -254,7 +254,7 @@
     });
   }
 
-  function localDateTimes() {
+  function localDateTimes(root = document) {
     const exactFormatter = new Intl.DateTimeFormat(undefined, {
       year: "numeric",
       month: "numeric",
@@ -270,7 +270,7 @@
       hour: "numeric",
       minute: "2-digit",
     });
-    document.querySelectorAll("[data-local-date-time]").forEach((element) => {
+    root.querySelectorAll("[data-local-date-time]").forEach((element) => {
       const date = new Date(element.dataset.localDateTime);
       if (!Number.isFinite(date.getTime())) return;
       const formatter =
@@ -3890,10 +3890,10 @@
     updateSelection();
   }
 
-  function transactionNotes() {
+  function transactionNotes(root = document) {
     const csrfToken =
       document.querySelector('meta[name="csrf-token"]')?.content || "";
-    document
+    root
       .querySelectorAll("[data-transaction-note-form]")
       .forEach((form) => {
         const input = form.querySelector("[data-transaction-note-input]");
@@ -3971,10 +3971,10 @@
       });
   }
 
-  function transactionOrganization() {
+  function transactionOrganization(root = document) {
     const csrfToken =
       document.querySelector('meta[name="csrf-token"]')?.content || "";
-    document
+    root
       .querySelectorAll(
         "[data-transaction-category-form], [data-transaction-organize-form]",
       )
@@ -4190,6 +4190,24 @@
       : null;
   }
 
+  function resolvedAppearanceTheme() {
+    const controlled = window.moneyAppearance?.resolved;
+    if (controlled === "dark" || controlled === "light") {
+      return controlled;
+    }
+    const rendered = document.documentElement?.dataset?.resolvedTheme;
+    if (rendered === "dark" || rendered === "light") return rendered;
+    return window.matchMedia?.("(prefers-color-scheme: dark)")?.matches
+      ? "dark"
+      : "light";
+  }
+
+  function mapKitAppearanceScheme(mapkit) {
+    return resolvedAppearanceTheme() === "dark"
+      ? mapkit.ColorScheme?.Dark || "dark"
+      : mapkit.ColorScheme?.Light || "light";
+  }
+
   function renderTransactionMap(mapkit, mapElement, coordinate, title) {
     const center = new mapkit.Coordinate(
       coordinate.latitude,
@@ -4202,6 +4220,7 @@
     const hidden = mapkit.FeatureVisibility?.Hidden || "hidden";
     const map = new mapkit.Map(mapElement, {
       region,
+      colorScheme: mapKitAppearanceScheme(mapkit),
       isRotationEnabled: false,
       isScrollEnabled: false,
       isZoomEnabled: false,
@@ -4212,6 +4231,7 @@
       showsUserLocation: false,
       showsZoomControl: false,
     });
+    mapElement.moneyMap = map;
     const markerTitle = title || "Transaction location";
     const marker = new mapkit.MarkerAnnotation(center, {
       title: markerTitle,
@@ -4221,8 +4241,25 @@
     return map;
   }
 
-  function transactionLocations() {
-    document
+  function transactionMapThemes() {
+    window.addEventListener("money:themechange", (event) => {
+      const mapkit = window.mapkit;
+      if (!mapkit) return;
+      const eventTheme = event?.detail?.resolvedTheme;
+      const colorScheme =
+        eventTheme === "dark"
+          ? mapkit.ColorScheme?.Dark || "dark"
+          : eventTheme === "light"
+            ? mapkit.ColorScheme?.Light || "light"
+            : mapKitAppearanceScheme(mapkit);
+      document.querySelectorAll("[data-mapkit-map]").forEach((element) => {
+        if (element.moneyMap) element.moneyMap.colorScheme = colorScheme;
+      });
+    });
+  }
+
+  function transactionLocations(root = document) {
+    root
       .querySelectorAll("[data-transaction-location]")
       .forEach((root) => {
         const mapElement = root.querySelector("[data-mapkit-map]");
@@ -4330,10 +4367,10 @@
       });
   }
 
-  function transactionRecurringPatterns() {
+  function transactionRecurringPatterns(root = document) {
     const csrfToken =
       document.querySelector('meta[name="csrf-token"]')?.content || "";
-    document
+    root
       .querySelectorAll("[data-transaction-recurring-form]")
       .forEach((form) => {
         const status = form.querySelector(
@@ -6016,15 +6053,15 @@
       });
   }
 
-  function planningForms() {
-    const forms = document.querySelectorAll("[data-plan-form]");
+  function planningForms(root = document) {
+    const forms = root.querySelectorAll("[data-plan-form]");
     const disclosureStateKey = "money.plan.save-state.v1";
     try {
       const savedState = JSON.parse(
         window.sessionStorage.getItem(disclosureStateKey) || "null",
       );
       if (savedState?.disclosure) {
-        const disclosure = document.querySelector(
+        const disclosure = root.querySelector(
           `[data-plan-disclosure="${CSS.escape(savedState.disclosure)}"]`,
         );
         if (disclosure instanceof HTMLDetailsElement) {
@@ -6038,7 +6075,7 @@
       // Saving still works when session storage is unavailable.
     }
     const budgetRows = [
-      ...document.querySelectorAll("[data-budget-category-id]"),
+      ...root.querySelectorAll("[data-budget-category-id]"),
     ];
     const budgetRowsById = new Map(
       budgetRows.map((row) => [
@@ -6064,7 +6101,7 @@
         row.hidden = hidden;
       }
     };
-    document.querySelectorAll("[data-budget-toggle]").forEach((button) => {
+    root.querySelectorAll("[data-budget-toggle]").forEach((button) => {
       button.addEventListener("click", () => {
         const row = button.closest("[data-budget-category-id]");
         const categoryId = row?.dataset.budgetCategoryId;
@@ -6089,16 +6126,17 @@
     if (!forms.length) return;
     const csrfToken =
       document.querySelector('meta[name="csrf-token"]')?.content || "";
-    const goalDialogOpeners = document.querySelectorAll(
+    const goalDialogOpeners = root.querySelectorAll(
       "[data-goal-dialog-open]",
     );
     const goalDialogOpenersByDialog = new WeakMap();
 
     goalDialogOpeners.forEach((opener) => {
       opener.addEventListener("click", () => {
-        const dialog = document.getElementById(
-          opener.dataset.goalDialogTarget || "",
-        );
+        const dialogId = opener.dataset.goalDialogTarget || "";
+        const dialog = dialogId
+          ? root.querySelector(`#${CSS.escape(dialogId)}`)
+          : null;
         if (!(dialog instanceof HTMLDialogElement)) return;
         goalDialogOpenersByDialog.set(dialog, opener);
         dialog.showModal();
@@ -6106,7 +6144,7 @@
       });
     });
 
-    document.querySelectorAll("[data-goal-dialog]").forEach((dialog) => {
+    root.querySelectorAll("[data-goal-dialog]").forEach((dialog) => {
       dialog
         .querySelectorAll("[data-goal-dialog-close]")
         .forEach((button) =>
@@ -6231,7 +6269,7 @@
       return payload;
     };
 
-    document
+    root
       .querySelectorAll("[data-budget-batch-form]")
       .forEach((form) => {
         const rows = [
@@ -6269,10 +6307,10 @@
         update();
       });
 
-    const incomeCategoryCount = document.querySelector(
+    const incomeCategoryCount = root.querySelector(
       "[data-income-category-count]",
     );
-    const incomeForm = document.querySelector(
+    const incomeForm = root.querySelector(
       "[data-budget-income-form]",
     );
     const updateIncomeCount = () => {
@@ -6289,7 +6327,7 @@
       );
     updateIncomeCount();
 
-    document
+    root
       .querySelectorAll("[data-goal-spend-form]")
       .forEach((form) => {
         const goalSelect = form.querySelector("[data-goal-spend-select]");
@@ -6378,7 +6416,7 @@
       });
     });
 
-    document.querySelectorAll("[data-budget-remove]").forEach((button) => {
+    root.querySelectorAll("[data-budget-remove]").forEach((button) => {
       button.addEventListener("click", async () => {
         const form = button.closest("[data-plan-form]");
         const status = form?.querySelector("[data-plan-status]");
@@ -6427,6 +6465,281 @@
     });
   }
 
+  function hydrateTransactionDialog(dialog) {
+    localDateTimes(dialog);
+    const aliases = storedAccountAliases();
+    dialog
+      .querySelectorAll("[data-account-display-name]")
+      .forEach((target) => applyAccountAliasTarget(target, aliases));
+    transactionNotes(dialog);
+    transactionOrganization(dialog);
+    transactionRecurringPatterns(dialog);
+    planningForms(dialog);
+  }
+
+  function transactionDetailDialogs(dialogs, links) {
+    const queryKey = "transaction";
+    const historyStateKey = "moneyTransactionDetail";
+    const suppressedCloseHistory = new WeakSet();
+    const suppressedCloseFocus = new WeakMap();
+    const openerByDialog = new WeakMap();
+    const requestGenerationByOpener = new WeakMap();
+    let activeDialog = null;
+    let requestController = null;
+    let requestGeneration = 0;
+
+    const relativeUrl = (url = new URL(window.location.href)) =>
+      `${url.pathname}${url.search}${url.hash}`;
+    const transactionIdFor = (url) => url.searchParams.get(queryKey);
+    const linkFor = (url) => {
+      const transactionId = transactionIdFor(url);
+      if (!transactionId) return null;
+      return (
+        links.find((link) => {
+          const candidate = new URL(link.href, window.location.origin);
+          return transactionIdFor(candidate) === transactionId;
+        }) || null
+      );
+    };
+    const syncSelectedLink = () => {
+      const selected = linkFor(new URL(window.location.href));
+      links.forEach((link) =>
+        link.setAttribute("aria-current", String(link === selected)),
+      );
+      return selected;
+    };
+    const currentHistoryState = () =>
+      window.history.state && typeof window.history.state === "object"
+        ? { ...window.history.state }
+        : {};
+    const detailHistoryState = (url) => ({
+      ...currentHistoryState(),
+      [historyStateKey]: {
+        queryKey,
+        url: relativeUrl(url),
+      },
+    });
+    const historyOwnsCurrentDetail = () => {
+      const detail = window.history.state?.[historyStateKey];
+      return (
+        detail?.queryKey === queryKey &&
+        detail.url === relativeUrl()
+      );
+    };
+    const withoutDetailHistoryState = () => {
+      const state = currentHistoryState();
+      delete state[historyStateKey];
+      return state;
+    };
+    const removeDialog = (dialog, { restoreFocus = true } = {}) => {
+      if (activeDialog === dialog) activeDialog = null;
+      const opener = openerByDialog.get(dialog);
+      dialog.remove();
+      if (restoreFocus && opener?.isConnected) opener.focus();
+    };
+    const closeForHistory = ({ restoreFocus = true } = {}) => {
+      requestController?.abort();
+      requestController = null;
+      requestGeneration += 1;
+      if (!activeDialog) {
+        if (restoreFocus) syncSelectedLink()?.focus();
+        return;
+      }
+      const dialog = activeDialog;
+      suppressedCloseHistory.add(dialog);
+      suppressedCloseFocus.set(dialog, restoreFocus);
+      if (dialog.open) {
+        dialog.close();
+      } else {
+        removeDialog(dialog, { restoreFocus });
+      }
+    };
+    const wireDialog = (dialog, opener) => {
+      const closeButton = dialog.querySelector("[data-detail-dialog-close]");
+      openerByDialog.set(dialog, opener);
+      activeDialog = dialog;
+
+      closeButton?.addEventListener("click", () => dialog.close());
+      dialog.addEventListener("click", (event) => {
+        if (event.target === dialog) dialog.close();
+      });
+      dialog.addEventListener(
+        "close",
+        () => {
+          const historyWasSuppressed = suppressedCloseHistory.delete(dialog);
+          const restoreFocus = historyWasSuppressed
+            ? suppressedCloseFocus.get(dialog) !== false
+            : true;
+          suppressedCloseFocus.delete(dialog);
+          removeDialog(dialog, { restoreFocus });
+          if (historyWasSuppressed) return;
+
+          if (historyOwnsCurrentDetail()) {
+            window.history.back();
+            return;
+          }
+
+          const directUrl = new URL(window.location.href);
+          directUrl.searchParams.delete(queryKey);
+          window.history.replaceState(
+            withoutDetailHistoryState(),
+            "",
+            relativeUrl(directUrl),
+          );
+          syncSelectedLink();
+        },
+        { once: true },
+      );
+      return closeButton;
+    };
+    const fallbackToNavigation = (destination) => {
+      window.location.assign(destination.href);
+    };
+    const openFetchedDialog = async (
+      destination,
+      { opener = null, pushHistory = false } = {},
+    ) => {
+      requestController?.abort();
+      const controller = new AbortController();
+      requestController = controller;
+      const generation = ++requestGeneration;
+      if (opener) {
+        requestGenerationByOpener.set(opener, generation);
+        opener.setAttribute("aria-busy", "true");
+      }
+
+      try {
+        const response = await fetch(destination.href, {
+          cache: "no-store",
+          credentials: "same-origin",
+          headers: { Accept: "text/html" },
+          signal: controller.signal,
+        });
+        const responseUrl = new URL(response.url);
+        if (
+          !response.ok ||
+          responseUrl.origin !== window.location.origin ||
+          responseUrl.pathname !== window.location.pathname
+        ) {
+          throw new Error("Transaction details were unavailable.");
+        }
+        const html = await response.text();
+        if (generation !== requestGeneration) return;
+        if (!pushHistory && relativeUrl(destination) !== relativeUrl()) return;
+
+        const parsed = new DOMParser().parseFromString(html, "text/html");
+        const parsedDialog = parsed.querySelector(
+          '[data-detail-dialog][data-detail-query-key="transaction"]',
+        );
+        if (!parsedDialog) {
+          throw new Error("Transaction details were missing.");
+        }
+
+        const dialog = document.importNode(parsedDialog, true);
+        dialog.dataset.detailDynamic = "";
+        dialog.dataset.detailUrl = relativeUrl(destination);
+        (document.querySelector("main.page-shell") || document.body).append(
+          dialog,
+        );
+        hydrateTransactionDialog(dialog);
+        const closeButton = wireDialog(dialog, opener || linkFor(destination));
+        if (pushHistory) {
+          window.history.pushState(
+            detailHistoryState(destination),
+            "",
+            relativeUrl(destination),
+          );
+        }
+        syncSelectedLink();
+        dialog.showModal();
+        closeButton?.focus();
+        transactionLocations(dialog);
+      } catch (error) {
+        if (error.name !== "AbortError" && generation === requestGeneration) {
+          fallbackToNavigation(destination);
+        }
+      } finally {
+        if (generation === requestGeneration) requestController = null;
+        if (
+          opener &&
+          requestGenerationByOpener.get(opener) === generation
+        ) {
+          requestGenerationByOpener.delete(opener);
+          opener.removeAttribute("aria-busy");
+        }
+      }
+    };
+
+    links.forEach((link) => {
+      link.addEventListener("click", (event) => {
+        if (
+          event.defaultPrevented ||
+          event.button !== 0 ||
+          event.metaKey ||
+          event.ctrlKey ||
+          event.shiftKey ||
+          event.altKey ||
+          link.target === "_blank"
+        ) {
+          return;
+        }
+        const destination = new URL(link.href, window.location.origin);
+        if (
+          destination.origin !== window.location.origin ||
+          destination.pathname !== window.location.pathname ||
+          !transactionIdFor(destination)
+        ) {
+          return;
+        }
+        event.preventDefault();
+        openFetchedDialog(destination, {
+          opener: link,
+          pushHistory: true,
+        });
+      });
+    });
+
+    const initialDialog = dialogs.find(
+      (dialog) => dialog.dataset.detailQueryKey === queryKey,
+    );
+    if (initialDialog) {
+      initialDialog.dataset.detailUrl = relativeUrl();
+      const closeButton = wireDialog(
+        initialDialog,
+        syncSelectedLink(),
+      );
+      if (
+        initialDialog.dataset.detailAutoOpen !== undefined &&
+        !initialDialog.open
+      ) {
+        initialDialog.showModal();
+        closeButton?.focus();
+      }
+    } else {
+      syncSelectedLink();
+    }
+
+    window.addEventListener("popstate", () => {
+      const destination = new URL(window.location.href);
+      if (!transactionIdFor(destination)) {
+        closeForHistory();
+        syncSelectedLink();
+        return;
+      }
+      if (
+        activeDialog?.open &&
+        activeDialog.dataset.detailUrl === relativeUrl(destination)
+      ) {
+        syncSelectedLink();
+        return;
+      }
+      closeForHistory({ restoreFocus: false });
+      openFetchedDialog(destination, {
+        opener: linkFor(destination),
+      });
+    });
+  }
+
   function detailDialogs() {
     const dialogs = [
       ...document.querySelectorAll("[data-detail-dialog]"),
@@ -6434,6 +6747,10 @@
     const links = [
       ...document.querySelectorAll("[data-detail-dialog-link]"),
     ];
+    if (document.body.dataset.page === "transactions") {
+      transactionDetailDialogs(dialogs, links);
+      return;
+    }
     const scrollStorageKey = "money.detail-scroll.v1";
 
     links.forEach((link) => {
@@ -6606,6 +6923,7 @@
     creditScoreTracking();
     planningForms();
     detailDialogs();
+    transactionMapThemes();
     transactionLocations();
   }
 

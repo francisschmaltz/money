@@ -1,4 +1,30 @@
 (() => {
+  const resolvedChartColor = (token, fallback) => {
+    if (typeof window.getComputedStyle !== "function") return fallback;
+    const value = window
+      .getComputedStyle(document.documentElement)
+      .getPropertyValue(token)
+      .trim();
+    if (!value) return fallback;
+    if (!value.includes("light-dark(")) return value;
+    const probe = document.createElement("span");
+    probe.hidden = true;
+    probe.setAttribute("aria-hidden", "true");
+    probe.style.color = `var(${token})`;
+    document.body.append(probe);
+    const resolved = window.getComputedStyle(probe).color || fallback;
+    probe.remove();
+    return resolved;
+  };
+
+  const chartSeparatorColor = () =>
+    resolvedChartColor(
+      "--chart-separator",
+      window.moneyAppearance?.resolved === "dark"
+        ? "#191919"
+        : "#ffffff",
+    );
+
   function transactionFilters() {
     const form = document.querySelector("[data-transaction-filter]");
     if (!form) return;
@@ -179,7 +205,7 @@
     const renderSegmentList = (groupKey, grouping) => {
       if (!segmentList) return;
       segmentList.replaceChildren();
-      for (const segment of grouping.segments) {
+      for (const [segmentIndex, segment] of grouping.segments.entries()) {
         const href = segmentUrl(groupKey, segment);
         const item = document.createElement("article");
         item.className = "spending-detail-category";
@@ -202,7 +228,7 @@
         dot.className = "category-dot";
         dot.style.setProperty(
           "--category-color",
-          segment.color || "#777777",
+          `var(--chart-spending-${(segmentIndex % 8) + 1})`,
         );
         dot.setAttribute("aria-hidden", "true");
         control.append(dot);
@@ -258,21 +284,29 @@
       );
       const chart = breakdownCanvas.moneyChart;
       if (!chart) return;
-      chart.data.datasets = segments.map((segment, index) => ({
-        label: segment.label,
-        data: [segment.amount?.amount_minor ?? 0],
-        backgroundColor: segment.color,
-        borderColor: "#ffffff",
-        borderWidth: 1.5,
-        borderSkipped: false,
-        borderRadius:
-          index === 0
-            ? { topLeft: 7, bottomLeft: 7 }
-            : index === segments.length - 1
-              ? { topRight: 7, bottomRight: 7 }
-              : 0,
-        barThickness: 31,
-      }));
+      chart.data.datasets = segments.map((segment, index) => {
+        const colorToken = `--chart-spending-${(index % 8) + 1}`;
+        return {
+          label: segment.label,
+          data: [segment.amount?.amount_minor ?? 0],
+          backgroundColor: resolvedChartColor(
+            colorToken,
+            segment.color,
+          ),
+          borderColor: chartSeparatorColor(),
+          borderWidth: 1.5,
+          borderSkipped: false,
+          borderRadius:
+            index === 0
+              ? { topLeft: 7, bottomLeft: 7 }
+              : index === segments.length - 1
+                ? { topRight: 7, bottomRight: 7 }
+                : 0,
+          barThickness: 31,
+          moneyColorToken: colorToken,
+          moneyColorFallback: segment.color,
+        };
+      });
       chart.update();
     };
 

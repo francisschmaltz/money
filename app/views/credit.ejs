@@ -63,10 +63,19 @@
       "#4f6b58",
       "#656565",
     ];
+    const cardColorTokens = [
+      "--chart-credit-card-1",
+      "--chart-credit-card-2",
+      "--chart-credit-card-3",
+      "--chart-credit-card-4",
+      "--chart-credit-card-5",
+      "--chart-credit-card-6",
+    ];
     const creditChartSeries = [
       {
         label: "Total",
         color: "#249342",
+        color_token: "--chart-credit-total",
         border_width: 3,
         values: creditHistory.map(
           (point) => point.utilization_basis_points,
@@ -83,6 +92,8 @@
           label: card.name,
           account_id: card.id,
           color: cardColors[cardIndex % cardColors.length],
+          color_token:
+            cardColorTokens[cardIndex % cardColorTokens.length],
           border_width: 2,
           values: creditChartTimestamps.map(
             (timestamp) => valuesByTimestamp.get(timestamp) ?? null,
@@ -112,11 +123,19 @@
       }).format(new Date(`${point.date}T00:00:00Z`)),
     );
     const scoreColors = ["#438bd7", "#8a5ac2", "#d27a36", "#2764ae"];
+    const scoreColorTokens = [
+      "--chart-score-person-1",
+      "--chart-score-person-2",
+      "--chart-score-person-3",
+      "--chart-score-person-4",
+    ];
     const scoreChartSeries = [
       ...trackedPeople
         .map((person, personIndex) => ({
           label: person.person_name,
           color: scoreColors[personIndex % scoreColors.length],
+          color_token:
+            scoreColorTokens[personIndex % scoreColorTokens.length],
           border_width: 2.5,
           values: trackedHistory.map(
             (point) =>
@@ -131,6 +150,7 @@
       {
         label: "Household average",
         color: "#249342",
+        color_token: "--chart-score-household",
         border_width: 2.5,
         border_dash: [7, 5],
         values: trackedHistory.map((point) => point.average_score),
@@ -265,7 +285,8 @@
             <span>
               <i
                 class="<%= series.border_dash ? 'credit-legend__line--average' : '' %>"
-                style="--credit-series-color: <%= series.color %>"
+                data-chart-color-token="<%= series.color_token %>"
+                style="--credit-series-color: var(<%= series.color_token %>)"
               ></i>
               <%= series.label %>
             </span>
@@ -488,7 +509,7 @@
         </p>
         <div class="credit-legend" aria-hidden="true">
           <% creditChartSeries.forEach((series) => { %>
-            <span><i style="--credit-series-color: <%= series.color %>"></i><span <% if (series.account_id) { %>data-account-display-name="<%= series.account_id %>" data-account-provider-name="<%= series.label %>"<% } %>><%= series.label %></span></span>
+            <span><i data-chart-color-token="<%= series.color_token %>" style="--credit-series-color: var(<%= series.color_token %>)"></i><span <% if (series.account_id) { %>data-account-display-name="<%= series.account_id %>" data-account-provider-name="<%= series.label %>"<% } %>><%= series.label %></span></span>
           <% }) %>
         </div>
       <% } else { %>

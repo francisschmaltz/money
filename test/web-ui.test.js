@@ -106,7 +106,7 @@ test("Plaid OAuth callback renders a resumable authenticated return page", async
   assert.match(response.text, /data-page="plaid-oauth"/);
   assert.match(response.text, /data-plaid-oauth-return/);
   assert.match(response.text, /Returning to Plaid/);
-  assert.match(response.text, /\/js\/money\.js\?v=32/);
+  assert.match(response.text, /\/js\/money\.js\?v=34/);
   assert.doesNotMatch(response.text, /data-search-dialog/);
 });
 

@@ -1,19 +1,33 @@
+<%
+  const supportedAppearances = new Set(["system", "light", "dark"]);
+  const renderedAppearance =
+    typeof appearancePreference !== "undefined" &&
+    supportedAppearances.has(appearancePreference)
+      ? appearancePreference
+      : "system";
+%>
 <!doctype html>
-<html lang="en">
+<html lang="en" data-appearance="<%= renderedAppearance %>">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="color-scheme" content="light">
-    <meta name="theme-color" content="#f7f7f7">
+    <meta name="color-scheme" content="<%= renderedAppearance === 'system' ? 'light dark' : renderedAppearance %>">
+    <% if (renderedAppearance === "system") { %>
+      <meta name="theme-color" content="#f7f7f7" media="(prefers-color-scheme: light)">
+      <meta name="theme-color" content="#111111" media="(prefers-color-scheme: dark)">
+    <% } else { %>
+      <meta name="theme-color" content="<%= renderedAppearance === 'dark' ? '#111111' : '#f7f7f7' %>">
+    <% } %>
     <meta name="csrf-token" content="<%= typeof csrfToken !== 'undefined' ? csrfToken : '' %>">
     <title><%= pageTitle %> · Money</title>
     <link rel="stylesheet" href="https://fonts.yaboiii.com/wss/fonts?v=2" type="text/css" as="style">
     <link rel="stylesheet" href="/vendor/phosphor/regular/style.css">
-    <link rel="stylesheet" href="/css/money.css?v=36">
+    <link rel="stylesheet" href="/css/money.css?v=37">
+    <script defer src="/js/theme.js?v=1"></script>
     <script defer src="/vendor/chart/chart.umd.js"></script>
-    <script defer src="/js/charts.js?v=6"></script>
-    <script defer src="/js/money.js?v=32"></script>
+    <script defer src="/js/charts.js?v=7"></script>
+    <script defer src="/js/money.js?v=34"></script>
     <% if (pageTitle === "Transactions") { %>
-      <script defer src="/js/transactions.js?v=3"></script>
+      <script defer src="/js/transactions.js?v=4"></script>
     <% } %>
   </head>

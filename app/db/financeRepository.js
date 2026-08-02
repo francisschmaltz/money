@@ -3,6 +3,7 @@ import { withTransaction } from "./pool.js";
 import { stableId } from "../services/ids.js";
 
 const DEFAULT_WORKSPACE_ID = "shared";
+const APPEARANCE_PREFERENCES = new Set(["system", "light", "dark"]);
 const BALANCE_GROUPS = new Set([
   "cash",
   "taxable_investment",
@@ -2632,6 +2633,57 @@ export class PgFinanceRepository {
         last_login_at: dateValue(user.last_login_at),
       };
     });
+  }
+
+  async getUserAppearancePreference(userId) {
+    if (typeof userId !== "string" || !userId.trim()) {
+      throw new TypeError("userId is required");
+    }
+    const result = await this.#pool.query(
+      `
+        SELECT appearance_preference
+        FROM users
+        WHERE id = $1
+      `,
+      [userId],
+    );
+    if (!result.rows[0]) {
+      const error = new Error("The authenticated user does not exist.");
+      error.code = "USER_NOT_FOUND";
+      throw error;
+    }
+    const appearance = result.rows[0].appearance_preference;
+    if (!APPEARANCE_PREFERENCES.has(appearance)) {
+      throw new Error("The stored appearance preference is invalid.");
+    }
+    return appearance;
+  }
+
+  async updateUserAppearancePreference(userId, appearance) {
+    if (typeof userId !== "string" || !userId.trim()) {
+      throw new TypeError("userId is required");
+    }
+    if (!APPEARANCE_PREFERENCES.has(appearance)) {
+      throw new TypeError(
+        "appearance must be exactly system, light, or dark",
+      );
+    }
+    const result = await this.#pool.query(
+      `
+        UPDATE users
+        SET appearance_preference = $2,
+            updated_at = now()
+        WHERE id = $1
+        RETURNING appearance_preference
+      `,
+      [userId, appearance],
+    );
+    if (!result.rows[0]) {
+      const error = new Error("The authenticated user does not exist.");
+      error.code = "USER_NOT_FOUND";
+      throw error;
+    }
+    return result.rows[0].appearance_preference;
   }
 
   async createPlaidItem(

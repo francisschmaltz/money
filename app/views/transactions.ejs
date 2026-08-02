@@ -999,7 +999,7 @@
                     data-spending-segment
                     data-segment-key="<%= segment.key %>"
                   ><% } else { %><div class="spending-detail-category__select" aria-label="Other groups combined"><% } %>
-                    <span class="category-dot" style="--category-color: <%= segment.color %>" aria-hidden="true"></span>
+                    <span class="category-dot" style="--category-color: var(--chart-spending-<%= (index % 8) + 1 %>)" aria-hidden="true"></span>
                     <span class="list-icon list-icon--compact" aria-hidden="true"><i class="ph <%= segment.icon %>"></i></span>
                     <span>
                       <strong><%= isAggregate ? "Other groups combined" : segment.label %></strong>

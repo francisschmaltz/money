@@ -3,6 +3,9 @@ import {
   parseAppleCardUploadBody,
   readAppleCardUpload,
 } from "./appleCardUpload.js";
+import {
+  isAppearancePreference,
+} from "../services/appearancePreferenceService.js";
 
 const TOOL_ROUTES = Object.freeze([
   ["overview", "getFinanceOverview"],
@@ -375,6 +378,7 @@ export function createApiRouter({
   requireAuth = (_request, _response, next) => next(),
   requireAdmin = (_request, _response, next) => next(),
   requireCsrf = (_request, _response, next) => next(),
+  appearancePreferenceService = null,
   financeService,
   planningService = null,
   plaidSyncService,
@@ -384,6 +388,74 @@ export function createApiRouter({
   const router = Router();
 
   router.use("/api", requireAuth);
+
+  router.get(
+    "/api/v1/me/appearance",
+    noStore,
+    async (request, response) => {
+      if (
+        typeof appearancePreferenceService?.getAppearancePreference !==
+        "function"
+      ) {
+        unavailable(response, "Appearance preferences");
+        return;
+      }
+      try {
+        const appearance =
+          await appearancePreferenceService.getAppearancePreference(
+            request.user.id,
+          );
+        if (!isAppearancePreference(appearance)) {
+          throw new Error("The stored appearance preference is invalid.");
+        }
+        if (request.session) {
+          request.session.appearancePreference = appearance;
+        }
+        response.json({ appearance });
+      } catch {
+        unavailable(response, "Appearance preferences");
+      }
+    },
+  );
+
+  router.put(
+    "/api/v1/me/appearance",
+    noStore,
+    requireCsrf,
+    async (request, response) => {
+      const appearance = request.body?.appearance;
+      if (!isAppearancePreference(appearance)) {
+        invalidRequest(
+          response,
+          "appearance must be exactly system, light, or dark.",
+        );
+        return;
+      }
+      if (
+        typeof appearancePreferenceService?.setAppearancePreference !==
+        "function"
+      ) {
+        unavailable(response, "Appearance preferences");
+        return;
+      }
+      try {
+        const saved =
+          await appearancePreferenceService.setAppearancePreference(
+            request.user.id,
+            appearance,
+          );
+        if (!isAppearancePreference(saved)) {
+          throw new Error("The stored appearance preference is invalid.");
+        }
+        if (request.session) {
+          request.session.appearancePreference = saved;
+        }
+        response.json({ updated: true, appearance: saved });
+      } catch {
+        unavailable(response, "Appearance preferences");
+      }
+    },
+  );
 
   for (const [path, method] of TOOL_ROUTES) {
     router.get(`/api/v1/${path}`, (request, response, next) => {

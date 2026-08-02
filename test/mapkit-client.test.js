@@ -24,6 +24,7 @@ async function mapKitHarness({ documentOverrides = {}, windowOverrides = {} } = 
     directTransactionCoordinate,
     geocodedCoordinate,
     renderTransactionMap,
+    transactionMapThemes,
     transactionLocations,
   };
 
@@ -127,6 +128,7 @@ function stubMapKit({ geocoderResults = [] } = {}) {
       Coordinate,
       CoordinateRegion,
       CoordinateSpan,
+      ColorScheme: { Dark: "dark", Light: "light" },
       FeatureVisibility: { Hidden: "hidden" },
       Geocoder,
       init(options) {
@@ -433,6 +435,7 @@ test("transaction map prefers Plaid coordinates and disables every interaction",
   assert.equal(fixture.root.dataset.mapkitState, "ready");
   const map = stub.state.maps[0];
   assert.equal(map.options.isRotationEnabled, false);
+  assert.equal(map.options.colorScheme, "light");
   assert.equal(map.options.isScrollEnabled, false);
   assert.equal(map.options.isZoomEnabled, false);
   assert.equal(map.options.showsMapTypeControl, false);
@@ -449,6 +452,50 @@ test("transaction map prefers Plaid coordinates and disables every interaction",
   assert.equal(map.destroyed, true);
   assert.equal(fixture.mapElement.hidden, true);
   assert.equal(fixture.root.dataset.mapkitState, "unavailable");
+});
+
+test("transaction maps consume theme event detail for printing and restoration", async () => {
+  const fixture = locationFixture({
+    locationLat: "37.789",
+    locationLon: "-122.394",
+    locationTitle: "Corner Market",
+  });
+  const stub = stubMapKit();
+  let themeListener;
+  const moneyAppearance = { resolved: "dark" };
+  const harness = await mapKitHarness({
+    documentOverrides: {
+      querySelectorAll(selector) {
+        if (selector === "[data-transaction-location]") {
+          return [fixture.root];
+        }
+        if (selector === "[data-mapkit-map]") {
+          return [fixture.mapElement];
+        }
+        return [];
+      },
+    },
+    windowOverrides: {
+      addEventListener(name, listener) {
+        if (name === "money:themechange") themeListener = listener;
+      },
+      mapkit: stub.mapkit,
+      moneyAppearance,
+    },
+  });
+
+  harness.helpers.transactionLocations();
+  await settleAsyncWork();
+  const map = stub.state.maps[0];
+  assert.equal(map.options.colorScheme, "dark");
+
+  harness.helpers.transactionMapThemes();
+  themeListener({ detail: { resolvedTheme: "light" } });
+  assert.equal(map.colorScheme, "light");
+  assert.equal(moneyAppearance.resolved, "dark");
+
+  themeListener({ detail: { resolvedTheme: "dark" } });
+  assert.equal(map.colorScheme, "dark");
 });
 
 test("address-only locations geocode once while empty results keep the map hidden", async () => {

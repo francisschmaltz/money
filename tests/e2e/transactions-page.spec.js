@@ -2,6 +2,118 @@ import { expect, test } from "@playwright/test";
 
 test.use({ timezoneId: "America/Los_Angeles" });
 
+test("transaction details open in place and restore URL state through history", async ({
+  page,
+}) => {
+  await page.goto("/transactions?period=90&sort=merchant");
+
+  const initialUrl = page.url();
+  const trigger = page.locator(
+    '.transaction-row[href*="transaction=txn_whole_foods"]',
+  );
+  const destination = new URL(
+    await trigger.getAttribute("href"),
+    initialUrl,
+  ).href;
+  const documentNavigations = [];
+  page.on("request", (request) => {
+    if (
+      request.isNavigationRequest() &&
+      request.frame() === page.mainFrame()
+    ) {
+      documentNavigations.push(request.url());
+    }
+  });
+  await page.evaluate(() => {
+    window.__transactionModalDocument = "same-document";
+  });
+
+  await trigger.click();
+
+  const dialog = page.locator(".entity-detail-dialog--transaction");
+  await expect(page).toHaveURL(destination);
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toHaveJSProperty("open", true);
+  expect(new URL(page.url()).searchParams.get("period")).toBe("90");
+  expect(new URL(page.url()).searchParams.get("sort")).toBe("merchant");
+  expect(
+    await page.evaluate(() => window.__transactionModalDocument),
+  ).toBe("same-document");
+  expect(documentNavigations).toEqual([]);
+
+  await page.goBack();
+  await expect(page).toHaveURL(initialUrl);
+  await expect(dialog).toBeHidden();
+  expect(
+    await page.evaluate(() => window.__transactionModalDocument),
+  ).toBe("same-document");
+  expect(documentNavigations).toEqual([]);
+
+  await page.goForward();
+  await expect(page).toHaveURL(destination);
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toHaveJSProperty("open", true);
+  expect(
+    await page.evaluate(() => window.__transactionModalDocument),
+  ).toBe("same-document");
+  expect(documentNavigations).toEqual([]);
+
+  await dialog
+    .getByRole("button", { name: "Close transaction details" })
+    .click();
+  await expect(page).toHaveURL(initialUrl);
+  await expect(dialog).toBeHidden();
+  await expect(trigger).toBeFocused();
+  expect(
+    await page.evaluate(() => window.__transactionModalDocument),
+  ).toBe("same-document");
+  expect(documentNavigations).toEqual([]);
+});
+
+test("transaction detail deep links still open natively and close in place", async ({
+  page,
+}) => {
+  await page.goto(
+    "/transactions?period=90&sort=merchant&transaction=txn_whole_foods",
+  );
+
+  const directUrl = new URL(page.url());
+  directUrl.searchParams.delete("transaction");
+  const documentNavigations = [];
+  page.on("request", (request) => {
+    if (
+      request.isNavigationRequest() &&
+      request.frame() === page.mainFrame()
+    ) {
+      documentNavigations.push(request.url());
+    }
+  });
+  await page.evaluate(() => {
+    window.__transactionModalDocument = "direct-link-document";
+  });
+
+  const dialog = page.locator(".entity-detail-dialog--transaction");
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toHaveJSProperty("open", true);
+  await expect(
+    dialog.getByRole("heading", {
+      name: "Whole Foods Market",
+      level: 2,
+    }),
+  ).toBeVisible();
+
+  await dialog
+    .getByRole("button", { name: "Close transaction details" })
+    .click();
+
+  await expect(page).toHaveURL(directUrl.href);
+  await expect(dialog).toBeHidden();
+  expect(
+    await page.evaluate(() => window.__transactionModalDocument),
+  ).toBe("direct-link-document");
+  expect(documentNavigations).toEqual([]);
+});
+
 test("transaction times use the browser timezone without fake precision", async ({
   page,
 }) => {
@@ -416,7 +528,7 @@ test("bulk Plan month changes stay relative to each selected posted month", asyn
   expect(write.changes).toEqual({ budget_month_offset: 1 });
 });
 
-test("transaction notes save and the detail body uses the full modal width", async ({
+test("dynamically loaded transaction notes save and use the full modal width", async ({
   page,
 }) => {
   let write;
@@ -435,9 +547,13 @@ test("transaction notes save and the detail body uses the full modal width", asy
       });
     },
   );
-  await page.goto("/transactions?transaction=txn_whole_foods");
+  await page.goto("/transactions");
+  await page
+    .locator('.transaction-row[href*="transaction=txn_whole_foods"]')
+    .click();
 
   const dialog = page.locator(".entity-detail-dialog--transaction");
+  await expect(dialog).toBeVisible();
   const body = dialog.locator(".entity-detail-dialog__body--transaction");
   const widths = await Promise.all([
     dialog.locator(".entity-detail-dialog__panel").evaluate(

@@ -13,6 +13,10 @@ import { LmStudioNarrativeService } from "./services/narrativeService.js";
 import { createPlanningService } from "./services/planningService.js";
 import { createPlaidSyncService } from "./services/plaidSyncService.js";
 import { createAppleCardImportService } from "./services/appleCardImportService.js";
+import {
+  createAppearancePreferenceService,
+  createDemoAppearancePreferenceService,
+} from "./services/appearancePreferenceService.js";
 
 export function createRuntime(config) {
   const narrativeService = new LmStudioNarrativeService({
@@ -27,6 +31,8 @@ export function createRuntime(config) {
     return {
       pool: null,
       narrativeService,
+      appearancePreferenceService:
+        createDemoAppearancePreferenceService(),
       financeService,
       planningService: createDemoPlanningService({
         scenario: config.demoScenario,
@@ -80,6 +86,9 @@ export function createRuntime(config) {
   return {
     pool,
     repository,
+    appearancePreferenceService: createAppearancePreferenceService({
+      repository,
+    }),
     secretRepository,
     jobQueue,
     narrativeService,

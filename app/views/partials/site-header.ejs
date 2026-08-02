@@ -1,3 +1,10 @@
+<%
+  const accountMenuAppearance =
+    typeof appearancePreference !== "undefined" &&
+    ["system", "light", "dark"].includes(appearancePreference)
+      ? appearancePreference
+      : "system";
+%>
 <header class="site-header" data-site-header>
   <div class="site-header__inner">
     <a class="brand" href="/" aria-label="Money dashboard">
@@ -43,6 +50,31 @@
             <a href="/settings" <%- activePath === "/settings" ? 'aria-current="page"' : "" %>>
               <i class="ph ph-gear" aria-hidden="true"></i> Settings
             </a>
+          <% } %>
+          <% if (viewer?.id) { %>
+            <fieldset class="account-menu__appearance" data-appearance-picker>
+              <legend>Appearance</legend>
+              <div class="appearance-options" role="radiogroup" aria-label="Appearance">
+                <% [
+                  ["system", "ph-monitor", "System"],
+                  ["light", "ph-sun", "Light"],
+                  ["dark", "ph-moon", "Dark"]
+                ].forEach(([value, icon, label]) => { %>
+                  <label>
+                    <input
+                      type="radio"
+                      name="appearance"
+                      value="<%= value %>"
+                      data-appearance-option
+                      <%= accountMenuAppearance === value ? "checked" : "" %>
+                    >
+                    <i class="ph <%= icon %>" aria-hidden="true"></i>
+                    <span><%= label %></span>
+                  </label>
+                <% }) %>
+              </div>
+              <p class="appearance-status" role="status" aria-live="polite" data-appearance-status></p>
+            </fieldset>
           <% } %>
           <form class="account-menu__logout" action="/auth/logout" method="post">
             <input type="hidden" name="_csrf" value="<%= typeof csrfToken !== 'undefined' ? csrfToken : '' %>">
