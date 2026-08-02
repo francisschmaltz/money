@@ -58,7 +58,7 @@ export function contentSecurityPolicyDirectives(config) {
       "https://*.plaid.com",
       "https://*.apple-mapkit.com",
     ],
-    fontSrc: ["'self'", "data:"],
+    fontSrc: ["'self'", "data:", "https://fonts.yaboiii.com"],
     formAction: ["'self'"],
     frameAncestors: ["'none'"],
     frameSrc: ["'self'", "https://*.plaid.com"],
@@ -69,7 +69,7 @@ export function contentSecurityPolicyDirectives(config) {
       "https://cdn.plaid.com",
       "https://cdn.apple-mapkit.com",
     ],
-    styleSrc: ["'self'", "'unsafe-inline'"],
+    styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.yaboiii.com"],
     upgradeInsecureRequests: config.production ? [] : null,
   };
 }

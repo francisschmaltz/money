@@ -21,10 +21,41 @@ test("first-party asset revisions change with the current deployment", async () 
     path.resolve("app/views/partials/head.ejs"),
     "utf8",
   );
-  assert.match(head, /\/css\/money\.css\?v=35/);
+  assert.match(head, /\/css\/money\.css\?v=36/);
   assert.match(head, /\/js\/charts\.js\?v=6/);
   assert.match(head, /\/js\/money\.js\?v=32/);
   assert.match(head, /\/js\/transactions\.js\?v=3/);
+});
+
+test("Calibre is limited to display typography", async () => {
+  const [head, styles] = await Promise.all([
+    readFile(path.resolve("app/views/partials/head.ejs"), "utf8"),
+    readFile(path.resolve("app/public/css/money.css"), "utf8"),
+  ]);
+
+  assert.match(
+    head,
+    /<link rel="stylesheet" href="https:\/\/fonts\.yaboiii\.com\/wss\/fonts\?v=2" type="text\/css" as="style">/,
+  );
+  assert.doesNotMatch(styles, /CalibreWeb-R-(?:Regular|Medium|Semibold)\.woff/);
+  assert.match(styles, /--font-display:\s*"Calibre", var\(--font-system\);/);
+  assert.match(
+    styles,
+    /h1,\s*h2,\s*\.display-money\s*\{[^}]*font-family:\s*var\(--font-display\);[^}]*font-weight:\s*700;/,
+  );
+  assert.match(
+    styles,
+    /h3,\s*h4\s*\{[^}]*font-family:\s*var\(--font-display\);[^}]*font-weight:\s*600;/,
+  );
+  assert.match(
+    styles,
+    /\.eyebrow,\s*\.card-kicker\s*\{[^}]*font-family:\s*var\(--font-display\);[^}]*font-weight:\s*400;/,
+  );
+  assert.match(
+    styles,
+    /\.brand\s*\{[^}]*font-family:\s*var\(--font-display\);[^}]*font-weight:\s*600;/,
+  );
+  assert.match(styles, /body\s*\{[^}]*font-family:\s*var\(--font-system\);/);
 });
 
 test("transaction explorer uses real category and merchant links while Other stays aggregate-only", async () => {

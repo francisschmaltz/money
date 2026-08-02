@@ -200,6 +200,17 @@ test("CSP allows only the MapKit script and service origins needed by the client
   );
 });
 
+test("CSP allows the remote Calibre stylesheet and font files", () => {
+  const config = loadConfig({
+    NODE_ENV: "test",
+    DEMO_MODE: "true",
+  });
+  const directives = contentSecurityPolicyDirectives(config);
+
+  assert.ok(directives.styleSrc.includes("https://fonts.yaboiii.com"));
+  assert.ok(directives.fontSrc.includes("https://fonts.yaboiii.com"));
+});
+
 test("MapKit loader stays lazy, requests all three libraries, and configures dynamic authorization", async () => {
   let appendedScript;
   const authorizationRequests = [];

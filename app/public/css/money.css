@@ -20,6 +20,8 @@
   --radius: 20px;
   --radius-sm: 12px;
   --max-width: 1120px;
+  --font-system: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  --font-display: "Calibre", var(--font-system);
 }
 
 * {
@@ -36,7 +38,7 @@ body {
   min-width: 320px;
   background: var(--canvas);
   color: var(--ink);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  font-family: var(--font-system);
   font-size: 15px;
   line-height: 1.45;
   -webkit-font-smoothing: antialiased;
@@ -93,6 +95,7 @@ button:disabled {
 h1,
 h2,
 h3,
+h4,
 p,
 dl,
 dd {
@@ -102,8 +105,22 @@ dd {
 h1,
 h2,
 h3,
+h4,
 strong {
   letter-spacing: -0.018em;
+}
+
+h1,
+h2,
+.display-money {
+  font-family: var(--font-display);
+  font-weight: 700;
+}
+
+h3,
+h4 {
+  font-family: var(--font-display);
+  font-weight: 600;
 }
 
 h1 {
@@ -155,8 +172,9 @@ h3 {
   display: inline-flex;
   align-items: center;
   gap: 9px;
+  font-family: var(--font-display);
   font-size: 1.05rem;
-  font-weight: 720;
+  font-weight: 600;
   letter-spacing: -0.025em;
   white-space: nowrap;
 }
@@ -368,8 +386,9 @@ h3 {
 .eyebrow,
 .card-kicker {
   color: var(--ink-faint);
+  font-family: var(--font-display);
   font-size: 0.72rem;
-  font-weight: 720;
+  font-weight: 400;
   letter-spacing: 0.075em;
   text-transform: uppercase;
 }
@@ -4613,10 +4632,13 @@ h3 {
   border: 0;
 }
 
-.cleanup-editor legend,
-.cleanup-matches h3 {
+.cleanup-editor legend {
   font-size: 0.9rem;
   font-weight: 700;
+}
+
+.cleanup-matches h3 {
+  font-size: 0.9rem;
 }
 
 .cleanup-edit-field {
