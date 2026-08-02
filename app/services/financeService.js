@@ -65,6 +65,11 @@ const TRANSACTION_SORTS = new Set([
   "cost",
 ]);
 const MANUAL_RECURRING_TYPES = new Set(["subscription", "bill"]);
+const CASH_FLOW_ROLES = new Set([
+  "spending",
+  "obligation",
+  "transfer",
+]);
 const MANUAL_RECURRING_CADENCES = new Set([
   "weekly",
   "biweekly",
@@ -251,7 +256,7 @@ export class FinanceService {
       title: "Finance overview",
       subtitle: formatMonth(effectiveNow),
       path: "/",
-      summary: `Cash balance is ${formatMoney(data.cash_balance)}, short-term worth is ${formatMoney(data.short_term_worth)}, and net worth is ${formatMoney(data.net_worth)}. ${formatMoney(data.spending)} was spent this month. ${freshnessSentence(freshness)}`,
+      summary: `Cash balance is ${formatMoney(data.cash_balance)}, short-term worth is ${formatMoney(data.short_term_worth)}, and net worth is ${formatMoney(data.net_worth)}. ${formatMoney(data.outflows)} went out this month. ${freshnessSentence(freshness)}`,
     });
   }
 
@@ -745,7 +750,7 @@ export class FinanceService {
       title: "Cash flow",
       subtitle: `${current.start_on}–${shiftDateOnly(current.end_on, -1)}`,
       path: `/transactions?start=${current.start_on}&end=${current.end_on}`,
-      summary: `${formatMoney(data.income)} came in, ${formatMoney(data.spending)} went out, and net cash flow was ${formatMoney(data.net)}. ${freshnessSentence(freshness)}`,
+      summary: `${formatMoney(data.income)} came in, ${formatMoney(data.outflows)} went out, and net cash flow was ${formatMoney(data.net)}. ${freshnessSentence(freshness)}`,
     });
   }
 
@@ -1345,6 +1350,8 @@ export class FinanceService {
       "tags",
       "excluded_from_spending",
       "excludedFromSpending",
+      "cash_flow_role",
+      "cashFlowRole",
       "budget_month_offset",
       "budgetMonthOffset",
     ]);
@@ -1398,6 +1405,21 @@ export class FinanceService {
       changes[camelCase] = value;
     }
     if (
+      Object.hasOwn(rawChanges, "cash_flow_role") ||
+      Object.hasOwn(rawChanges, "cashFlowRole")
+    ) {
+      const value = String(
+        rawChanges.cash_flow_role ?? rawChanges.cashFlowRole ?? "",
+      ).trim();
+      if (!CASH_FLOW_ROLES.has(value)) {
+        throw new TypeError(
+          "cash_flow_role must be spending, obligation, or transfer",
+        );
+      }
+      changes.cashFlowRole = value;
+      changes.excludedFromSpending = value !== "spending";
+    }
+    if (
       Object.hasOwn(rawChanges, "budget_month_offset") ||
       Object.hasOwn(rawChanges, "budgetMonthOffset")
     ) {
@@ -1431,19 +1453,112 @@ export class FinanceService {
     );
     if (!updated) {
       throw notFound(
-        "One or more posted transactions could not be found",
+        "One or more transactions could not be found",
+      );
+    }
+    if (updated.conflict === "active_recurring_pattern") {
+      throw badRequest(
+        "Remove the active Bill or Subscription pattern before changing its cash-flow role to Transfer.",
       );
     }
     if (
       Object.hasOwn(changes, "displayName") ||
       Object.hasOwn(changes, "categoryPrimary") ||
-      Object.hasOwn(changes, "excludedFromSpending")
+      Object.hasOwn(changes, "excludedFromSpending") ||
+      Object.hasOwn(changes, "cashFlowRole")
     ) {
       await this.#enqueueRecompute();
     }
     return {
       updated_count: updated.updatedCount,
       transaction_ids: updated.transactionIds,
+    };
+  }
+
+  async listPendingEditRecoveries(input = {}) {
+    const result = await optionalRepositoryCall(
+      this.#repository,
+      "listPendingEditRecoveries",
+      [],
+      this.#workspaceId,
+      {
+        includeResolved: booleanOption(
+          input.includeResolved ?? input.include_resolved,
+          false,
+        ),
+      },
+    );
+    const rows = Array.isArray(result)
+      ? result
+      : result?.recoveries ?? [];
+    return {
+      recoveries: rows.map((row) =>
+        pendingEditRecoveryResponse(row, this.#currency),
+      ),
+    };
+  }
+
+  async attachPendingEditRecovery(input = {}, actor = null) {
+    const recoveryId = requiredId(
+      input.recoveryId ?? input.recovery_id,
+      "recovery_id",
+    );
+    const transactionId = requiredId(
+      input.transactionId ?? input.transaction_id,
+      "transaction_id",
+    );
+    const result = await this.#repository.attachPendingEditRecovery(
+      this.#workspaceId,
+      {
+        recoveryId,
+        transactionId,
+        userId: actor?.id ?? input.userId ?? input.user_id ?? null,
+      },
+    );
+    if (!result || result.notFound) {
+      throw notFound("Pending transaction edit recovery not found");
+    }
+    if (result.conflict || result.alreadyResolved) {
+      throw categoryConflict(
+        "These pending edits were already resolved. Refresh the transaction list.",
+      );
+    }
+    await this.#enqueueRecompute();
+    return {
+      attached: true,
+      recovery: pendingEditRecoveryResponse(
+        result.recovery ?? result,
+        this.#currency,
+      ),
+    };
+  }
+
+  async dismissPendingEditRecovery(input = {}, actor = null) {
+    const recoveryId = requiredId(
+      input.recoveryId ?? input.recovery_id,
+      "recovery_id",
+    );
+    const result = await this.#repository.dismissPendingEditRecovery(
+      this.#workspaceId,
+      {
+        recoveryId,
+        userId: actor?.id ?? input.userId ?? input.user_id ?? null,
+      },
+    );
+    if (!result || result.notFound) {
+      throw notFound("Pending transaction edit recovery not found");
+    }
+    if (result.conflict || result.alreadyResolved) {
+      throw categoryConflict(
+        "These pending edits were already resolved. Refresh the transaction list.",
+      );
+    }
+    return {
+      dismissed: true,
+      recovery: pendingEditRecoveryResponse(
+        result.recovery ?? result,
+        this.#currency,
+      ),
     };
   }
 
@@ -1608,6 +1723,13 @@ export class FinanceService {
     const transactionId =
       input.transactionId ?? input.transaction_id;
     if (!transactionId) throw new TypeError("transaction_id is required");
+    const cashFlowRole =
+      input.cashFlowRole ?? input.cash_flow_role ?? null;
+    if (cashFlowRole != null && !CASH_FLOW_ROLES.has(cashFlowRole)) {
+      throw new TypeError(
+        "cash_flow_role must be spending, obligation, or transfer",
+      );
+    }
     const categoryDetailed =
       input.categoryDetailed ?? input.category_detailed ?? null;
     const updated =
@@ -1621,9 +1743,12 @@ export class FinanceService {
           ),
           categoryDetailed,
           excludedFromSpending:
-            input.excludedFromSpending ??
-            input.excluded_from_spending ??
-            null,
+            cashFlowRole == null
+              ? input.excludedFromSpending ??
+                input.excluded_from_spending ??
+                null
+              : cashFlowRole !== "spending",
+          cashFlowRole,
           userId: input.userId ?? input.user_id ?? null,
         },
       );
@@ -2089,7 +2214,25 @@ export class FinanceService {
     if (
       !["subscription", "bill", "frequent_spending"].includes(type)
     ) {
-      throw new TypeError("Invalid recurring classification");
+      throw badRequest("Invalid recurring classification");
+    }
+    const currentStreams = await optionalRepositoryCall(
+      this.#repository,
+      "listRecurringStreams",
+      null,
+      this.#workspaceId,
+      { includeInactive: true },
+    );
+    const currentStream = Array.isArray(currentStreams)
+      ? currentStreams.find((stream) => stream.id === streamId)
+      : null;
+    if (
+      currentStream?.cash_flow_role === "transfer" &&
+      type !== "frequent_spending"
+    ) {
+      throw badRequest(
+        "Transfers cannot be classified as bills or subscriptions",
+      );
     }
     const updated =
       await this.#repository.updateRecurringClassification?.(
@@ -2120,10 +2263,10 @@ export class FinanceService {
     const type = String(input.type ?? "").trim();
     const cadence = String(input.cadence ?? "").trim();
     if (!MANUAL_RECURRING_TYPES.has(type)) {
-      throw new TypeError("type must be subscription or bill");
+      throw badRequest("type must be subscription or bill");
     }
     if (!MANUAL_RECURRING_CADENCES.has(cadence)) {
-      throw new TypeError(
+      throw badRequest(
         "cadence must be weekly, biweekly, monthly, quarterly, or annual",
       );
     }
@@ -2141,24 +2284,30 @@ export class FinanceService {
       ),
     ]);
     if (!transaction) throw notFound("Transaction not found");
-    if (transaction.pending) {
-      throw new TypeError(
-        "Pending transactions cannot define recurring patterns",
-      );
-    }
     if (transaction.amount_minor >= 0) {
-      throw new TypeError(
-        "Recurring patterns require a spending transaction",
+      throw badRequest(
+        "Recurring patterns require an outflow transaction",
       );
     }
-    if (transaction.excluded_from_spending) {
-      throw new TypeError(
-        "Transactions excluded from spending cannot define recurring patterns",
+    if (effectiveCashFlowRole(transaction) === "transfer") {
+      throw badRequest(
+        "Transfers cannot define recurring patterns",
       );
     }
     if (context && !context.account_active) {
-      throw new TypeError(
+      throw badRequest(
         "Recurring patterns require an active account",
+      );
+    }
+    if (
+      !String(
+        transaction.normalized_merchant ??
+          transaction.normalized_name ??
+          "",
+      ).trim()
+    ) {
+      throw badRequest(
+        "Transaction has no stable merchant or statement match",
       );
     }
     const pattern =
@@ -3189,6 +3338,7 @@ export class FinanceService {
         categoryDefinitions,
         selectedTransaction,
         selectedRecurringContext,
+        pendingEditRecoveryResult,
       ] =
         await Promise.all([
           this.listTransactions({
@@ -3250,6 +3400,7 @@ export class FinanceService {
                 query.transaction,
               )
             : null,
+          this.listPendingEditRecoveries(),
         ]);
       const analysisCategory =
         categoryDefinitions.find(
@@ -3341,6 +3492,8 @@ export class FinanceService {
         transactionPeriod: periodSelection.name,
         transactionSort: sort,
         selectedTransaction: selectedTransactionModel,
+        pendingEditRecoveries:
+          pendingEditRecoveryResult.recoveries,
       };
     }
     if (view === "recurring") {
@@ -3808,9 +3961,160 @@ function transactionCard(transaction) {
     original_transaction_id:
       transaction.original_transaction_id ?? null,
     excluded_from_spending: Boolean(transaction.excluded_from_spending),
+    cash_flow_role: effectiveCashFlowRole(transaction),
     is_fixed: Boolean(transaction.is_fixed),
     split_version: Number(transaction.split_version ?? 0),
+    split_needs_review: Boolean(transaction.split_needs_review),
+    recurring_needs_review: Boolean(
+      transaction.recurring_needs_review,
+    ),
   };
+}
+
+function pendingEditRecoveryResponse(row, fallbackCurrency) {
+  const userState = recoveryJsonObject(
+    row?.user_state ?? row?.userState,
+  );
+  const providerFacts = recoveryJsonObject(
+    row?.provider_facts ?? row?.providerFacts,
+  );
+  const source = recoveryJsonObject(
+    providerFacts.transaction ?? providerFacts,
+  );
+  const amountMinor = Number(
+    source.provider_amount_minor ?? source.amount_minor,
+  );
+  const currency =
+    typeof (source.currency_code ?? source.currency) === "string"
+      ? String(source.currency_code ?? source.currency).toUpperCase()
+      : fallbackCurrency;
+  const metadata = recoveryJsonObject(userState.metadata);
+  const categorization = recoveryJsonObject(
+    userState.categorization_override ??
+      userState.categorizationOverride ??
+      userState.categorization,
+  );
+  const edits = {};
+  const editedFields = [];
+  const addEdit = (field, label, value) => {
+    edits[field] = value;
+    editedFields.push(label);
+  };
+  if (metadata.display_name_overridden === true) {
+    addEdit("display_name", "Name", metadata.display_name ?? null);
+  }
+  if (categorization.category_primary != null) {
+    addEdit(
+      "category_primary",
+      "Category",
+      categorization.category_primary,
+    );
+  }
+  if (categorization.cash_flow_role != null) {
+    addEdit(
+      "cash_flow_role",
+      "Cash-flow role",
+      categorization.cash_flow_role,
+    );
+  }
+  if (metadata.tags_overridden === true) {
+    addEdit(
+      "tags",
+      "Tags",
+      Array.isArray(userState.tags) ? userState.tags : [],
+    );
+  }
+  if (Number(metadata.note_version ?? 0) > 0) {
+    addEdit("note", "Note", metadata.note ?? null);
+  }
+  if (metadata.budget_month_overridden === true) {
+    addEdit(
+      "budget_month_on",
+      "Plan month",
+      metadata.budget_month_on ?? null,
+    );
+  }
+  const recurringPatterns =
+    userState.recurring_patterns ??
+    userState.recurringPatterns ??
+    userState.recurring_pattern ??
+    userState.recurringPattern;
+  if (Array.isArray(recurringPatterns) && recurringPatterns.length) {
+    addEdit(
+      "recurring_pattern",
+      "Recurring pattern",
+      recurringPatterns,
+    );
+  }
+  const splits = userState.transaction_splits ?? userState.splits;
+  if (Array.isArray(splits) && splits.length) {
+    addEdit("splits", "Split", splits);
+  }
+  return {
+    id: row.id,
+    recovered_at: isoDateTime(row.recovered_at ?? row.recoveredAt),
+    state: row.attached_at ?? row.attachedAt
+      ? "attached"
+      : row.dismissed_at ?? row.dismissedAt
+        ? "dismissed"
+        : "open",
+    attached_transaction_id:
+      row.attached_transaction_id ??
+      row.attachedTransactionId ??
+      null,
+    attached_at: isoDateTime(row.attached_at ?? row.attachedAt),
+    dismissed_at: isoDateTime(row.dismissed_at ?? row.dismissedAt),
+    source: {
+      pending_transaction_id:
+        row.pending_transaction_id ??
+        row.pendingTransactionId ??
+        source.id ??
+        null,
+      provider_transaction_id:
+        row.provider_pending_transaction_id ??
+        row.providerPendingTransactionId ??
+        source.provider_transaction_id ??
+        null,
+      name:
+        source.display_name ??
+        source.merchant_name ??
+        source.name ??
+        "Pending transaction",
+      date:
+        source.authorized_on ??
+        source.posted_on ??
+        source.date ??
+        null,
+      account:
+        source.account_name ??
+        row.account_name ??
+        source.institution_name ??
+        row.institution_name ??
+        null,
+      amount: Number.isSafeInteger(amountMinor)
+        ? money(amountMinor, currency)
+        : null,
+    },
+    edits,
+    edited_fields: editedFields.length
+      ? editedFields
+      : ["Transaction edits"],
+  };
+}
+
+function recoveryJsonObject(value) {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value;
+  }
+  if (typeof value !== "string") return {};
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed
+      : {};
+  } catch {
+    return {};
+  }
 }
 
 function recurringCard(stream) {
@@ -3824,6 +4128,7 @@ function recurringCard(stream) {
     classification_signals: stream.classification_signals ?? {},
     manual_pattern_rule_id:
       stream.manual_pattern_rule_id ?? null,
+    cash_flow_role: stream.cash_flow_role ?? null,
     override_source_finding_id:
       stream.override_source_finding_id ?? null,
     cadence: stream.cadence,
@@ -4458,6 +4763,8 @@ function transactionCleanupRuleMutation(input) {
           "displayName",
           "category_primary",
           "categoryPrimary",
+          "cash_flow_role",
+          "cashFlowRole",
           "tags",
         ].includes(key),
     )
@@ -4507,6 +4814,9 @@ function transactionCleanupRuleMutation(input) {
   const hasCategoryPrimary =
     Object.hasOwn(changes, "category_primary") ||
     Object.hasOwn(changes, "categoryPrimary");
+  const hasCashFlowRole =
+    Object.hasOwn(changes, "cash_flow_role") ||
+    Object.hasOwn(changes, "cashFlowRole");
   if (hasDisplayName) {
     result.displayName = boundedText(
       changes.display_name ?? changes.displayName,
@@ -4522,12 +4832,26 @@ function transactionCleanupRuleMutation(input) {
     );
     result.categoryPrimary = canonicalTransactionCategory(category);
   }
+  if (hasCashFlowRole) {
+    const cashFlowRole = String(
+      changes.cash_flow_role ?? changes.cashFlowRole ?? "",
+    )
+      .trim()
+      .toLowerCase();
+    if (!CASH_FLOW_ROLES.has(cashFlowRole)) {
+      throw new TypeError(
+        "cash_flow_role must be spending, obligation, or transfer",
+      );
+    }
+    result.cashFlowRole = cashFlowRole;
+  }
   if (Object.hasOwn(changes, "tags")) {
     result.tags = validateTransactionTags(changes.tags);
   }
   if (
     !hasDisplayName &&
     !hasCategoryPrimary &&
+    !hasCashFlowRole &&
     !Object.hasOwn(changes, "tags")
   ) {
     throw new TypeError(
@@ -4583,6 +4907,12 @@ function transactionCleanupRuleResponse(rule) {
     rule?.category_primary ??
     rule?.categoryPrimary ??
     null;
+  const cashFlowRole =
+    storedChanges.cash_flow_role ??
+    storedChanges.cashFlowRole ??
+    rule?.cash_flow_role ??
+    rule?.cashFlowRole ??
+    null;
   const tags = Object.hasOwn(storedChanges, "tags")
     ? storedChanges.tags
     : Object.hasOwn(rule ?? {}, "tags")
@@ -4591,6 +4921,9 @@ function transactionCleanupRuleResponse(rule) {
   if (displayName != null) changes.display_name = displayName;
   if (categoryPrimary != null) {
     changes.category_primary = categoryPrimary;
+  }
+  if (cashFlowRole != null) {
+    changes.cash_flow_role = cashFlowRole;
   }
   if (tags != null) changes.tags = tags;
 
@@ -4800,6 +5133,9 @@ function webOverview(data) {
     cash: data.cash,
     portfolio: data.portfolio,
     spending: data.spending,
+    outflows: data.outflows ?? data.spending,
+    classifiedOutflows: data.classified_outflows ?? null,
+    outflowByRole: data.outflow_by_role ?? null,
     income: data.income,
     cashFlow: data.cash_flow,
     subscriptions: data.subscriptions_monthly,
@@ -4829,7 +5165,10 @@ function spendingMonthOverMonthLabel(trend) {
 function webOverviewFromCashFlow(data) {
   return {
     income: data.income,
-    spending: data.spending,
+    spending: data.outflow_by_role?.spending ?? data.spending,
+    outflows: data.outflows ?? data.spending,
+    classifiedOutflows: data.classified_outflows ?? null,
+    outflowByRole: data.outflow_by_role ?? null,
     cashFlow: data.net,
   };
 }
@@ -5141,8 +5480,13 @@ function webTransaction(
     originalTransactionId:
       transaction.original_transaction_id ?? null,
     excludedFromSpending: transaction.excluded_from_spending,
+    cashFlowRole: effectiveCashFlowRole(transaction),
     isFixed: transaction.is_fixed,
     splitVersion: Number(transaction.split_version ?? 0),
+    splitNeedsReview: Boolean(transaction.split_needs_review),
+    recurringNeedsReview: Boolean(
+      transaction.recurring_needs_review,
+    ),
     icon: categoryIcon(category),
     ...(includeLocation
       ? { location: transaction.location ?? null }
@@ -5214,17 +5558,15 @@ function webTransactionRecurringContext(transaction, context) {
   const manualPattern = context?.pattern ?? null;
   const linkedStream = context?.linked_stream ?? null;
   let ineligibleReason = null;
-  if (transaction.status === "pending") {
+  if ((transaction.providerAmount ?? transaction.amount).amount_minor >= 0) {
     ineligibleReason =
-      "Post this transaction before creating a recurring pattern.";
-  } else if (
-    (transaction.providerAmount ?? transaction.amount).amount_minor >= 0
-  ) {
+      "Recurring patterns can only start from outflow transactions.";
+  } else if (effectiveCashFlowRole(transaction) === "transfer") {
     ineligibleReason =
-      "Recurring patterns can only start from spending transactions.";
-  } else if (transaction.excludedFromSpending) {
+      "Transfers cannot define recurring patterns. Change the cash-flow role first.";
+  } else if (context?.has_stable_identity === false) {
     ineligibleReason =
-      "Include this transaction in spending before creating a recurring pattern.";
+      "Recurring patterns require a stable merchant or statement description.";
   } else if (context && !context.account_active) {
     ineligibleReason =
       "Recurring patterns require an active account.";
@@ -5246,7 +5588,18 @@ function webTransactionRecurringContext(transaction, context) {
       manualPattern?.cadence ?? linkedStream?.cadence ?? null,
     cadenceSuggested:
       !manualPattern && Boolean(linkedStream?.cadence),
+    pending: transaction.status === "pending",
   };
+}
+
+function effectiveCashFlowRole(transaction) {
+  const value =
+    transaction?.cash_flow_role ?? transaction?.cashFlowRole ?? null;
+  if (CASH_FLOW_ROLES.has(value)) return value;
+  return transaction?.excluded_from_spending === true ||
+    transaction?.excludedFromSpending === true
+    ? "transfer"
+    : "spending";
 }
 
 function transactionCleanupRow(transaction, fallbackCurrency) {
@@ -5336,6 +5689,7 @@ function webRecurring(stream) {
     state: stream.status,
     next: stream.next_estimated_date ?? "unknown",
     type: stream.type,
+    cashFlowRole: stream.cash_flow_role ?? "spending",
     category: stream.category ?? null,
   };
 }

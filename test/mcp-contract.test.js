@@ -136,7 +136,7 @@ test("MCP instructions forbid guessed optimistic versions", () => {
   );
   assert.match(
     FINANCE_MCP_INSTRUCTIONS,
-    /active USD bills expected in the next 30 days/i,
+    /next active USD monthly bills plus other active USD bills due within 30 days/i,
   );
   assert.match(
     FINANCE_MCP_INSTRUCTIONS,
@@ -148,7 +148,7 @@ test("MCP instructions forbid guessed optimistic versions", () => {
   );
   assert.match(
     README,
-    /get_safe_to_spend` \| Current Safe to Spend, calculation factors including active bills expected in the next 30 days/i,
+    /get_safe_to_spend` \| Current Safe to Spend, calculation factors including the next monthly bills plus other active bills due within 30 days/i,
   );
 });
 

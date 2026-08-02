@@ -148,6 +148,108 @@ test("normalizer uses signed minor units and pending replacement IDs", () => {
   assert.equal(normalized.amount_minor, -1_234);
   assert.equal(normalized.provider_pending_transaction_id, "pending");
   assert.equal(normalized.normalized_name, "store");
+  assert.equal(normalized.cash_flow_role, "spending");
+  assert.equal(normalized.excluded_from_spending, false);
+});
+
+test("normalizer assigns cash-flow roles from specific Plaid categories", () => {
+  const cases = [
+    ["TRANSFER_IN", "TRANSFER_IN_ACCOUNT_TRANSFER", "transfer"],
+    ["TRANSFER_OUT", "TRANSFER_OUT_ACCOUNT_TRANSFER", "transfer"],
+    [
+      "LOAN_PAYMENTS",
+      "LOAN_PAYMENTS_CREDIT_CARD_PAYMENT",
+      "transfer",
+    ],
+    ["LOAN_PAYMENTS", "LOAN_PAYMENTS_CAR_PAYMENT", "obligation"],
+    [
+      "LOAN_PAYMENTS",
+      "LOAN_PAYMENTS_MORTGAGE_PAYMENT",
+      "obligation",
+    ],
+    [
+      "LOAN_PAYMENTS",
+      "LOAN_PAYMENTS_PERSONAL_LOAN_PAYMENT",
+      "obligation",
+    ],
+    [
+      "LOAN_PAYMENTS",
+      "LOAN_PAYMENTS_STUDENT_LOAN_PAYMENT",
+      "obligation",
+    ],
+    ["RENT_AND_UTILITIES", "RENT_AND_UTILITIES_RENT", "obligation"],
+    [
+      "LOAN_PAYMENTS",
+      "LOAN_PAYMENTS_OTHER_PAYMENT",
+      "spending",
+    ],
+    [
+      "RENT_AND_UTILITIES",
+      "RENT_AND_UTILITIES_TELEPHONE",
+      "spending",
+    ],
+    ["GENERAL_MERCHANDISE", "GENERAL_MERCHANDISE_OTHER", "spending"],
+  ];
+
+  for (const [primary, detailed, expectedRole] of cases) {
+    const normalized = normalizePlaidTransaction({
+      transaction_id: `${primary}:${detailed}`,
+      account_id: "account",
+      amount: 10,
+      iso_currency_code: "USD",
+      name: detailed,
+      date: "2026-08-01",
+      personal_finance_category: { primary, detailed },
+    });
+    assert.equal(
+      normalized.cash_flow_role,
+      expectedRole,
+      `${primary}/${detailed}`,
+    );
+    assert.equal(
+      normalized.excluded_from_spending,
+      expectedRole !== "spending",
+      `${primary}/${detailed} compatibility exclusion`,
+    );
+  }
+});
+
+test("normalizer treats only clearly named extra-principal loan payments as transfers", () => {
+  for (const name of [
+    "Extra principal payment",
+    "Additional principal paydown",
+    "Principal-only payment",
+  ]) {
+    const normalized = normalizePlaidTransaction({
+      transaction_id: name,
+      account_id: "account",
+      amount: 250,
+      iso_currency_code: "USD",
+      name,
+      date: "2026-08-01",
+      personal_finance_category: {
+        primary: "LOAN_PAYMENTS",
+        detailed: "LOAN_PAYMENTS_PERSONAL_LOAN_PAYMENT",
+      },
+    });
+    assert.equal(normalized.cash_flow_role, "transfer", name);
+    assert.equal(normalized.excluded_from_spending, true, name);
+  }
+
+  const ambiguous = normalizePlaidTransaction({
+    transaction_id: "ambiguous-loan-payment",
+    account_id: "account",
+    amount: 250,
+    iso_currency_code: "USD",
+    name: "Loan payment",
+    date: "2026-08-01",
+    personal_finance_category: {
+      primary: "LOAN_PAYMENTS",
+      detailed: "LOAN_PAYMENTS_OTHER_PAYMENT",
+    },
+  });
+  assert.equal(ambiguous.cash_flow_role, "spending");
+  assert.equal(ambiguous.excluded_from_spending, false);
 });
 
 test("normalizer preserves real transaction precision without inventing midnight", () => {

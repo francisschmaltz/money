@@ -453,7 +453,7 @@ export function buildOverview({
       transaction.posted_on >= periodStart &&
       transaction.posted_on < periodEnd,
   );
-  const { income, spending } = cashFlowTotals(periodTransactions, currency);
+  const cashFlow = cashFlowTotals(periodTransactions, currency);
   const subscriptions = recurringStreams
     .filter(
       (stream) =>
@@ -470,9 +470,12 @@ export function buildOverview({
     assets: balanceSummary.total_assets,
     liabilities: balanceSummary.total_liabilities,
     portfolio: money(portfolio, currency),
-    spending: money(spending, currency),
-    income: money(income, currency),
-    cash_flow: money(income - spending, currency),
+    spending: money(cashFlow.byRole.spending, currency),
+    outflows: money(cashFlow.outflows, currency),
+    classified_outflows: money(cashFlow.classifiedOutflows, currency),
+    outflow_by_role: moneyByCashFlowRole(cashFlow.byRole, currency),
+    income: money(cashFlow.income, currency),
+    cash_flow: money(cashFlow.income - cashFlow.outflows, currency),
     subscriptions_monthly: money(subscriptions, currency),
     account_count: balanceSummary.included_account_count,
     manual_asset_count: manualAssets.filter(
@@ -839,7 +842,7 @@ function spendingEligibility(transactions, period, currency) {
       reasons.other_currency.add(identity);
     } else if (transaction.pending) {
       reasons.pending.add(identity);
-    } else if (transaction.excluded_from_spending) {
+    } else if (effectiveCashFlowRole(transaction) !== "spending") {
       reasons.excluded_from_spending.add(identity);
     } else if (
       transaction.amount_minor > 0 &&
@@ -896,13 +899,23 @@ export function buildCashFlow({
   const buckets = new Map();
   for (const transaction of included) {
     const key = bucketStart(transaction.posted_on, interval);
-    const bucket = buckets.get(key) ?? { income: 0, spending: 0 };
-    if (transaction.amount_minor > 0 && isIncomeTransaction(transaction)) {
+    const bucket =
+      buckets.get(key) ?? {
+        income: 0,
+        outflows: 0,
+        byRole: emptyCashFlowRoleTotals(),
+      };
+    const role = effectiveCashFlowRole(transaction);
+    if (
+      role !== "transfer" &&
+      transaction.amount_minor > 0 &&
+      isIncomeTransaction(transaction)
+    ) {
       bucket.income += transaction.amount_minor;
-    } else if (transaction.amount_minor > 0) {
-      bucket.spending -= transaction.amount_minor;
     } else {
-      bucket.spending += -transaction.amount_minor;
+      const amount = -transaction.amount_minor;
+      bucket.byRole[role] += amount;
+      if (role !== "transfer") bucket.outflows += amount;
     }
     buckets.set(key, bucket);
   }
@@ -911,15 +924,25 @@ export function buildCashFlow({
     period,
     interval,
     income: money(totals.income, currency),
-    spending: money(totals.spending, currency),
-    net: money(totals.income - totals.spending, currency),
+    // `spending` is retained as a compatibility alias for total cash outflow.
+    spending: money(totals.outflows, currency),
+    outflows: money(totals.outflows, currency),
+    classified_outflows: money(totals.classifiedOutflows, currency),
+    outflow_by_role: moneyByCashFlowRole(totals.byRole, currency),
+    net: money(totals.income - totals.outflows, currency),
     buckets: [...buckets.entries()]
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([timestamp, value]) => ({
         timestamp,
         income: money(value.income, currency),
-        spending: money(value.spending, currency),
-        net: money(value.income - value.spending, currency),
+        spending: money(value.outflows, currency),
+        outflows: money(value.outflows, currency),
+        classified_outflows: money(
+          sumCashFlowRoleTotals(value.byRole),
+          currency,
+        ),
+        outflow_by_role: moneyByCashFlowRole(value.byRole, currency),
+        net: money(value.income - value.outflows, currency),
       })),
   };
 }
@@ -1414,8 +1437,10 @@ export function shiftDateOnly(value, days) {
 function spendingTransactions(transactions, period, currency) {
   return postedLedgerTransactions(transactions, period, currency).filter(
     (transaction) =>
-      transaction.amount_minor < 0 ||
-      (transaction.amount_minor > 0 && !isIncomeTransaction(transaction)),
+      effectiveCashFlowRole(transaction) === "spending" &&
+      (transaction.amount_minor < 0 ||
+        (transaction.amount_minor > 0 &&
+          !isIncomeTransaction(transaction))),
   );
 }
 
@@ -1424,36 +1449,69 @@ function postedLedgerTransactions(transactions, period, currency) {
     (transaction) =>
       transaction.currency_code === currency &&
       !transaction.pending &&
-      !transaction.excluded_from_spending &&
       transaction.posted_on >= period.start_on &&
       transaction.posted_on < period.end_on,
   );
 }
 
 function cashFlowTotals(transactions, currency) {
-  return transactions
-    .filter(
-      (transaction) =>
-        transaction.currency_code === currency &&
-        !transaction.pending &&
-        !transaction.excluded_from_spending,
-    )
-    .reduce(
-      (totals, transaction) => {
-        if (
-          transaction.amount_minor > 0 &&
-          isIncomeTransaction(transaction)
-        ) {
-          totals.income += transaction.amount_minor;
-        } else if (transaction.amount_minor > 0) {
-          totals.spending -= transaction.amount_minor;
-        } else {
-          totals.spending += -transaction.amount_minor;
-        }
-        return totals;
-      },
-      { income: 0, spending: 0 },
-    );
+  const totals = {
+    income: 0,
+    outflows: 0,
+    byRole: emptyCashFlowRoleTotals(),
+  };
+  for (const transaction of transactions) {
+    if (
+      transaction.currency_code !== currency ||
+      transaction.pending
+    ) {
+      continue;
+    }
+    const role = effectiveCashFlowRole(transaction);
+    if (
+      role !== "transfer" &&
+      transaction.amount_minor > 0 &&
+      isIncomeTransaction(transaction)
+    ) {
+      totals.income += transaction.amount_minor;
+      continue;
+    }
+    const amount = -transaction.amount_minor;
+    totals.byRole[role] += amount;
+    if (role !== "transfer") totals.outflows += amount;
+  }
+  return {
+    ...totals,
+    classifiedOutflows: sumCashFlowRoleTotals(totals.byRole),
+  };
+}
+
+function emptyCashFlowRoleTotals() {
+  return { spending: 0, obligation: 0, transfer: 0 };
+}
+
+function sumCashFlowRoleTotals(totals) {
+  return totals.spending + totals.obligation + totals.transfer;
+}
+
+function moneyByCashFlowRole(totals, currency) {
+  return Object.fromEntries(
+    Object.entries(totals).map(([role, amount]) => [
+      role,
+      money(amount, currency),
+    ]),
+  );
+}
+
+function effectiveCashFlowRole(transaction) {
+  const explicit =
+    transaction.cash_flow_role ?? transaction.cashFlowRole ?? null;
+  if (["spending", "obligation", "transfer"].includes(explicit)) {
+    return explicit;
+  }
+  return transaction.excluded_from_spending === true
+    ? "transfer"
+    : "spending";
 }
 
 function sumSpend(transactions) {

@@ -37,6 +37,7 @@ test("cleanup rule service normalizes matchers and returns their mode", async ()
         normalized_match_value: input.normalizedMatchValue,
         display_name: input.displayName,
         category_primary: input.categoryPrimary,
+        cash_flow_role: input.cashFlowRole,
         tags: input.tags,
         enabled: input.enabled,
       });
@@ -85,6 +86,7 @@ test("cleanup rule service normalizes matchers and returns their mode", async ()
       changes: {
         display_name: "Apple Services",
         category_primary: "bank fees",
+        cash_flow_role: "obligation",
         tags: [],
       },
       enabled: false,
@@ -102,6 +104,7 @@ test("cleanup rule service normalizes matchers and returns their mode", async ()
   assert.deepEqual(created.rule.changes, {
     display_name: "Apple Services",
     category_primary: "Fees & Interest",
+    cash_flow_role: "obligation",
     tags: [],
   });
   assert.deepEqual(calls[0], [
@@ -119,6 +122,7 @@ test("cleanup rule service normalizes matchers and returns their mode", async ()
       normalizedMatchValue: "aapl srv",
       displayName: "Apple Services",
       categoryPrimary: "Fees & Interest",
+      cashFlowRole: "obligation",
       tags: [],
       enabled: false,
       userId: "user_admin",
@@ -348,6 +352,13 @@ test("cleanup rule service rejects unsafe or ambiguous rules before repository w
       changes: { tags: ["Bills", "bïlls"] },
     }),
     /tags must be unique names/,
+  );
+  await assert.rejects(
+    service.createTransactionCleanupRule({
+      matcher: { field: "normalized_merchant", value: "Apple" },
+      changes: { cash_flow_role: "bill-ish" },
+    }),
+    /cash_flow_role must be spending, obligation, or transfer/,
   );
   await assert.rejects(
     service.createTransactionCleanupRule({

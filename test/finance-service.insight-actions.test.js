@@ -347,6 +347,61 @@ test("manual recurring classification clears automatic source ownership", async 
   });
 });
 
+test("transfer streams cannot be reclassified into bills", async () => {
+  let writes = 0;
+  const service = createFinanceService({
+    repository: {
+      async listRecurringStreams() {
+        return [{ id: "card-payment", cash_flow_role: "transfer" }];
+      },
+      async updateRecurringClassification() {
+        writes += 1;
+        return { stream_type: "bill" };
+      },
+    },
+  });
+
+  await assert.rejects(
+    service.updateRecurringClassification({
+      stream_id: "card-payment",
+      type: "bill",
+    }),
+    (error) =>
+      error.statusCode === 400 &&
+      error.expose === true &&
+      /Transfers cannot be classified as bills or subscriptions/.test(
+        error.message,
+      ),
+  );
+  assert.equal(writes, 0);
+});
+
+test("an active manual pattern blocks changing its transaction to Transfer", async () => {
+  const service = createFinanceService({
+    repository: {
+      async batchEditTransactions() {
+        return {
+          conflict: "active_recurring_pattern",
+          transactionIds: ["transaction-1"],
+        };
+      },
+    },
+  });
+
+  await assert.rejects(
+    service.batchEditTransactions({
+      transaction_ids: ["transaction-1"],
+      changes: { cash_flow_role: "transfer" },
+    }),
+    (error) =>
+      error.statusCode === 400 &&
+      error.expose === true &&
+      /Remove the active Bill or Subscription pattern/.test(
+        error.message,
+      ),
+  );
+});
+
 test("transaction recurring patterns validate spending, persist actor intent, and queue recomputation", async () => {
   const calls = [];
   const repository = {
@@ -356,6 +411,7 @@ test("transaction recurring patterns validate spending, persist actor intent, an
         pending: false,
         amount_minor: -8_500,
         excluded_from_spending: false,
+        normalized_name: "utility bill",
       };
     },
     async getTransactionRecurringContext() {
@@ -480,7 +536,7 @@ test("transaction recurring patterns reject ineligible rows before persistence",
       type: "subscription",
       cadence: "monthly",
     }),
-    /require a spending transaction/,
+    /require an outflow transaction/,
   );
   assert.equal(wrote, false);
 });

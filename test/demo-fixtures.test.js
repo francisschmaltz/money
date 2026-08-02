@@ -79,7 +79,7 @@ test("web and service demo data share canonical entity ids", async () => {
     ),
   );
   assert.equal(buildDefaultAccounts().length, 8);
-  assert.equal(buildDefaultTransactions().length, 16);
+  assert.equal(buildDefaultTransactions().length, 17);
 });
 
 test("every posted default transaction supports a real batch edit", async () => {
@@ -102,7 +102,7 @@ test("every posted default transaction supports a real batch edit", async () => 
   });
 
   assert.equal(updated.updated_count, ids.length);
-  assert.equal(ids.length, 15);
+  assert.equal(ids.length, 16);
   assert.ok(
     refreshed.data.transactions.every(
       (transaction) =>

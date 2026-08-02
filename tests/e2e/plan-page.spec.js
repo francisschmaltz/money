@@ -43,6 +43,37 @@ test("Safe to Spend explains its four-part calculation without overflowing", asy
   }
 });
 
+test("Plan shows a paid obligation and keeps its next payment visible", async ({
+  page,
+}) => {
+  await page.goto("/plan");
+  const obligations = page.getByRole("region", {
+    name: "Obligations",
+  });
+
+  await expect(obligations).toContainText(
+    "Outside Spending, but reserved in Safe to Spend.",
+  );
+  await expect(
+    obligations.getByRole("link", { name: "Wells Fargo Auto" }),
+  ).toHaveAttribute("href", "/recurring?item=rec_wells_fargo_auto");
+  await expect(
+    obligations.getByRole("link", { name: /Paid Jul 16, 2026/ }),
+  ).toHaveAttribute(
+    "href",
+    "/transactions?transaction=txn_wells_fargo_auto",
+  );
+  await expect(obligations).toContainText("Next Aug 16, 2026");
+  await expect(obligations).toContainText("$1,000.00");
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  const width = await obligations.evaluate((element) => ({
+    scroll: element.scrollWidth,
+    client: element.clientWidth,
+  }));
+  expect(width.scroll).toBeLessThanOrEqual(width.client + 1);
+});
+
 test("Plan keeps one Safe to Spend card and a fixed, editable budget", async ({
   page,
 }) => {

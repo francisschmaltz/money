@@ -137,6 +137,7 @@ export function buildUxStressTransactions({
       amount: money(amountMinor),
       pending,
       excluded_from_spending: transfer,
+      cash_flow_role: transfer ? "transfer" : "spending",
       tags:
         index % 19 === 0
           ? ["Business", "Reimbursable"]

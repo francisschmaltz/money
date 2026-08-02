@@ -699,6 +699,13 @@ function demoServiceTransactionForWeb(transaction, demo) {
         transaction.excluded_from_spending ??
         stored?.excludedFromSpending,
       ),
+    cashFlowRole:
+      transaction.cash_flow_role ??
+      stored?.cashFlowRole ??
+      ((transaction.excluded_from_spending ??
+        stored?.excludedFromSpending)
+        ? "transfer"
+        : "spending"),
     isFixed:
       Boolean(transaction.is_fixed ?? stored?.isFixed),
     recurringPattern:
@@ -1121,6 +1128,7 @@ async function demoPageModel(
               : {}),
           }
         : null,
+      pendingEditRecoveries: [],
     };
   }
   if (view === "recurring") {
@@ -1379,6 +1387,7 @@ function demoTimelineSpendingModel(
     amount_minor: Number(transaction.amount?.amount_minor ?? 0),
     currency_code: transaction.amount?.currency ?? "USD",
     pending: transaction.status === "pending",
+    cash_flow_role: transaction.cashFlowRole,
     excluded_from_spending: Boolean(
       transaction.excludedFromSpending,
     ),
@@ -1408,7 +1417,9 @@ function demoTimelineSpendingModel(
     overview: {
       ...demo.overview,
       income: cashFlow.income,
-      spending: cashFlow.spending,
+      spending:
+        cashFlow.outflow_by_role?.spending ?? cashFlow.spending,
+      outflows: cashFlow.outflows ?? cashFlow.spending,
       cashFlow: cashFlow.net,
     },
     spendingDetails: webSpendingDetails(

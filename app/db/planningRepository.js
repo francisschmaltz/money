@@ -2265,6 +2265,10 @@ export class PgPlanningRepository {
         WHERE split.workspace_id = $1
           AND ($2::text[] IS NULL OR split.transaction_id = ANY($2))
           AND (
+            transaction.split_needs_review = false
+            OR $2::text[] IS NOT NULL
+          )
+          AND (
             $3::date IS NULL
             OR (
               CASE
@@ -2365,7 +2369,6 @@ export class PgPlanningRepository {
         );
         const invalid =
           lines.length < 2 ||
-          parent.pending ||
           parent.currency_code !== "USD" ||
           parentAmount === 0 ||
           lines.some(
@@ -2441,7 +2444,11 @@ export class PgPlanningRepository {
       const advanced = await client.query(
         `
           UPDATE transactions
-          SET split_version = split_version + 1
+          SET split_version = split_version + 1,
+              split_needs_review = false,
+              split_overridden = true,
+              split_updated_at = now(),
+              updated_at = now()
           WHERE workspace_id = $1
             AND id = $2
             AND split_version = $3

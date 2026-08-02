@@ -55,13 +55,14 @@ export function detectRecurringStreams(
     .filter(
       (transaction) =>
         !transaction.pending &&
-        !transaction.excluded_from_spending &&
+        transactionCashFlowRole(transaction) !== "transfer" &&
         transaction.amount_minor < 0 &&
         transaction.posted_on &&
         transaction.id,
     )
     .map((transaction) => ({
       ...transaction,
+      cash_flow_role: transactionCashFlowRole(transaction),
       serviceFamily: serviceFamily(transaction, aliasMap),
       spendMinor: -transaction.amount_minor,
     }))
@@ -158,6 +159,7 @@ export function detectRecurringStreams(
           expected * cadence.monthlyFactor,
         ),
         currency_code: first.currency_code ?? "USD",
+        cash_flow_role: last.cash_flow_role,
         first_seen_on: first.posted_on,
         last_seen_on: last.posted_on,
         next_expected_on: nextExpectedDate(last.posted_on, cadence.name),
@@ -286,6 +288,7 @@ function buildManualStreams(transactions, patterns, now) {
         expected * cadence.monthlyFactor,
       ),
       currency_code: first.currency_code ?? "USD",
+      cash_flow_role: last.cash_flow_role,
       first_seen_on: first.posted_on,
       last_seen_on: last.posted_on,
       next_expected_on: nextExpectedDate(
@@ -303,6 +306,19 @@ function buildManualStreams(transactions, patterns, now) {
     });
   }
   return streams;
+}
+
+function transactionCashFlowRole(transaction) {
+  if (
+    ["spending", "obligation", "transfer"].includes(
+      transaction.cash_flow_role,
+    )
+  ) {
+    return transaction.cash_flow_role;
+  }
+  return transaction.excluded_from_spending
+    ? "transfer"
+    : "spending";
 }
 
 function serviceFamily(transaction, aliases) {

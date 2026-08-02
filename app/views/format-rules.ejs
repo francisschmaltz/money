@@ -89,6 +89,9 @@
         ? `Rename to ${rule.changes.display_name}`
         : null,
       rule.changes?.category_primary || null,
+      rule.changes?.cash_flow_role
+        ? `Cash-flow role: ${rule.changes.cash_flow_role}`
+        : null,
       Object.hasOwn(rule.changes || {}, "tags")
         ? rule.changes.tags.length
           ? rule.changes.tags.join(" · ")

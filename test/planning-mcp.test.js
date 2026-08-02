@@ -57,12 +57,15 @@ test("planning tool copy explains effective transfer eligibility and budget nett
     "reverse_goal_spend",
   ).definition.description;
 
-  assert.match(safeToSpendDescription, /bills expected in the next 30 days/i);
+  assert.match(
+    safeToSpendDescription,
+    /next monthly bills plus other bills due within 30 days/i,
+  );
   assert.match(safeToSpendDescription, /Subscriptions.*excluded/i);
   assert.match(safeToSpendDescription, /estimates from recurring history/i);
   assert.match(
     budgetDescription,
-    /provider transfers stay out unless explicitly marked Include in spending/i,
+    /provider transfer appears only if its cash-flow role is explicitly changed to Spending/i,
   );
   assert.match(
     budgetDescription,
@@ -162,8 +165,11 @@ test("MCP goal finishing releases unused cash but never adds money after overspe
     .handler({});
   assert.equal(
     afterUnderused.structuredContent.data.safe_to_spend.amount,
-    beforeUnderused.structuredContent.data.safe_to_spend
-      .amount + 5_000,
+    Math.round(
+      (beforeUnderused.structuredContent.data.safe_to_spend.amount +
+        5_000) *
+        100,
+    ) / 100,
   );
 
   const created = await service.createFinanceGoal({
@@ -313,7 +319,17 @@ test("planning reads emit the six version-compatible card kinds", async () => {
       assert.equal(
         result.structuredContent.data.calculation
           .expected_bill_occurrence_count,
-        4,
+        5,
+      );
+      assert.equal(
+        result.structuredContent.data.calculation
+          .expected_bill_matched_pending_count,
+        0,
+      );
+      assert.equal(
+        result.structuredContent.data.calculation
+          .expected_bill_projected_count,
+        5,
       );
       assert.equal(
         result.structuredContent.data.calculation

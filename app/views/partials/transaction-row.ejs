@@ -23,7 +23,6 @@
       type="checkbox"
       value="<%= transaction.id %>"
       data-bulk-transaction-select
-      <%= transaction.status === "pending" ? "disabled" : "" %>
     >
     <span class="sr-only">Select <%= transaction.merchant %></span>
   </label>

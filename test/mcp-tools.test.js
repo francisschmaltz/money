@@ -848,6 +848,7 @@ test("accepts every real FinanceService wrapper and translates MCP filters", asy
             amount_minor: -1_250,
             currency_code: "USD",
             pending: false,
+            cash_flow_role: "obligation",
             excluded_from_spending: false,
             is_fixed: false,
           },
@@ -923,6 +924,11 @@ test("accepts every real FinanceService wrapper and translates MCP filters", asy
         raw_name: "ACME ONLINE PURCHASE 0042",
       },
     ],
+  );
+  assert.equal(
+    transactionResult.structuredContent.data.transactions[0]
+      .cash_flow_role,
+    "obligation",
   );
 });
 

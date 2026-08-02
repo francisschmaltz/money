@@ -68,6 +68,8 @@ test("Apple Card CSV parsing handles quoted commas, CRLF, signs, and date-only a
   assert.equal(parsed.transactions[0].amount_minor, -1_010);
   assert.equal(parsed.transactions[0].category_primary, "Groceries");
   assert.equal(parsed.transactions[0].category_detailed, "Grocery");
+  assert.equal(parsed.transactions[0].cash_flow_role, "spending");
+  assert.equal(parsed.transactions[0].excluded_from_spending, false);
   assert.equal(
     parsed.transactions[0].name,
     "Synthetic purchase, location 2",
@@ -78,7 +80,36 @@ test("Apple Card CSV parsing handles quoted commas, CRLF, signs, and date-only a
   assert.equal(parsed.transactions[1].category_primary, "Dining");
   assert.equal(parsed.transactions[1].cardholder_name, null);
   assert.equal(parsed.transactions[1].source_transaction_type, "Credit");
-  assert.equal(parsed.transactions[1].excluded_from_spending, true);
+  assert.equal(parsed.transactions[1].cash_flow_role, "spending");
+  assert.equal(parsed.transactions[1].excluded_from_spending, false);
+  assert.match(parsed.warnings[0].message, /nets against spending/);
+});
+
+test("Apple Card payments are transfers while merchant refunds net spending", () => {
+  const parsed = parseAppleCardCsv(
+    csv([
+      row({
+        description: "Payment - Thank You",
+        merchant: "",
+        category: "Payment",
+        type: "Payment",
+        amount: "-750.00",
+      }),
+      row({
+        description: "Returned purchase",
+        merchant: "Example Market",
+        type: "Credit",
+        amount: "-10.10",
+      }),
+    ]),
+  );
+
+  assert.equal(parsed.transactions[0].amount_minor, 75_000);
+  assert.equal(parsed.transactions[0].cash_flow_role, "transfer");
+  assert.equal(parsed.transactions[0].excluded_from_spending, true);
+  assert.equal(parsed.transactions[1].amount_minor, 1_010);
+  assert.equal(parsed.transactions[1].cash_flow_role, "spending");
+  assert.equal(parsed.transactions[1].excluded_from_spending, false);
 });
 
 test("Apple Card CSV parsing handles BOMs, escaped quotes, embedded newlines, and blank rows", () => {

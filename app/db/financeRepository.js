@@ -75,6 +75,25 @@ function dateValue(value) {
   return value == null ? null : new Date(value).toISOString();
 }
 
+function timestampValue(value) {
+  if (value == null) return null;
+  const timestamp = new Date(value).getTime();
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function jsonObject(value, fallback = {}) {
+  if (typeof value === "string") {
+    try {
+      return jsonObject(JSON.parse(value), fallback);
+    } catch {
+      return fallback;
+    }
+  }
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value
+    : fallback;
+}
+
 function transactionSort(value) {
   const normalized = String(value ?? "date").trim().toLowerCase();
   return TRANSACTION_SORTS.has(normalized) ? normalized : "date";
@@ -489,6 +508,1513 @@ export class PgFinanceRepository {
     );
   }
 
+  async #snapshotUnmatchedPendingEdits(
+    client,
+    { providerIds, itemId, replacementProviderIds = [] },
+  ) {
+    const removedIds = [...new Set(providerIds)].filter(Boolean);
+    if (!removedIds.length) return;
+    await client.query(
+      `
+        SELECT pending.id
+        FROM transactions pending
+        JOIN accounts account
+          ON account.id = pending.account_id
+         AND account.connection_id = $2
+        WHERE pending.provider_transaction_id = ANY($1::text[])
+          AND pending.pending = true
+          AND NOT (
+            pending.provider_transaction_id = ANY($3::text[])
+          )
+        ORDER BY pending.id
+        FOR UPDATE OF pending
+      `,
+      [removedIds, itemId, replacementProviderIds],
+    );
+    await client.query(
+      `
+        WITH candidates AS (
+          SELECT
+            pending.*,
+            CASE
+              WHEN metadata.transaction_id IS NULL THEN NULL
+              ELSE jsonb_build_object(
+                'display_name', metadata.display_name,
+                'display_name_overridden',
+                  metadata.display_name_overridden,
+                'display_name_updated_at',
+                  metadata.display_name_updated_at,
+                'tags_overridden', metadata.tags_overridden,
+                'tags_updated_at', metadata.tags_updated_at,
+                'note', metadata.note,
+                'note_version', metadata.note_version,
+                'note_updated_by', metadata.note_updated_by,
+                'note_updated_at', metadata.note_updated_at,
+                'budget_month_on', metadata.budget_month_on,
+                'budget_month_overridden',
+                  metadata.budget_month_overridden,
+                'budget_month_updated_at',
+                  metadata.budget_month_updated_at,
+                'created_by', metadata.created_by,
+                'created_at', metadata.created_at,
+                'updated_at', metadata.updated_at
+              )
+            END AS metadata_state,
+            CASE
+              WHEN override.id IS NULL THEN NULL
+              ELSE jsonb_build_object(
+                'category_primary', override.category_primary,
+                'category_detailed', override.category_detailed,
+                'category_id', override.category_id,
+                'category_overridden', override.category_overridden,
+                'category_updated_at', override.category_updated_at,
+                'excluded_from_spending',
+                  override.excluded_from_spending,
+                'excluded_from_spending_overridden',
+                  override.excluded_from_spending_overridden,
+                'excluded_from_spending_updated_at',
+                  override.excluded_from_spending_updated_at,
+                'cash_flow_role', override.cash_flow_role,
+                'cash_flow_role_overridden',
+                  override.cash_flow_role_overridden,
+                'cash_flow_role_updated_at',
+                  override.cash_flow_role_updated_at,
+                'is_fixed', override.is_fixed,
+                'is_fixed_overridden', override.is_fixed_overridden,
+                'is_fixed_updated_at', override.is_fixed_updated_at,
+                'created_by', override.created_by,
+                'created_at', override.created_at,
+                'updated_at', override.updated_at
+              )
+            END AS categorization_state,
+            COALESCE(
+              (
+                SELECT jsonb_agg(
+                  jsonb_build_object(
+                    'name', tag.name,
+                    'normalized_name', tag.normalized_name,
+                    'created_by', assignment.created_by,
+                    'created_at', assignment.created_at
+                  )
+                  ORDER BY tag.normalized_name, tag.id
+                )
+                FROM transaction_tag_assignments assignment
+                JOIN transaction_tags tag
+                  ON tag.workspace_id = assignment.workspace_id
+                 AND tag.id = assignment.tag_id
+                WHERE assignment.workspace_id = pending.workspace_id
+                  AND assignment.transaction_id = pending.id
+              ),
+              '[]'::jsonb
+            ) AS tag_state,
+            COALESCE(
+              (
+                SELECT jsonb_agg(
+                  jsonb_build_object(
+                    'id', split.id,
+                    'line_index', split.line_index,
+                    'category', split.category,
+                    'category_id', split.category_id,
+                    'amount_minor', split.amount_minor,
+                    'note', split.note,
+                    'created_by', split.created_by,
+                    'created_at', split.created_at,
+                    'updated_at', split.updated_at
+                  )
+                  ORDER BY split.line_index, split.id
+                )
+                FROM transaction_splits split
+                WHERE split.workspace_id = pending.workspace_id
+                  AND split.transaction_id = pending.id
+              ),
+              '[]'::jsonb
+            ) AS split_state,
+            COALESCE(
+              (
+                SELECT jsonb_agg(
+                  jsonb_build_object(
+                    'id', rule.id,
+                    'stream_id', rule.stream_id,
+                    'account_id', rule.account_id,
+                    'match_field', rule.match_field,
+                    'normalized_match_value',
+                      rule.normalized_match_value,
+                    'anchor_amount_minor', rule.anchor_amount_minor,
+                    'currency_code', rule.currency_code,
+                    'stream_type', rule.stream_type,
+                    'cadence', rule.cadence,
+                    'active', rule.active,
+                    'created_by', rule.created_by,
+                    'updated_by', rule.updated_by,
+                    'created_at', rule.created_at,
+                    'updated_at', rule.updated_at
+                  )
+                  ORDER BY rule.updated_at DESC, rule.id
+                )
+                FROM recurring_pattern_rules rule
+                WHERE rule.workspace_id = pending.workspace_id
+                  AND rule.source_transaction_id = pending.id
+              ),
+              '[]'::jsonb
+            ) AS recurring_state
+          FROM transactions pending
+          JOIN accounts account
+            ON account.id = pending.account_id
+           AND account.connection_id = $2
+          LEFT JOIN transaction_metadata metadata
+            ON metadata.workspace_id = pending.workspace_id
+           AND metadata.transaction_id = pending.id
+          LEFT JOIN categorization_overrides override
+            ON override.workspace_id = pending.workspace_id
+           AND override.transaction_id = pending.id
+          WHERE pending.provider_transaction_id = ANY($1::text[])
+            AND pending.pending = true
+            AND NOT (
+              pending.provider_transaction_id = ANY($3::text[])
+            )
+        ),
+        snapshots AS (
+          SELECT
+            candidate.*,
+            '{}'::jsonb
+              || CASE
+                WHEN candidate.metadata_state IS NOT NULL
+                  THEN jsonb_build_object(
+                    'metadata', candidate.metadata_state
+                  )
+                ELSE '{}'::jsonb
+              END
+              || CASE
+                WHEN COALESCE(
+                  (candidate.metadata_state ->>
+                    'tags_overridden')::boolean,
+                  false
+                )
+                  THEN jsonb_build_object('tags', candidate.tag_state)
+                ELSE '{}'::jsonb
+              END
+              || CASE
+                WHEN candidate.categorization_state IS NOT NULL
+                  THEN jsonb_build_object(
+                    'categorization_override',
+                    candidate.categorization_state
+                  )
+                ELSE '{}'::jsonb
+              END
+              || CASE
+                WHEN candidate.split_overridden = true
+                  THEN jsonb_build_object(
+                    'splits', candidate.split_state,
+                    'split_version', candidate.split_version,
+                    'split_overridden', true,
+                    'split_updated_at', candidate.split_updated_at,
+                    'split_needs_review',
+                      candidate.split_needs_review
+                  )
+                ELSE '{}'::jsonb
+              END
+              || CASE
+                WHEN jsonb_array_length(candidate.recurring_state) > 0
+                  THEN jsonb_build_object(
+                    'recurring_patterns', candidate.recurring_state
+                  )
+                ELSE '{}'::jsonb
+              END AS user_state
+          FROM candidates candidate
+        )
+        INSERT INTO unmatched_pending_transaction_edits (
+          id,
+          workspace_id,
+          account_id,
+          pending_transaction_id,
+          provider_pending_transaction_id,
+          user_state,
+          provider_facts,
+          pending_created_at,
+          pending_updated_at,
+          recovered_at,
+          updated_at
+        )
+        SELECT
+          'pending-recovery-' || md5(
+            snapshot.workspace_id || ':' || snapshot.id
+          ),
+          snapshot.workspace_id,
+          snapshot.account_id,
+          snapshot.id,
+          snapshot.provider_transaction_id,
+          snapshot.user_state,
+          jsonb_build_object(
+            'merchant_name', snapshot.merchant_name,
+            'name', snapshot.name,
+            'category_primary', snapshot.category_primary,
+            'category_detailed', snapshot.category_detailed,
+            'amount_minor', snapshot.amount_minor,
+            'currency_code', snapshot.currency_code,
+            'authorized_at', snapshot.authorized_at,
+            'authorized_on', snapshot.authorized_on,
+            'posted_at', snapshot.posted_at,
+            'posted_on', snapshot.posted_on,
+            'cash_flow_role', snapshot.cash_flow_role,
+            'payment_channel', snapshot.payment_channel
+          ),
+          snapshot.created_at,
+          snapshot.updated_at,
+          now(),
+          now()
+        FROM snapshots snapshot
+        WHERE snapshot.user_state <> '{}'::jsonb
+        ON CONFLICT (
+          workspace_id,
+          provider_pending_transaction_id
+        ) DO UPDATE SET
+          account_id = EXCLUDED.account_id,
+          pending_transaction_id = EXCLUDED.pending_transaction_id,
+          user_state = EXCLUDED.user_state,
+          provider_facts = EXCLUDED.provider_facts,
+          pending_created_at = EXCLUDED.pending_created_at,
+          pending_updated_at = EXCLUDED.pending_updated_at,
+          recovered_at = now(),
+          updated_at = now()
+        WHERE unmatched_pending_transaction_edits.attached_at IS NULL
+          AND unmatched_pending_transaction_edits.dismissed_at IS NULL
+      `,
+      [removedIds, itemId, replacementProviderIds],
+    );
+  }
+
+  async #attachRecoveredSplits(
+    client,
+    {
+      workspaceId,
+      transactionId,
+      target,
+      recovery,
+      providerFacts,
+      splits,
+      splitOverridden,
+      splitUpdatedAt,
+      splitVersion,
+      splitNeedsReview,
+      userId,
+    },
+  ) {
+    if (!splitOverridden) return;
+    const sourceSplitUpdatedAt = timestampValue(
+      splitUpdatedAt ?? recovery.pending_updated_at,
+    );
+    if (
+      target.split_overridden === true &&
+      timestampValue(target.split_updated_at) > sourceSplitUpdatedAt
+    ) {
+      return;
+    }
+
+    const sourceAmount = Number(providerFacts.amount_minor);
+    const targetAmount = Number(target.amount_minor);
+    const validSource =
+      Number.isSafeInteger(sourceAmount) &&
+      Number.isSafeInteger(targetAmount) &&
+      sourceAmount !== 0 &&
+      targetAmount !== 0 &&
+      providerFacts.currency_code === target.currency_code &&
+      Math.sign(sourceAmount) === Math.sign(targetAmount) &&
+      splitNeedsReview !== true &&
+      splits.length >= 2 &&
+      splits.every(
+        (line) =>
+          Number.isSafeInteger(Number(line.amount_minor)) &&
+          Math.sign(Number(line.amount_minor)) === Math.sign(sourceAmount),
+      ) &&
+      splits.reduce(
+        (sum, line) => sum + Number(line.amount_minor),
+        0,
+      ) === sourceAmount;
+    const largestIndex = splits.reduce(
+      (winner, line, index, lines) => {
+        const winnerAmount = Math.abs(
+          Number(lines[winner]?.amount_minor ?? 0),
+        );
+        const amount = Math.abs(Number(line.amount_minor));
+        if (amount > winnerAmount) return index;
+        if (amount < winnerAmount) return winner;
+        return Number(line.line_index) <
+          Number(lines[winner]?.line_index ?? Number.MAX_SAFE_INTEGER)
+          ? index
+          : winner;
+      },
+      0,
+    );
+    const delta = targetAmount - sourceAmount;
+    const adjustedLargest =
+      Number(splits[largestIndex]?.amount_minor ?? 0) + delta;
+    const canReconcile =
+      validSource &&
+      adjustedLargest !== 0 &&
+      Math.sign(adjustedLargest) === Math.sign(targetAmount);
+    const attachedSplits = splits.map((line, index) => ({
+      id: randomUUID(),
+      line_index: Number(line.line_index),
+      category: String(line.category),
+      category_id: line.category_id ?? null,
+      amount_minor:
+        Number(line.amount_minor) +
+        (canReconcile && index === largestIndex ? delta : 0),
+      note: line.note ?? null,
+      created_by: line.created_by ?? userId,
+    }));
+
+    await client.query(
+      `
+        DELETE FROM transaction_splits
+        WHERE workspace_id = $1 AND transaction_id = $2
+      `,
+      [workspaceId, transactionId],
+    );
+    if (attachedSplits.length) {
+      await client.query(
+        `
+          INSERT INTO transaction_splits (
+            id, workspace_id, transaction_id, line_index,
+            category, category_id, amount_minor, note, created_by
+          )
+          SELECT
+            row.id, $1, $2, row.line_index, row.category,
+            row.category_id, row.amount_minor, row.note, row.created_by
+          FROM jsonb_to_recordset($3::jsonb) AS row(
+            id text,
+            line_index smallint,
+            category text,
+            category_id text,
+            amount_minor bigint,
+            note text,
+            created_by text
+          )
+        `,
+        [workspaceId, transactionId, JSON.stringify(attachedSplits)],
+      );
+    }
+    await client.query(
+      `
+        UPDATE transactions
+        SET split_version = GREATEST(split_version, $4::integer) + 1,
+            split_needs_review = $3,
+            split_overridden = true,
+            split_updated_at = $5::timestamptz,
+            updated_at = now()
+        WHERE workspace_id = $1 AND id = $2
+      `,
+      [
+        workspaceId,
+        transactionId,
+        splits.length > 0 && !canReconcile,
+        Number(splitVersion ?? 0),
+        splitUpdatedAt ?? recovery.pending_updated_at,
+      ],
+    );
+  }
+
+  async #handoffPendingTransactionEdits(
+    client,
+    replacementProviderIds,
+  ) {
+    const providerIds = [...new Set(replacementProviderIds)].filter(Boolean);
+    if (!providerIds.length) return;
+
+    const handoffResult = await client.query(
+      `
+        SELECT
+          posted.workspace_id,
+          posted.id AS posted_id,
+          pending.id AS pending_id,
+          (
+            split_state.split_count = 0
+            OR (
+              posted.currency_code = pending.currency_code
+              AND sign(posted.amount_minor) = sign(pending.amount_minor)
+              AND posted.amount_minor <> 0
+              AND pending.amount_minor <> 0
+              AND pending.split_needs_review = false
+              AND (
+                split_state.split_count >= 2
+                AND split_state.split_total = pending.amount_minor
+                AND split_state.all_match_pending_sign
+                AND split_state.largest_amount_minor
+                    + posted.amount_minor
+                    - pending.amount_minor <> 0
+                AND sign(
+                  split_state.largest_amount_minor
+                    + posted.amount_minor
+                    - pending.amount_minor
+                ) = sign(posted.amount_minor)
+              )
+            )
+          ) AS handoff_safe,
+          (
+            pending.split_overridden = true
+            AND (
+              posted.split_overridden = false
+              OR COALESCE(
+                posted.split_updated_at,
+                '-infinity'::timestamptz
+              ) <= COALESCE(
+                pending.split_updated_at,
+                pending.updated_at
+              )
+            )
+          ) AS copy_splits,
+          (
+            posted.currency_code = pending.currency_code
+            AND sign(posted.amount_minor) = sign(pending.amount_minor)
+            AND posted.amount_minor < 0
+            AND pending.amount_minor <> 0
+            AND COALESCE(
+              NULLIF(posted.normalized_merchant, ''),
+              NULLIF(posted.normalized_name, '')
+            ) IS NOT NULL
+          ) AS recurring_safe
+        FROM transactions posted
+        JOIN transactions pending
+          ON pending.workspace_id = posted.workspace_id
+         AND pending.provider_transaction_id =
+           posted.provider_pending_transaction_id
+         AND pending.pending = true
+        LEFT JOIN LATERAL (
+          SELECT
+            count(*)::integer AS split_count,
+            COALESCE(sum(split.amount_minor), 0)::bigint AS split_total,
+            COALESCE(
+              bool_and(
+                sign(split.amount_minor) = sign(pending.amount_minor)
+              ),
+              true
+            ) AS all_match_pending_sign,
+            COALESCE(
+              (
+                array_agg(
+                  split.amount_minor
+                  ORDER BY
+                    abs(split.amount_minor) DESC,
+                    split.line_index,
+                    split.id
+                )
+              )[1],
+              0
+            )::bigint AS largest_amount_minor
+          FROM transaction_splits split
+          WHERE split.workspace_id = pending.workspace_id
+            AND split.transaction_id = pending.id
+        ) split_state ON true
+        WHERE posted.provider_pending_transaction_id = ANY($1::text[])
+          AND posted.pending = false
+        ORDER BY posted.workspace_id, posted.id
+        FOR UPDATE OF posted, pending
+      `,
+      [providerIds],
+    );
+    const handoffPairs = handoffResult.rows;
+
+    if (handoffPairs.length) {
+      const pairs = handoffPairs.map((row) => ({
+        workspace_id: row.workspace_id,
+        pending_id: row.pending_id,
+        posted_id: row.posted_id,
+        copy_splits: Boolean(row.copy_splits),
+        reconcile_splits: Boolean(row.handoff_safe),
+        recurring_safe: Boolean(row.recurring_safe),
+      }));
+      const serializedPairs = JSON.stringify(pairs);
+
+      await client.query(
+        `
+          WITH pairs AS (
+            SELECT *
+            FROM jsonb_to_recordset($1::jsonb) AS pair(
+              workspace_id text,
+              pending_id text,
+              posted_id text,
+              copy_splits boolean,
+              recurring_safe boolean
+            )
+          ),
+          transferable AS (
+            SELECT pair.*
+            FROM pairs pair
+            JOIN transaction_metadata pending_metadata
+              ON pending_metadata.workspace_id = pair.workspace_id
+             AND pending_metadata.transaction_id = pair.pending_id
+            LEFT JOIN transaction_metadata posted_metadata
+              ON posted_metadata.workspace_id = pair.workspace_id
+             AND posted_metadata.transaction_id = pair.posted_id
+            WHERE pending_metadata.tags_overridden = true
+              AND (
+                posted_metadata.transaction_id IS NULL
+                OR posted_metadata.tags_overridden = false
+                OR COALESCE(
+                  posted_metadata.tags_updated_at,
+                  posted_metadata.updated_at
+                ) <= COALESCE(
+                  pending_metadata.tags_updated_at,
+                  pending_metadata.updated_at
+                )
+              )
+          )
+          DELETE FROM transaction_tag_assignments assignment
+          USING transferable
+          WHERE assignment.workspace_id = transferable.workspace_id
+            AND assignment.transaction_id = transferable.posted_id
+        `,
+        [serializedPairs],
+      );
+      await client.query(
+        `
+          WITH pairs AS (
+            SELECT *
+            FROM jsonb_to_recordset($1::jsonb) AS pair(
+              workspace_id text,
+              pending_id text,
+              posted_id text,
+              copy_splits boolean
+            )
+          ),
+          transferable AS (
+            SELECT pair.*
+            FROM pairs pair
+            JOIN transaction_metadata pending_metadata
+              ON pending_metadata.workspace_id = pair.workspace_id
+             AND pending_metadata.transaction_id = pair.pending_id
+            LEFT JOIN transaction_metadata posted_metadata
+              ON posted_metadata.workspace_id = pair.workspace_id
+             AND posted_metadata.transaction_id = pair.posted_id
+            WHERE pending_metadata.tags_overridden = true
+              AND (
+                posted_metadata.transaction_id IS NULL
+                OR posted_metadata.tags_overridden = false
+                OR COALESCE(
+                  posted_metadata.tags_updated_at,
+                  posted_metadata.updated_at
+                ) <= COALESCE(
+                  pending_metadata.tags_updated_at,
+                  pending_metadata.updated_at
+                )
+              )
+          )
+          INSERT INTO transaction_tag_assignments (
+            workspace_id,
+            transaction_id,
+            tag_id,
+            created_by,
+            created_at
+          )
+          SELECT
+            assignment.workspace_id,
+            transferable.posted_id,
+            assignment.tag_id,
+            assignment.created_by,
+            assignment.created_at
+          FROM transferable
+          JOIN transaction_tag_assignments assignment
+            ON assignment.workspace_id = transferable.workspace_id
+           AND assignment.transaction_id = transferable.pending_id
+          ON CONFLICT DO NOTHING
+        `,
+        [serializedPairs],
+      );
+      await client.query(
+        `
+          WITH pairs AS (
+            SELECT *
+            FROM jsonb_to_recordset($1::jsonb) AS pair(
+              workspace_id text,
+              pending_id text,
+              posted_id text,
+              copy_splits boolean
+            )
+          )
+          INSERT INTO transaction_metadata (
+            workspace_id,
+            transaction_id,
+            display_name,
+            display_name_overridden,
+            display_name_updated_at,
+            tags_overridden,
+            tags_updated_at,
+            note,
+            note_version,
+            note_updated_by,
+            note_updated_at,
+            budget_month_on,
+            budget_month_overridden,
+            budget_month_updated_at,
+            created_by,
+            created_at,
+            updated_at
+          )
+          SELECT
+            pending_metadata.workspace_id,
+            pair.posted_id,
+            pending_metadata.display_name,
+            pending_metadata.display_name_overridden,
+            pending_metadata.display_name_updated_at,
+            pending_metadata.tags_overridden,
+            pending_metadata.tags_updated_at,
+            pending_metadata.note,
+            pending_metadata.note_version,
+            pending_metadata.note_updated_by,
+            pending_metadata.note_updated_at,
+            pending_metadata.budget_month_on,
+            pending_metadata.budget_month_overridden,
+            pending_metadata.budget_month_updated_at,
+            pending_metadata.created_by,
+            pending_metadata.created_at,
+            pending_metadata.updated_at
+          FROM pairs pair
+          JOIN transaction_metadata pending_metadata
+            ON pending_metadata.workspace_id = pair.workspace_id
+           AND pending_metadata.transaction_id = pair.pending_id
+          ON CONFLICT (workspace_id, transaction_id) DO UPDATE SET
+            display_name = CASE
+              WHEN EXCLUDED.display_name_overridden = true
+                AND (
+                  transaction_metadata.display_name_overridden = false
+                  OR COALESCE(
+                    transaction_metadata.display_name_updated_at,
+                    transaction_metadata.updated_at
+                  ) <= COALESCE(
+                    EXCLUDED.display_name_updated_at,
+                    EXCLUDED.updated_at
+                  )
+                )
+                THEN EXCLUDED.display_name
+              ELSE transaction_metadata.display_name
+            END,
+            display_name_overridden = CASE
+              WHEN EXCLUDED.display_name_overridden = true
+                AND (
+                  transaction_metadata.display_name_overridden = false
+                  OR COALESCE(
+                    transaction_metadata.display_name_updated_at,
+                    transaction_metadata.updated_at
+                  ) <= COALESCE(
+                    EXCLUDED.display_name_updated_at,
+                    EXCLUDED.updated_at
+                  )
+                )
+                THEN true
+              ELSE transaction_metadata.display_name_overridden
+            END,
+            display_name_updated_at = CASE
+              WHEN EXCLUDED.display_name_overridden = true
+                AND (
+                  transaction_metadata.display_name_overridden = false
+                  OR COALESCE(
+                    transaction_metadata.display_name_updated_at,
+                    transaction_metadata.updated_at
+                  ) <= COALESCE(
+                    EXCLUDED.display_name_updated_at,
+                    EXCLUDED.updated_at
+                  )
+                )
+                THEN COALESCE(
+                  EXCLUDED.display_name_updated_at,
+                  EXCLUDED.updated_at
+                )
+              ELSE transaction_metadata.display_name_updated_at
+            END,
+            tags_overridden = CASE
+              WHEN EXCLUDED.tags_overridden = true
+                AND (
+                  transaction_metadata.tags_overridden = false
+                  OR COALESCE(
+                    transaction_metadata.tags_updated_at,
+                    transaction_metadata.updated_at
+                  ) <= COALESCE(
+                    EXCLUDED.tags_updated_at,
+                    EXCLUDED.updated_at
+                  )
+                )
+                THEN true
+              ELSE transaction_metadata.tags_overridden
+            END,
+            tags_updated_at = CASE
+              WHEN EXCLUDED.tags_overridden = true
+                AND (
+                  transaction_metadata.tags_overridden = false
+                  OR COALESCE(
+                    transaction_metadata.tags_updated_at,
+                    transaction_metadata.updated_at
+                  ) <= COALESCE(
+                    EXCLUDED.tags_updated_at,
+                    EXCLUDED.updated_at
+                  )
+                )
+                THEN COALESCE(
+                  EXCLUDED.tags_updated_at,
+                  EXCLUDED.updated_at
+                )
+              ELSE transaction_metadata.tags_updated_at
+            END,
+            note = CASE
+              WHEN EXCLUDED.note_version > 0
+                AND (
+                  transaction_metadata.note_version = 0
+                  OR transaction_metadata.note_updated_at IS NULL
+                  OR transaction_metadata.note_updated_at <=
+                    EXCLUDED.note_updated_at
+                )
+                THEN EXCLUDED.note
+              ELSE transaction_metadata.note
+            END,
+            note_version = CASE
+              WHEN EXCLUDED.note_version > 0
+                AND (
+                  transaction_metadata.note_version = 0
+                  OR transaction_metadata.note_updated_at IS NULL
+                  OR transaction_metadata.note_updated_at <=
+                    EXCLUDED.note_updated_at
+                )
+                THEN EXCLUDED.note_version
+              ELSE transaction_metadata.note_version
+            END,
+            note_updated_by = CASE
+              WHEN EXCLUDED.note_version > 0
+                AND (
+                  transaction_metadata.note_version = 0
+                  OR transaction_metadata.note_updated_at IS NULL
+                  OR transaction_metadata.note_updated_at <=
+                    EXCLUDED.note_updated_at
+                )
+                THEN EXCLUDED.note_updated_by
+              ELSE transaction_metadata.note_updated_by
+            END,
+            note_updated_at = CASE
+              WHEN EXCLUDED.note_version > 0
+                AND (
+                  transaction_metadata.note_version = 0
+                  OR transaction_metadata.note_updated_at IS NULL
+                  OR transaction_metadata.note_updated_at <=
+                    EXCLUDED.note_updated_at
+                )
+                THEN EXCLUDED.note_updated_at
+              ELSE transaction_metadata.note_updated_at
+            END,
+            budget_month_on = CASE
+              WHEN EXCLUDED.budget_month_overridden = true
+                AND (
+                  transaction_metadata.budget_month_overridden = false
+                  OR COALESCE(
+                    transaction_metadata.budget_month_updated_at,
+                    transaction_metadata.updated_at
+                  ) <= COALESCE(
+                    EXCLUDED.budget_month_updated_at,
+                    EXCLUDED.updated_at
+                  )
+                )
+                THEN EXCLUDED.budget_month_on
+              ELSE transaction_metadata.budget_month_on
+            END,
+            budget_month_overridden = CASE
+              WHEN EXCLUDED.budget_month_overridden = true
+                AND (
+                  transaction_metadata.budget_month_overridden = false
+                  OR COALESCE(
+                    transaction_metadata.budget_month_updated_at,
+                    transaction_metadata.updated_at
+                  ) <= COALESCE(
+                    EXCLUDED.budget_month_updated_at,
+                    EXCLUDED.updated_at
+                  )
+                )
+                THEN true
+              ELSE transaction_metadata.budget_month_overridden
+            END,
+            budget_month_updated_at = CASE
+              WHEN EXCLUDED.budget_month_overridden = true
+                AND (
+                  transaction_metadata.budget_month_overridden = false
+                  OR COALESCE(
+                    transaction_metadata.budget_month_updated_at,
+                    transaction_metadata.updated_at
+                  ) <= COALESCE(
+                    EXCLUDED.budget_month_updated_at,
+                    EXCLUDED.updated_at
+                  )
+                )
+                THEN COALESCE(
+                  EXCLUDED.budget_month_updated_at,
+                  EXCLUDED.updated_at
+                )
+              ELSE transaction_metadata.budget_month_updated_at
+            END,
+            created_at = LEAST(
+              transaction_metadata.created_at,
+              EXCLUDED.created_at
+            ),
+            updated_at = GREATEST(
+              transaction_metadata.updated_at,
+              EXCLUDED.updated_at
+            )
+        `,
+        [serializedPairs],
+      );
+      await client.query(
+        `
+          WITH pairs AS (
+            SELECT *
+            FROM jsonb_to_recordset($1::jsonb) AS pair(
+              workspace_id text,
+              pending_id text,
+              posted_id text,
+              copy_splits boolean
+            )
+          )
+          INSERT INTO categorization_overrides (
+            id,
+            workspace_id,
+            transaction_id,
+            category_primary,
+            category_detailed,
+            category_id,
+            category_overridden,
+            category_updated_at,
+            excluded_from_spending,
+            excluded_from_spending_overridden,
+            excluded_from_spending_updated_at,
+            is_fixed,
+            is_fixed_overridden,
+            is_fixed_updated_at,
+            cash_flow_role,
+            cash_flow_role_overridden,
+            cash_flow_role_updated_at,
+            created_by,
+            created_at,
+            updated_at
+          )
+          SELECT
+            'pending-handoff-' || md5(
+              pending_override.id || ':' || pair.posted_id
+            ),
+            pending_override.workspace_id,
+            pair.posted_id,
+            pending_override.category_primary,
+            pending_override.category_detailed,
+            pending_override.category_id,
+            pending_override.category_overridden,
+            pending_override.category_updated_at,
+            pending_override.excluded_from_spending,
+            pending_override.excluded_from_spending_overridden,
+            pending_override.excluded_from_spending_updated_at,
+            pending_override.is_fixed,
+            pending_override.is_fixed_overridden,
+            pending_override.is_fixed_updated_at,
+            pending_override.cash_flow_role,
+            pending_override.cash_flow_role_overridden,
+            pending_override.cash_flow_role_updated_at,
+            pending_override.created_by,
+            pending_override.created_at,
+            pending_override.updated_at
+          FROM pairs pair
+          JOIN categorization_overrides pending_override
+            ON pending_override.workspace_id = pair.workspace_id
+           AND pending_override.transaction_id = pair.pending_id
+          ON CONFLICT (workspace_id, transaction_id)
+            WHERE transaction_id IS NOT NULL
+          DO UPDATE SET
+            category_primary = CASE
+              WHEN EXCLUDED.category_overridden = true
+                AND (
+                  categorization_overrides.category_overridden = false
+                  OR COALESCE(
+                    categorization_overrides.category_updated_at,
+                    categorization_overrides.updated_at
+                  ) <= COALESCE(
+                    EXCLUDED.category_updated_at,
+                    EXCLUDED.updated_at
+                  )
+                )
+                THEN EXCLUDED.category_primary
+              ELSE categorization_overrides.category_primary
+            END,
+            category_detailed = CASE
+              WHEN EXCLUDED.category_overridden = true
+                AND (
+                  categorization_overrides.category_overridden = false
+                  OR COALESCE(
+                    categorization_overrides.category_updated_at,
+                    categorization_overrides.updated_at
+                  ) <= COALESCE(
+                    EXCLUDED.category_updated_at,
+                    EXCLUDED.updated_at
+                  )
+                )
+                THEN EXCLUDED.category_detailed
+              ELSE categorization_overrides.category_detailed
+            END,
+            category_id = CASE
+              WHEN EXCLUDED.category_overridden = true
+                AND (
+                  categorization_overrides.category_overridden = false
+                  OR COALESCE(
+                    categorization_overrides.category_updated_at,
+                    categorization_overrides.updated_at
+                  ) <= COALESCE(
+                    EXCLUDED.category_updated_at,
+                    EXCLUDED.updated_at
+                  )
+                )
+                THEN EXCLUDED.category_id
+              ELSE categorization_overrides.category_id
+            END,
+            category_overridden = CASE
+              WHEN EXCLUDED.category_overridden = true
+                AND (
+                  categorization_overrides.category_overridden = false
+                  OR COALESCE(
+                    categorization_overrides.category_updated_at,
+                    categorization_overrides.updated_at
+                  ) <= COALESCE(
+                    EXCLUDED.category_updated_at,
+                    EXCLUDED.updated_at
+                  )
+                )
+                THEN true
+              ELSE categorization_overrides.category_overridden
+            END,
+            category_updated_at = CASE
+              WHEN EXCLUDED.category_overridden = true
+                AND (
+                  categorization_overrides.category_overridden = false
+                  OR COALESCE(
+                    categorization_overrides.category_updated_at,
+                    categorization_overrides.updated_at
+                  ) <= COALESCE(
+                    EXCLUDED.category_updated_at,
+                    EXCLUDED.updated_at
+                  )
+                )
+                THEN COALESCE(
+                  EXCLUDED.category_updated_at,
+                  EXCLUDED.updated_at
+                )
+              ELSE categorization_overrides.category_updated_at
+            END,
+            excluded_from_spending = CASE
+              WHEN EXCLUDED.excluded_from_spending_overridden = true
+                AND (
+                  categorization_overrides.excluded_from_spending_overridden
+                    = false
+                  OR COALESCE(
+                    categorization_overrides.excluded_from_spending_updated_at,
+                    categorization_overrides.updated_at
+                  ) <= COALESCE(
+                    EXCLUDED.excluded_from_spending_updated_at,
+                    EXCLUDED.updated_at
+                  )
+                )
+                THEN EXCLUDED.excluded_from_spending
+              ELSE categorization_overrides.excluded_from_spending
+            END,
+            excluded_from_spending_overridden = CASE
+              WHEN EXCLUDED.excluded_from_spending_overridden = true
+                AND (
+                  categorization_overrides.excluded_from_spending_overridden
+                    = false
+                  OR COALESCE(
+                    categorization_overrides.excluded_from_spending_updated_at,
+                    categorization_overrides.updated_at
+                  ) <= COALESCE(
+                    EXCLUDED.excluded_from_spending_updated_at,
+                    EXCLUDED.updated_at
+                  )
+                )
+                THEN true
+              ELSE categorization_overrides.excluded_from_spending_overridden
+            END,
+            excluded_from_spending_updated_at = CASE
+              WHEN EXCLUDED.excluded_from_spending_overridden = true
+                AND (
+                  categorization_overrides.excluded_from_spending_overridden
+                    = false
+                  OR COALESCE(
+                    categorization_overrides.excluded_from_spending_updated_at,
+                    categorization_overrides.updated_at
+                  ) <= COALESCE(
+                    EXCLUDED.excluded_from_spending_updated_at,
+                    EXCLUDED.updated_at
+                  )
+                )
+                THEN COALESCE(
+                  EXCLUDED.excluded_from_spending_updated_at,
+                  EXCLUDED.updated_at
+                )
+              ELSE categorization_overrides.excluded_from_spending_updated_at
+            END,
+            is_fixed = CASE
+              WHEN EXCLUDED.is_fixed_overridden = true
+                AND (
+                  categorization_overrides.is_fixed_overridden = false
+                  OR COALESCE(
+                    categorization_overrides.is_fixed_updated_at,
+                    categorization_overrides.updated_at
+                  ) <= COALESCE(
+                    EXCLUDED.is_fixed_updated_at,
+                    EXCLUDED.updated_at
+                  )
+                )
+                THEN EXCLUDED.is_fixed
+              ELSE categorization_overrides.is_fixed
+            END,
+            is_fixed_overridden = CASE
+              WHEN EXCLUDED.is_fixed_overridden = true
+                AND (
+                  categorization_overrides.is_fixed_overridden = false
+                  OR COALESCE(
+                    categorization_overrides.is_fixed_updated_at,
+                    categorization_overrides.updated_at
+                  ) <= COALESCE(
+                    EXCLUDED.is_fixed_updated_at,
+                    EXCLUDED.updated_at
+                  )
+                )
+                THEN true
+              ELSE categorization_overrides.is_fixed_overridden
+            END,
+            is_fixed_updated_at = CASE
+              WHEN EXCLUDED.is_fixed_overridden = true
+                AND (
+                  categorization_overrides.is_fixed_overridden = false
+                  OR COALESCE(
+                    categorization_overrides.is_fixed_updated_at,
+                    categorization_overrides.updated_at
+                  ) <= COALESCE(
+                    EXCLUDED.is_fixed_updated_at,
+                    EXCLUDED.updated_at
+                  )
+                )
+                THEN COALESCE(
+                  EXCLUDED.is_fixed_updated_at,
+                  EXCLUDED.updated_at
+                )
+              ELSE categorization_overrides.is_fixed_updated_at
+            END,
+            cash_flow_role = CASE
+              WHEN EXCLUDED.cash_flow_role_overridden = true
+                AND (
+                  categorization_overrides.cash_flow_role_overridden = false
+                  OR COALESCE(
+                    categorization_overrides.cash_flow_role_updated_at,
+                    categorization_overrides.updated_at
+                  ) <= COALESCE(
+                    EXCLUDED.cash_flow_role_updated_at,
+                    EXCLUDED.updated_at
+                  )
+                )
+                THEN EXCLUDED.cash_flow_role
+              ELSE categorization_overrides.cash_flow_role
+            END,
+            cash_flow_role_overridden = CASE
+              WHEN EXCLUDED.cash_flow_role_overridden = true
+                AND (
+                  categorization_overrides.cash_flow_role_overridden = false
+                  OR COALESCE(
+                    categorization_overrides.cash_flow_role_updated_at,
+                    categorization_overrides.updated_at
+                  ) <= COALESCE(
+                    EXCLUDED.cash_flow_role_updated_at,
+                    EXCLUDED.updated_at
+                  )
+                )
+                THEN true
+              ELSE categorization_overrides.cash_flow_role_overridden
+            END,
+            cash_flow_role_updated_at = CASE
+              WHEN EXCLUDED.cash_flow_role_overridden = true
+                AND (
+                  categorization_overrides.cash_flow_role_overridden = false
+                  OR COALESCE(
+                    categorization_overrides.cash_flow_role_updated_at,
+                    categorization_overrides.updated_at
+                  ) <= COALESCE(
+                    EXCLUDED.cash_flow_role_updated_at,
+                    EXCLUDED.updated_at
+                  )
+                )
+                THEN COALESCE(
+                  EXCLUDED.cash_flow_role_updated_at,
+                  EXCLUDED.updated_at
+                )
+              ELSE categorization_overrides.cash_flow_role_updated_at
+            END,
+            created_at = LEAST(
+              categorization_overrides.created_at,
+              EXCLUDED.created_at
+            ),
+            updated_at = GREATEST(
+              categorization_overrides.updated_at,
+              EXCLUDED.updated_at
+            )
+        `,
+        [serializedPairs],
+      );
+      await client.query(
+        `
+          WITH pairs AS (
+            SELECT *
+            FROM jsonb_to_recordset($1::jsonb) AS pair(
+              workspace_id text,
+              pending_id text,
+              posted_id text,
+              copy_splits boolean,
+              recurring_safe boolean
+            )
+          )
+          INSERT INTO recurring_stream_transactions (
+            stream_id,
+            transaction_id
+          )
+          SELECT occurrence.stream_id, pair.posted_id
+          FROM pairs pair
+          JOIN recurring_stream_transactions occurrence
+            ON occurrence.transaction_id = pair.pending_id
+          JOIN transactions posted
+            ON posted.workspace_id = pair.workspace_id
+           AND posted.id = pair.posted_id
+          WHERE pair.recurring_safe = true
+            AND NOT EXISTS (
+              SELECT 1
+              FROM recurring_pattern_rules rule
+              WHERE rule.workspace_id = pair.workspace_id
+                AND rule.source_transaction_id = pair.pending_id
+                AND rule.active = true
+                AND rule.currency_code <> posted.currency_code
+            )
+          ON CONFLICT DO NOTHING
+        `,
+        [serializedPairs],
+      );
+      await client.query(
+        `
+          WITH pairs AS (
+            SELECT *
+            FROM jsonb_to_recordset($1::jsonb) AS pair(
+              workspace_id text,
+              pending_id text,
+              posted_id text,
+              recurring_safe boolean
+            )
+          ),
+          source_rules AS (
+            SELECT rule.*, pair.posted_id
+            FROM pairs pair
+            JOIN recurring_pattern_rules rule
+              ON rule.workspace_id = pair.workspace_id
+             AND rule.source_transaction_id = pair.pending_id
+          )
+          UPDATE recurring_pattern_rules target_rule
+          SET active = false
+          FROM source_rules source_rule
+          WHERE target_rule.workspace_id = source_rule.workspace_id
+            AND target_rule.source_transaction_id = source_rule.posted_id
+            AND target_rule.id <> source_rule.id
+            AND target_rule.active = true
+            AND target_rule.updated_at <= source_rule.updated_at
+        `,
+        [serializedPairs],
+      );
+      await client.query(
+        `
+          WITH pairs AS (
+            SELECT *
+            FROM jsonb_to_recordset($1::jsonb) AS pair(
+              workspace_id text,
+              pending_id text,
+              posted_id text,
+              recurring_safe boolean
+            )
+          )
+          UPDATE recurring_pattern_rules source_rule
+          SET source_transaction_id = pair.posted_id,
+              active = false
+          FROM pairs pair
+          WHERE source_rule.workspace_id = pair.workspace_id
+            AND source_rule.source_transaction_id = pair.pending_id
+            AND EXISTS (
+              SELECT 1
+              FROM recurring_pattern_rules target_rule
+              WHERE target_rule.workspace_id = pair.workspace_id
+                AND target_rule.source_transaction_id = pair.posted_id
+                AND target_rule.id <> source_rule.id
+                AND target_rule.active = true
+                AND target_rule.updated_at > source_rule.updated_at
+            )
+        `,
+        [serializedPairs],
+      );
+      await client.query(
+        `
+          WITH pairs AS (
+            SELECT *
+            FROM jsonb_to_recordset($1::jsonb) AS pair(
+              workspace_id text,
+              pending_id text,
+              posted_id text,
+              recurring_safe boolean
+            )
+          )
+          UPDATE recurring_pattern_rules rule
+          SET source_transaction_id = pair.posted_id,
+              account_id = posted.account_id,
+              match_field = CASE
+                WHEN NULLIF(posted.normalized_merchant, '') IS NOT NULL
+                  THEN 'normalized_merchant'
+                ELSE 'normalized_name'
+              END,
+              normalized_match_value = COALESCE(
+                NULLIF(posted.normalized_merchant, ''),
+                NULLIF(posted.normalized_name, '')
+              ),
+              anchor_amount_minor = abs(posted.amount_minor),
+              currency_code = posted.currency_code
+          FROM pairs pair
+          JOIN transactions posted
+            ON posted.workspace_id = pair.workspace_id
+           AND posted.id = pair.posted_id
+          WHERE rule.workspace_id = pair.workspace_id
+            AND rule.source_transaction_id = pair.pending_id
+            AND pair.recurring_safe = true
+            AND rule.currency_code = posted.currency_code
+            AND COALESCE(
+              NULLIF(posted.normalized_merchant, ''),
+              NULLIF(posted.normalized_name, '')
+            ) IS NOT NULL
+            AND NOT EXISTS (
+              SELECT 1
+              FROM recurring_pattern_rules target_rule
+              WHERE target_rule.workspace_id = pair.workspace_id
+                AND target_rule.source_transaction_id = pair.posted_id
+                AND target_rule.id <> rule.id
+                AND target_rule.active = true
+                AND target_rule.updated_at > rule.updated_at
+            )
+        `,
+        [serializedPairs],
+      );
+      await client.query(
+        `
+          WITH pairs AS (
+            SELECT *
+            FROM jsonb_to_recordset($1::jsonb) AS pair(
+              workspace_id text,
+              pending_id text,
+              posted_id text,
+              recurring_safe boolean
+            )
+          ),
+          review_rules AS (
+            UPDATE recurring_pattern_rules rule
+            SET source_transaction_id = pair.posted_id,
+                active = false
+            FROM pairs pair
+            JOIN transactions posted
+              ON posted.workspace_id = pair.workspace_id
+             AND posted.id = pair.posted_id
+            WHERE rule.workspace_id = pair.workspace_id
+              AND rule.source_transaction_id = pair.pending_id
+              AND rule.active = true
+              AND (
+                pair.recurring_safe = false
+                OR rule.currency_code <> posted.currency_code
+                OR COALESCE(
+                  NULLIF(posted.normalized_merchant, ''),
+                  NULLIF(posted.normalized_name, '')
+                ) IS NULL
+              )
+              AND NOT EXISTS (
+                SELECT 1
+                FROM recurring_pattern_rules target_rule
+                WHERE target_rule.workspace_id = pair.workspace_id
+                  AND target_rule.source_transaction_id = pair.posted_id
+                  AND target_rule.id <> rule.id
+                  AND target_rule.active = true
+                  AND target_rule.updated_at > rule.updated_at
+              )
+            RETURNING
+              rule.workspace_id,
+              rule.source_transaction_id AS posted_id
+          )
+          UPDATE transactions posted
+          SET recurring_needs_review = true,
+              updated_at = now()
+          FROM review_rules review
+          WHERE posted.workspace_id = review.workspace_id
+            AND posted.id = review.posted_id
+        `,
+        [serializedPairs],
+      );
+      await client.query(
+        `
+          WITH pairs AS (
+            SELECT *
+            FROM jsonb_to_recordset($1::jsonb) AS pair(
+              workspace_id text,
+              pending_id text,
+              posted_id text,
+              copy_splits boolean
+            )
+          )
+          DELETE FROM transaction_splits posted_split
+          USING pairs pair
+          WHERE pair.copy_splits = true
+            AND posted_split.workspace_id = pair.workspace_id
+            AND posted_split.transaction_id = pair.posted_id
+        `,
+        [serializedPairs],
+      );
+      await client.query(
+        `
+          WITH pairs AS (
+            SELECT *
+            FROM jsonb_to_recordset($1::jsonb) AS pair(
+              workspace_id text,
+              pending_id text,
+              posted_id text,
+              copy_splits boolean,
+              reconcile_splits boolean
+            )
+          ),
+          ranked_splits AS (
+            SELECT
+              pair.workspace_id,
+              pair.pending_id,
+              pair.posted_id,
+              pair.reconcile_splits,
+              split.id AS pending_split_id,
+              split.line_index,
+              split.category,
+              split.amount_minor,
+              split.note,
+              split.created_by,
+              split.created_at,
+              split.updated_at,
+              split.category_id,
+              row_number() OVER (
+                PARTITION BY pair.workspace_id, pair.pending_id
+                ORDER BY
+                  abs(split.amount_minor) DESC,
+                  split.line_index,
+                  split.id
+              ) AS adjustment_rank
+            FROM pairs pair
+            JOIN transaction_splits split
+              ON split.workspace_id = pair.workspace_id
+             AND split.transaction_id = pair.pending_id
+            WHERE pair.copy_splits = true
+          )
+          INSERT INTO transaction_splits (
+            id,
+            workspace_id,
+            transaction_id,
+            line_index,
+            category,
+            amount_minor,
+            note,
+            created_by,
+            created_at,
+            updated_at,
+            category_id
+          )
+          SELECT
+            'pending-handoff-' || md5(
+              ranked.pending_split_id || ':' || ranked.posted_id
+            ),
+            ranked.workspace_id,
+            ranked.posted_id,
+            ranked.line_index,
+            ranked.category,
+            ranked.amount_minor + CASE
+              WHEN ranked.reconcile_splits = true
+                AND ranked.adjustment_rank = 1
+                THEN posted.amount_minor - pending.amount_minor
+              ELSE 0
+            END,
+            ranked.note,
+            ranked.created_by,
+            ranked.created_at,
+            ranked.updated_at,
+            ranked.category_id
+          FROM ranked_splits ranked
+          JOIN transactions posted
+            ON posted.workspace_id = ranked.workspace_id
+           AND posted.id = ranked.posted_id
+          JOIN transactions pending
+            ON pending.workspace_id = ranked.workspace_id
+           AND pending.id = ranked.pending_id
+          ON CONFLICT (transaction_id, line_index) DO NOTHING
+        `,
+        [serializedPairs],
+      );
+      await client.query(
+        `
+          WITH pairs AS (
+            SELECT *
+            FROM jsonb_to_recordset($1::jsonb) AS pair(
+              workspace_id text,
+              pending_id text,
+              posted_id text,
+              copy_splits boolean,
+              reconcile_splits boolean
+            )
+          )
+          UPDATE transactions posted
+          SET split_version = GREATEST(
+                posted.split_version,
+                pending.split_version
+              ) + 1,
+              split_needs_review = NOT pair.reconcile_splits,
+              split_overridden = true,
+              split_updated_at = COALESCE(
+                pending.split_updated_at,
+                pending.updated_at
+              ),
+              updated_at = now()
+          FROM pairs pair
+          JOIN transactions pending
+            ON pending.workspace_id = pair.workspace_id
+           AND pending.id = pair.pending_id
+          WHERE pair.copy_splits = true
+            AND posted.workspace_id = pair.workspace_id
+            AND posted.id = pair.posted_id
+        `,
+        [serializedPairs],
+      );
+    }
+
+    if (handoffPairs.length) {
+      await client.query(
+        `
+          DELETE FROM transactions pending
+          WHERE pending.id = ANY($1::text[])
+            AND pending.pending = true
+        `,
+        [handoffPairs.map((row) => row.pending_id)],
+      );
+    }
+
+    const refreshByWorkspace = new Map();
+    for (const row of handoffPairs) {
+      const ids = refreshByWorkspace.get(row.workspace_id) ?? [];
+      ids.push(row.pending_id, row.posted_id);
+      refreshByWorkspace.set(row.workspace_id, ids);
+    }
+    for (const [workspaceId, transactionIds] of refreshByWorkspace) {
+      await this.#refreshTransactionSearchDocuments(
+        client,
+        workspaceId,
+        transactionIds,
+      );
+    }
+  }
+
   async #refreshTransactionSearchDocuments(
     client,
     workspaceId,
@@ -517,8 +2043,14 @@ export class PgFinanceRepository {
           'transaction',
           t.id,
           COALESCE(
-            metadata.display_name,
-            cleanup_rule.display_name,
+            CASE
+              WHEN metadata.display_name_overridden
+                THEN metadata.display_name
+              ELSE COALESCE(
+                metadata.display_name,
+                cleanup_rule.display_name
+              )
+            END,
             t.merchant_name,
             t.name
           ),
@@ -533,9 +2065,15 @@ export class PgFinanceRepository {
           ),
           concat_ws(
             ' ',
-            metadata.display_name,
+            CASE
+              WHEN metadata.display_name_overridden
+                THEN metadata.display_name
+              ELSE COALESCE(
+                metadata.display_name,
+                cleanup_rule.display_name
+              )
+            END,
             metadata.note,
-            cleanup_rule.display_name,
             t.merchant_name,
             t.name,
             COALESCE(
@@ -559,9 +2097,15 @@ export class PgFinanceRepository {
           lower(regexp_replace(
             concat_ws(
               ' ',
-              metadata.display_name,
+              CASE
+                WHEN metadata.display_name_overridden
+                  THEN metadata.display_name
+                ELSE COALESCE(
+                  metadata.display_name,
+                  cleanup_rule.display_name
+                )
+              END,
               metadata.note,
-              cleanup_rule.display_name,
               t.merchant_name,
               t.name,
               COALESCE(
@@ -1396,7 +2940,7 @@ export class PgFinanceRepository {
             normalized_merchant, name, normalized_name, category_primary,
             category_detailed, amount_minor, currency_code, authorized_on,
             posted_on, pending, excluded_from_spending, payment_channel,
-            cardholder_name, source_transaction_type
+            cardholder_name, source_transaction_type, cash_flow_role
           )
           SELECT
             r.id, $2, $3, r.provider_transaction_id,
@@ -1405,7 +2949,14 @@ export class PgFinanceRepository {
             r.category_primary, r.category_detailed, r.amount_minor,
             r.currency_code, r.authorized_on, r.posted_on, r.pending,
             r.excluded_from_spending, r.payment_channel,
-            r.cardholder_name, r.source_transaction_type
+            r.cardholder_name, r.source_transaction_type,
+            COALESCE(
+              r.cash_flow_role,
+              CASE
+                WHEN r.excluded_from_spending THEN 'transfer'
+                ELSE 'spending'
+              END
+            )
           FROM jsonb_to_recordset($1::jsonb) AS r(
             id text,
             provider_transaction_id text,
@@ -1424,7 +2975,8 @@ export class PgFinanceRepository {
             excluded_from_spending boolean,
             payment_channel text,
             cardholder_name text,
-            source_transaction_type text
+            source_transaction_type text,
+            cash_flow_role text
           )
           ON CONFLICT (provider_transaction_id) DO UPDATE SET
             account_id = EXCLUDED.account_id,
@@ -1443,6 +2995,7 @@ export class PgFinanceRepository {
             payment_channel = EXCLUDED.payment_channel,
             cardholder_name = EXCLUDED.cardholder_name,
             source_transaction_type = EXCLUDED.source_transaction_type,
+            cash_flow_role = EXCLUDED.cash_flow_role,
             updated_at = now()
         `,
         [JSON.stringify(parsed.transactions), workspaceId, accountId],
@@ -1922,17 +3475,32 @@ export class PgFinanceRepository {
     },
   ) {
     const changed = [...added, ...modified];
+    const replacementIds = changed
+      .map(
+        (transaction) =>
+          transaction.provider_pending_transaction_id ??
+          transaction.providerPendingTransactionId,
+      )
+      .filter(Boolean);
     await withTransaction(this.#pool, async (client) => {
       if (removedProviderIds.length) {
+        await this.#snapshotUnmatchedPendingEdits(client, {
+          providerIds: removedProviderIds,
+          itemId,
+          replacementProviderIds: replacementIds,
+        });
         await client.query(
           `
-            DELETE FROM transactions
-            WHERE provider_transaction_id = ANY($1::text[])
-              AND account_id IN (
+            DELETE FROM transactions removed
+            WHERE removed.provider_transaction_id = ANY($1::text[])
+              AND NOT (
+                removed.provider_transaction_id = ANY($3::text[])
+              )
+              AND removed.account_id IN (
                 SELECT id FROM accounts WHERE connection_id = $2
               )
           `,
-          [removedProviderIds, itemId],
+          [removedProviderIds, itemId, replacementIds],
         );
       }
 
@@ -1946,7 +3514,7 @@ export class PgFinanceRepository {
               currency_code, authorized_at, authorized_on, posted_at,
               posted_on, pending,
               excluded_from_spending, original_transaction_id,
-              payment_channel, provider_location
+              payment_channel, provider_location, cash_flow_role
             )
             SELECT
               r.id, a.workspace_id, a.id, r.provider_transaction_id,
@@ -1956,7 +3524,14 @@ export class PgFinanceRepository {
               r.authorized_at, r.authorized_on, r.posted_at,
               r.posted_on, r.pending,
               r.excluded_from_spending, r.original_transaction_id,
-              r.payment_channel, r.provider_location
+              r.payment_channel, r.provider_location,
+              COALESCE(
+                r.cash_flow_role,
+                CASE
+                  WHEN r.excluded_from_spending THEN 'transfer'
+                  ELSE 'spending'
+                END
+              )
             FROM jsonb_to_recordset($1::jsonb) AS r(
               id text,
               provider_account_id text,
@@ -1978,7 +3553,8 @@ export class PgFinanceRepository {
               excluded_from_spending boolean,
               original_transaction_id text,
               payment_channel text,
-              provider_location jsonb
+              provider_location jsonb,
+              cash_flow_role text
             )
             JOIN accounts a
               ON a.provider_account_id = r.provider_account_id
@@ -2006,81 +3582,16 @@ export class PgFinanceRepository {
               ),
               payment_channel = EXCLUDED.payment_channel,
               provider_location = EXCLUDED.provider_location,
+              cash_flow_role = EXCLUDED.cash_flow_role,
               updated_at = now()
           `,
           [JSON.stringify(changed), itemId],
         );
 
-        const replacementIds = changed
-          .map(
-            (transaction) =>
-              transaction.provider_pending_transaction_id ??
-              transaction.providerPendingTransactionId,
-          )
-          .filter(Boolean);
         if (replacementIds.length) {
-          await client.query(
-            `
-              INSERT INTO transaction_metadata (
-                workspace_id,
-                transaction_id,
-                note,
-                note_version,
-                note_updated_by,
-                note_updated_at,
-                created_by,
-                created_at,
-                updated_at
-              )
-              SELECT
-                posted.workspace_id,
-                posted.id,
-                pending_metadata.note,
-                pending_metadata.note_version,
-                pending_metadata.note_updated_by,
-                pending_metadata.note_updated_at,
-                pending_metadata.created_by,
-                pending_metadata.created_at,
-                pending_metadata.updated_at
-              FROM transactions posted
-              JOIN transactions pending
-                ON pending.provider_transaction_id =
-                   posted.provider_pending_transaction_id
-               AND pending.workspace_id = posted.workspace_id
-               AND pending.pending = true
-              JOIN transaction_metadata pending_metadata
-                ON pending_metadata.workspace_id = pending.workspace_id
-               AND pending_metadata.transaction_id = pending.id
-              WHERE posted.provider_pending_transaction_id =
-                    ANY($1::text[])
-                AND pending_metadata.note IS NOT NULL
-              ON CONFLICT (workspace_id, transaction_id) DO UPDATE SET
-                note = EXCLUDED.note,
-                note_version = EXCLUDED.note_version,
-                note_updated_by = EXCLUDED.note_updated_by,
-                note_updated_at = EXCLUDED.note_updated_at,
-                updated_at = GREATEST(
-                  transaction_metadata.updated_at,
-                  EXCLUDED.updated_at
-                )
-              WHERE transaction_metadata.note IS NULL
-                AND transaction_metadata.note_version = 0
-            `,
-            [replacementIds],
-          );
-          await client.query(
-            `
-              DELETE FROM transactions pending
-              WHERE pending.provider_transaction_id = ANY($1::text[])
-                AND pending.pending = true
-                AND EXISTS (
-                  SELECT 1
-                  FROM transactions posted
-                  WHERE posted.provider_pending_transaction_id =
-                        pending.provider_transaction_id
-                )
-            `,
-            [replacementIds],
+          await this.#handoffPendingTransactionEdits(
+            client,
+            replacementIds,
           );
         }
       }
@@ -3263,10 +4774,14 @@ export class PgFinanceRepository {
           a.name AS account_name,
           a.mask AS account_mask,
           a.institution_name,
-          COALESCE(
-            metadata.display_name,
-            cleanup_rule.display_name
-          ) AS display_name,
+          CASE
+            WHEN metadata.display_name_overridden
+              THEN metadata.display_name
+            ELSE COALESCE(
+              metadata.display_name,
+              cleanup_rule.display_name
+            )
+          END AS display_name,
           metadata.note,
           metadata.note_version,
           metadata.note_updated_by,
@@ -3274,8 +4789,14 @@ export class PgFinanceRepository {
           metadata.budget_month_on,
           lower(
             COALESCE(
-              metadata.display_name,
-              cleanup_rule.display_name,
+              CASE
+                WHEN metadata.display_name_overridden
+                  THEN metadata.display_name
+                ELSE COALESCE(
+                  metadata.display_name,
+                  cleanup_rule.display_name
+                )
+              END,
               t.merchant_name,
               t.name,
               ''
@@ -3321,15 +4842,8 @@ export class PgFinanceRepository {
             original_transaction.category_detailed,
             t.category_detailed
           ) AS effective_category_detailed,
-          COALESCE(
-            transaction_override.excluded_from_spending,
-            merchant_override.excluded_from_spending,
-            original_override.excluded_from_spending,
-            original_merchant_override.excluded_from_spending,
-            original_transaction.excluded_from_spending,
-            t.excluded_from_spending
-          )
-            AS effective_excluded_from_spending,
+          effective_treatment.effective_excluded_from_spending,
+          effective_treatment.effective_cash_flow_role,
           COALESCE(
             split_category_definition.classification,
             effective_category_definition.classification
@@ -3341,6 +4855,10 @@ export class PgFinanceRepository {
           effective_category
           ON effective_category.workspace_id = t.workspace_id
          AND effective_category.transaction_id = t.id
+        LEFT JOIN transaction_effective_spending_treatments
+          effective_treatment
+          ON effective_treatment.workspace_id = t.workspace_id
+         AND effective_treatment.transaction_id = t.id
         LEFT JOIN spending_categories effective_category_definition
           ON effective_category_definition.workspace_id = t.workspace_id
          AND effective_category_definition.id =
@@ -3552,9 +5070,15 @@ export class PgFinanceRepository {
             $7::text IS NULL
             OR concat_ws(
                  ' ',
-                 metadata.display_name,
+                 CASE
+                   WHEN metadata.display_name_overridden
+                     THEN metadata.display_name
+                   ELSE COALESCE(
+                     metadata.display_name,
+                     cleanup_rule.display_name
+                   )
+                 END,
                  metadata.note,
-                 cleanup_rule.display_name,
                  t.merchant_name,
                  t.name,
                  effective_tags.tag_names,
@@ -3602,8 +5126,14 @@ export class PgFinanceRepository {
           AND (
             $16::text IS NULL
             OR COALESCE(
-              metadata.display_name,
-              cleanup_rule.display_name,
+              CASE
+                WHEN metadata.display_name_overridden
+                  THEN metadata.display_name
+                ELSE COALESCE(
+                  metadata.display_name,
+                  cleanup_rule.display_name
+                )
+              END,
               t.merchant_name,
               t.name
             ) = $16
@@ -3694,7 +5224,7 @@ export class PgFinanceRepository {
       all.push(...page.transactions);
       cursor = page.pageInfo.next_cursor;
     }
-    return all;
+    return all.filter((transaction) => !transaction.split_needs_review);
   }
 
   async getTransaction(
@@ -3709,10 +5239,14 @@ export class PgFinanceRepository {
           a.name AS account_name,
           a.mask AS account_mask,
           a.institution_name,
-          COALESCE(
-            metadata.display_name,
-            cleanup_rule.display_name
-          ) AS display_name,
+          CASE
+            WHEN metadata.display_name_overridden
+              THEN metadata.display_name
+            ELSE COALESCE(
+              metadata.display_name,
+              cleanup_rule.display_name
+            )
+          END AS display_name,
           metadata.note,
           metadata.note_version,
           metadata.note_updated_by,
@@ -3739,15 +5273,8 @@ export class PgFinanceRepository {
             t.category_detailed
           )
             AS effective_category_detailed,
-          COALESCE(
-            transaction_override.excluded_from_spending,
-            merchant_override.excluded_from_spending,
-            original_transaction_override.excluded_from_spending,
-            original_merchant_override.excluded_from_spending,
-            original_transaction.excluded_from_spending,
-            t.excluded_from_spending
-          )
-            AS effective_excluded_from_spending,
+          effective_treatment.effective_excluded_from_spending,
+          effective_treatment.effective_cash_flow_role,
           effective_category_definition.classification = 'fixed'
             AS is_fixed
         FROM transactions t
@@ -3756,6 +5283,10 @@ export class PgFinanceRepository {
           effective_category
           ON effective_category.workspace_id = t.workspace_id
          AND effective_category.transaction_id = t.id
+        LEFT JOIN transaction_effective_spending_treatments
+          effective_treatment
+          ON effective_treatment.workspace_id = t.workspace_id
+         AND effective_treatment.transaction_id = t.id
         LEFT JOIN spending_categories effective_category_definition
           ON effective_category_definition.workspace_id = t.workspace_id
          AND effective_category_definition.id =
@@ -3932,6 +5463,7 @@ export class PgFinanceRepository {
       normalizedMatchValue,
       displayName = null,
       categoryPrimary = null,
+      cashFlowRole = null,
       tags = null,
       enabled = true,
       userId = null,
@@ -3943,11 +5475,12 @@ export class PgFinanceRepository {
           INSERT INTO transaction_cleanup_rules (
             id, workspace_id, match_field, match_mode,
             match_value, normalized_match_value, display_name,
-            category_primary, tags, enabled, created_by, updated_by
+            category_primary, cash_flow_role, tags, enabled,
+            created_by, updated_by
           )
           VALUES (
             $1, $2, $3, $4, $5, $6, $7, $8,
-            $9::jsonb, $10, $11, $11
+            $9, $10::jsonb, $11, $12, $12
           )
           RETURNING *
         `,
@@ -3960,6 +5493,7 @@ export class PgFinanceRepository {
           normalizedMatchValue,
           displayName,
           categoryPrimary,
+          cashFlowRole,
           tags == null ? null : JSON.stringify(tags),
           enabled,
           userId,
@@ -3998,6 +5532,7 @@ export class PgFinanceRepository {
       normalizedMatchValue,
       displayName = null,
       categoryPrimary = null,
+      cashFlowRole = null,
       tags = null,
       enabled,
       userId = null,
@@ -4029,9 +5564,10 @@ export class PgFinanceRepository {
               normalized_match_value = $6,
               display_name = $7,
               category_primary = $8,
-              tags = $9::jsonb,
-              enabled = COALESCE($10::boolean, enabled),
-              updated_by = $11,
+              cash_flow_role = $9,
+              tags = $10::jsonb,
+              enabled = COALESCE($11::boolean, enabled),
+              updated_by = $12,
               updated_at = now()
           WHERE workspace_id = $1 AND id = $2
           RETURNING *
@@ -4045,6 +5581,7 @@ export class PgFinanceRepository {
           normalizedMatchValue,
           displayName,
           categoryPrimary,
+          cashFlowRole,
           tags == null ? null : JSON.stringify(tags),
           enabled,
           userId,
@@ -4230,10 +5767,14 @@ export class PgFinanceRepository {
             a.name AS account_name,
             a.mask AS account_mask,
             a.institution_name,
-            COALESCE(
-              metadata.display_name,
-              cleanup_rule.display_name
-            ) AS display_name,
+            CASE
+              WHEN metadata.display_name_overridden
+                THEN metadata.display_name
+              ELSE COALESCE(
+                metadata.display_name,
+                cleanup_rule.display_name
+              )
+            END AS display_name,
             CASE
               WHEN metadata.tags_overridden
                 THEN COALESCE(tag_data.tags, '[]'::jsonb)
@@ -4254,14 +5795,8 @@ export class PgFinanceRepository {
               original_transaction.category_detailed,
               t.category_detailed
             ) AS effective_category_detailed,
-            COALESCE(
-              transaction_override.excluded_from_spending,
-              merchant_override.excluded_from_spending,
-              original_transaction_override.excluded_from_spending,
-              original_merchant_override.excluded_from_spending,
-              original_transaction.excluded_from_spending,
-              t.excluded_from_spending
-            ) AS effective_excluded_from_spending,
+            effective_treatment.effective_excluded_from_spending,
+            effective_treatment.effective_cash_flow_role,
             effective_category_definition.classification = 'fixed'
               AS is_fixed,
             GREATEST(
@@ -4270,8 +5805,14 @@ export class PgFinanceRepository {
               similarity(
                 lower(regexp_replace(
                   COALESCE(
-                    metadata.display_name,
-                    cleanup_rule.display_name,
+                    CASE
+                      WHEN metadata.display_name_overridden
+                        THEN metadata.display_name
+                      ELSE COALESCE(
+                        metadata.display_name,
+                        cleanup_rule.display_name
+                      )
+                    END,
                     ''
                   ),
                   '[^[:alnum:]]+',
@@ -4287,6 +5828,10 @@ export class PgFinanceRepository {
             effective_category
             ON effective_category.workspace_id = t.workspace_id
            AND effective_category.transaction_id = t.id
+          LEFT JOIN transaction_effective_spending_treatments
+            effective_treatment
+            ON effective_treatment.workspace_id = t.workspace_id
+           AND effective_treatment.transaction_id = t.id
           LEFT JOIN spending_categories effective_category_definition
             ON effective_category_definition.workspace_id = t.workspace_id
            AND effective_category_definition.id =
@@ -4437,6 +5982,799 @@ export class PgFinanceRepository {
     };
   }
 
+  async listPendingEditRecoveries(
+    workspaceId = DEFAULT_WORKSPACE_ID,
+    { includeResolved = false, limit = 100 } = {},
+  ) {
+    const result = await this.#pool.query(
+      `
+        SELECT
+          recovery.*,
+          account.name AS account_name,
+          account.mask AS account_mask,
+          account.institution_name
+        FROM unmatched_pending_transaction_edits recovery
+        JOIN accounts account
+          ON account.id = recovery.account_id
+        WHERE recovery.workspace_id = $1
+          AND (
+            $2::boolean
+            OR (
+              recovery.attached_at IS NULL
+              AND recovery.dismissed_at IS NULL
+            )
+          )
+        ORDER BY recovery.recovered_at DESC, recovery.id
+        LIMIT $3
+      `,
+      [
+        workspaceId,
+        includeResolved,
+        Math.max(1, Math.min(200, Number(limit) || 100)),
+      ],
+    );
+    return result.rows.map(mapPendingEditRecovery);
+  }
+
+  async dismissPendingEditRecovery(
+    workspaceId = DEFAULT_WORKSPACE_ID,
+    { recoveryId, userId = null },
+  ) {
+    const result = await this.#pool.query(
+      `
+        UPDATE unmatched_pending_transaction_edits
+        SET dismissed_at = now(),
+            dismissed_by = $3,
+            updated_at = now()
+        WHERE workspace_id = $1
+          AND id = $2
+          AND attached_at IS NULL
+          AND dismissed_at IS NULL
+        RETURNING *
+      `,
+      [workspaceId, recoveryId, userId],
+    );
+    if (result.rows[0]) {
+      return mapPendingEditRecovery(result.rows[0]);
+    }
+    const existing = await this.#pool.query(
+      `
+        SELECT *
+        FROM unmatched_pending_transaction_edits
+        WHERE workspace_id = $1
+          AND id = $2
+          AND dismissed_at IS NOT NULL
+          AND attached_at IS NULL
+      `,
+      [workspaceId, recoveryId],
+    );
+    return existing.rows[0]
+      ? mapPendingEditRecovery(existing.rows[0])
+      : null;
+  }
+
+  async attachPendingEditRecovery(
+    workspaceId = DEFAULT_WORKSPACE_ID,
+    { recoveryId, transactionId, userId = null },
+  ) {
+    return withTransaction(this.#pool, async (client) => {
+      const recoveryResult = await client.query(
+        `
+          SELECT *
+          FROM unmatched_pending_transaction_edits
+          WHERE workspace_id = $1
+            AND id = $2
+          FOR UPDATE
+        `,
+        [workspaceId, recoveryId],
+      );
+      const recovery = recoveryResult.rows[0];
+      if (!recovery) return null;
+      if (recovery.dismissed_at != null) return null;
+      if (recovery.attached_at != null) {
+        return recovery.attached_transaction_id === transactionId
+          ? mapPendingEditRecovery(recovery)
+          : null;
+      }
+
+      const targetResult = await client.query(
+        `
+          SELECT
+            target.*,
+            metadata.display_name_overridden,
+            metadata.display_name_updated_at,
+            metadata.tags_overridden,
+            metadata.tags_updated_at,
+            metadata.note_version AS metadata_note_version,
+            metadata.note_updated_at AS metadata_note_updated_at,
+            metadata.budget_month_overridden,
+            metadata.budget_month_updated_at,
+            metadata.updated_at AS metadata_updated_at,
+            override.id AS override_id,
+            override.category_overridden,
+            override.category_updated_at,
+            override.excluded_from_spending_overridden,
+            override.excluded_from_spending_updated_at,
+            override.cash_flow_role_overridden,
+            override.cash_flow_role_updated_at,
+            override.is_fixed_overridden,
+            override.is_fixed_updated_at,
+            override.updated_at AS override_updated_at,
+            COALESCE(split_state.split_count, 0)::integer
+              AS target_split_count
+          FROM transactions target
+          LEFT JOIN transaction_metadata metadata
+            ON metadata.workspace_id = target.workspace_id
+           AND metadata.transaction_id = target.id
+          LEFT JOIN categorization_overrides override
+            ON override.workspace_id = target.workspace_id
+           AND override.transaction_id = target.id
+          LEFT JOIN LATERAL (
+            SELECT count(*)::integer AS split_count
+            FROM transaction_splits split
+            WHERE split.workspace_id = target.workspace_id
+              AND split.transaction_id = target.id
+          ) split_state ON true
+          WHERE target.workspace_id = $1
+            AND target.id = $2
+            AND target.pending = false
+          FOR UPDATE OF target
+        `,
+        [workspaceId, transactionId],
+      );
+      const target = targetResult.rows[0];
+      if (!target) return null;
+
+      const userState = jsonObject(recovery.user_state);
+      const providerFacts = jsonObject(recovery.provider_facts);
+      const fieldWins = (
+        sourceOverridden,
+        sourceUpdatedAt,
+        targetOverridden,
+        targetUpdatedAt,
+      ) =>
+        sourceOverridden === true &&
+        (
+          targetOverridden !== true ||
+          targetUpdatedAt == null ||
+          sourceUpdatedAt == null ||
+          targetUpdatedAt <= sourceUpdatedAt
+        );
+      const metadata = jsonObject(userState.metadata, null);
+      if (metadata) {
+        const sourceDisplayUpdatedAtValue =
+          metadata.display_name_updated_at ??
+          metadata.updated_at ??
+          recovery.pending_updated_at;
+        const sourceTagsUpdatedAtValue =
+          metadata.tags_updated_at ??
+          metadata.updated_at ??
+          recovery.pending_updated_at;
+        const sourceBudgetMonthUpdatedAtValue =
+          metadata.budget_month_updated_at ??
+          metadata.updated_at ??
+          recovery.pending_updated_at;
+        const sourceDisplayUpdatedAt = timestampValue(
+          sourceDisplayUpdatedAtValue,
+        );
+        const sourceTagsUpdatedAt = timestampValue(
+          sourceTagsUpdatedAtValue,
+        );
+        const sourceBudgetMonthUpdatedAt = timestampValue(
+          sourceBudgetMonthUpdatedAtValue,
+        );
+        const applyDisplay =
+          fieldWins(
+            metadata.display_name_overridden,
+            sourceDisplayUpdatedAt,
+            target.display_name_overridden,
+            timestampValue(
+              target.display_name_updated_at ??
+                target.metadata_updated_at,
+            ),
+          );
+        const applyTags =
+          fieldWins(
+            metadata.tags_overridden,
+            sourceTagsUpdatedAt,
+            target.tags_overridden,
+            timestampValue(
+              target.tags_updated_at ?? target.metadata_updated_at,
+            ),
+          );
+        const applyBudgetMonth =
+          fieldWins(
+            metadata.budget_month_overridden,
+            sourceBudgetMonthUpdatedAt,
+            target.budget_month_overridden,
+            timestampValue(
+              target.budget_month_updated_at ??
+                target.metadata_updated_at,
+            ),
+          );
+        const sourceNoteVersion = Number(metadata.note_version ?? 0);
+        const sourceNoteUpdatedAt = timestampValue(
+          metadata.note_updated_at,
+        );
+        const targetNoteUpdatedAt = timestampValue(
+          target.metadata_note_updated_at,
+        );
+        const applyNote =
+          sourceNoteVersion > 0 &&
+          (
+            Number(target.metadata_note_version ?? 0) === 0 ||
+            targetNoteUpdatedAt == null ||
+            sourceNoteUpdatedAt == null ||
+            targetNoteUpdatedAt <= sourceNoteUpdatedAt
+          );
+
+        if (applyTags) {
+          const tags = Array.isArray(userState.tags)
+            ? userState.tags
+            : [];
+          const tagRows = tags.map((tag) => {
+            const normalized = normalizeTagName(tag.name);
+            return {
+              id: randomUUID(),
+              name: normalized.name,
+              normalized_name:
+                tag.normalized_name ?? normalized.normalized_name,
+            };
+          });
+          if (tagRows.length) {
+            await client.query(
+              `
+                INSERT INTO transaction_tags (
+                  id, workspace_id, name, normalized_name, created_by
+                )
+                SELECT row.id, $1, row.name, row.normalized_name, $3
+                FROM jsonb_to_recordset($2::jsonb) AS row(
+                  id text,
+                  name text,
+                  normalized_name text
+                )
+                ON CONFLICT (workspace_id, normalized_name)
+                DO UPDATE SET name = EXCLUDED.name, updated_at = now()
+              `,
+              [workspaceId, JSON.stringify(tagRows), userId],
+            );
+          }
+          await client.query(
+            `
+              DELETE FROM transaction_tag_assignments
+              WHERE workspace_id = $1 AND transaction_id = $2
+            `,
+            [workspaceId, transactionId],
+          );
+          if (tagRows.length) {
+            await client.query(
+              `
+                INSERT INTO transaction_tag_assignments (
+                  workspace_id, transaction_id, tag_id, created_by
+                )
+                SELECT $1, $2, tag.id, $4
+                FROM transaction_tags tag
+                WHERE tag.workspace_id = $1
+                  AND tag.normalized_name = ANY($3::text[])
+                ON CONFLICT DO NOTHING
+              `,
+              [
+                workspaceId,
+                transactionId,
+                tagRows.map((tag) => tag.normalized_name),
+                userId,
+              ],
+            );
+          }
+        }
+
+        if (applyDisplay || applyTags || applyNote || applyBudgetMonth) {
+          await client.query(
+            `
+              INSERT INTO transaction_metadata (
+                workspace_id, transaction_id,
+                display_name, display_name_overridden,
+                display_name_updated_at,
+                tags_overridden, tags_updated_at,
+                note, note_version, note_updated_by, note_updated_at,
+                budget_month_on, budget_month_overridden,
+                budget_month_updated_at,
+                created_by, updated_at
+              )
+              VALUES (
+                $1, $2,
+                CASE WHEN $4::boolean THEN $3 ELSE NULL END, $4,
+                CASE WHEN $4::boolean THEN $5::timestamptz ELSE NULL END,
+                $6,
+                CASE WHEN $6::boolean THEN $7::timestamptz ELSE NULL END,
+                CASE WHEN $8::boolean THEN $9 ELSE NULL END,
+                CASE WHEN $8::boolean THEN $10 ELSE 0 END,
+                CASE WHEN $8::boolean THEN $11 ELSE NULL END,
+                CASE WHEN $8::boolean THEN $12::timestamptz ELSE NULL END,
+                CASE WHEN $14::boolean THEN $13::date ELSE NULL END,
+                $14,
+                CASE WHEN $14::boolean THEN $15::timestamptz ELSE NULL END,
+                $16, COALESCE($17::timestamptz, now())
+              )
+              ON CONFLICT (workspace_id, transaction_id) DO UPDATE SET
+                display_name = CASE WHEN $4::boolean
+                  THEN EXCLUDED.display_name
+                  ELSE transaction_metadata.display_name END,
+                display_name_overridden =
+                  transaction_metadata.display_name_overridden
+                  OR $4::boolean,
+                display_name_updated_at = CASE WHEN $4::boolean
+                  THEN EXCLUDED.display_name_updated_at
+                  ELSE transaction_metadata.display_name_updated_at END,
+                tags_overridden =
+                  transaction_metadata.tags_overridden OR $6::boolean,
+                tags_updated_at = CASE WHEN $6::boolean
+                  THEN EXCLUDED.tags_updated_at
+                  ELSE transaction_metadata.tags_updated_at END,
+                note = CASE WHEN $8::boolean
+                  THEN EXCLUDED.note ELSE transaction_metadata.note END,
+                note_version = CASE WHEN $8::boolean
+                  THEN EXCLUDED.note_version
+                  ELSE transaction_metadata.note_version END,
+                note_updated_by = CASE WHEN $8::boolean
+                  THEN EXCLUDED.note_updated_by
+                  ELSE transaction_metadata.note_updated_by END,
+                note_updated_at = CASE WHEN $8::boolean
+                  THEN EXCLUDED.note_updated_at
+                  ELSE transaction_metadata.note_updated_at END,
+                budget_month_on = CASE WHEN $14::boolean
+                  THEN EXCLUDED.budget_month_on
+                  ELSE transaction_metadata.budget_month_on END,
+                budget_month_overridden =
+                  transaction_metadata.budget_month_overridden
+                  OR $14::boolean,
+                budget_month_updated_at = CASE WHEN $14::boolean
+                  THEN EXCLUDED.budget_month_updated_at
+                  ELSE transaction_metadata.budget_month_updated_at END,
+                updated_at = GREATEST(
+                  transaction_metadata.updated_at,
+                  EXCLUDED.updated_at
+                )
+            `,
+            [
+              workspaceId,
+              transactionId,
+              metadata.display_name ?? null,
+              applyDisplay,
+              sourceDisplayUpdatedAtValue,
+              applyTags,
+              sourceTagsUpdatedAtValue,
+              applyNote,
+              metadata.note ?? null,
+              sourceNoteVersion,
+              metadata.note_updated_by ?? userId,
+              metadata.note_updated_at ?? null,
+              metadata.budget_month_on ?? null,
+              applyBudgetMonth,
+              sourceBudgetMonthUpdatedAtValue,
+              metadata.created_by ?? userId,
+              metadata.updated_at ?? recovery.pending_updated_at,
+            ],
+          );
+        }
+      }
+
+      const categorization = jsonObject(
+        userState.categorization_override,
+        null,
+      );
+      if (categorization) {
+        const sourceCategoryOverridden =
+          categorization.category_overridden === true ||
+          (
+            categorization.category_overridden == null &&
+            (
+              categorization.category_primary != null ||
+              categorization.category_detailed != null ||
+              categorization.category_id != null
+            )
+          );
+        const sourceExcludedOverridden =
+          categorization.excluded_from_spending_overridden === true ||
+          (
+            categorization.excluded_from_spending_overridden == null &&
+            categorization.excluded_from_spending != null
+          );
+        const sourceRoleOverridden =
+          categorization.cash_flow_role_overridden === true ||
+          (
+            categorization.cash_flow_role_overridden == null &&
+            categorization.cash_flow_role != null
+          );
+        const sourceFixedOverridden =
+          categorization.is_fixed_overridden === true ||
+          (
+            categorization.is_fixed_overridden == null &&
+            categorization.is_fixed != null
+          );
+        const sourceCategoryUpdatedAtValue =
+          categorization.category_updated_at ??
+          categorization.updated_at ??
+          recovery.pending_updated_at;
+        const sourceExcludedUpdatedAtValue =
+          categorization.excluded_from_spending_updated_at ??
+          categorization.updated_at ??
+          recovery.pending_updated_at;
+        const sourceRoleUpdatedAtValue =
+          categorization.cash_flow_role_updated_at ??
+          categorization.updated_at ??
+          recovery.pending_updated_at;
+        const sourceFixedUpdatedAtValue =
+          categorization.is_fixed_updated_at ??
+          categorization.updated_at ??
+          recovery.pending_updated_at;
+        const sourceCategoryUpdatedAt = timestampValue(
+          sourceCategoryUpdatedAtValue,
+        );
+        const sourceExcludedUpdatedAt = timestampValue(
+          sourceExcludedUpdatedAtValue,
+        );
+        const sourceRoleUpdatedAt = timestampValue(
+          sourceRoleUpdatedAtValue,
+        );
+        const sourceFixedUpdatedAt = timestampValue(
+          sourceFixedUpdatedAtValue,
+        );
+        const applyCategory = fieldWins(
+          sourceCategoryOverridden,
+          sourceCategoryUpdatedAt,
+          target.category_overridden,
+          timestampValue(
+            target.category_updated_at ?? target.override_updated_at,
+          ),
+        );
+        const applyExcluded = fieldWins(
+          sourceExcludedOverridden,
+          sourceExcludedUpdatedAt,
+          target.excluded_from_spending_overridden,
+          timestampValue(
+            target.excluded_from_spending_updated_at ??
+              target.override_updated_at,
+          ),
+        );
+        const applyRole = fieldWins(
+          sourceRoleOverridden,
+          sourceRoleUpdatedAt,
+          target.cash_flow_role_overridden,
+          timestampValue(
+            target.cash_flow_role_updated_at ?? target.override_updated_at,
+          ),
+        );
+        const applyFixed = fieldWins(
+          sourceFixedOverridden,
+          sourceFixedUpdatedAt,
+          target.is_fixed_overridden,
+          timestampValue(
+            target.is_fixed_updated_at ?? target.override_updated_at,
+          ),
+        );
+        if (applyCategory || applyExcluded || applyRole || applyFixed) {
+        await client.query(
+          `
+            INSERT INTO categorization_overrides (
+              id, workspace_id, transaction_id,
+              category_primary, category_detailed, category_id,
+              category_overridden, category_updated_at,
+              excluded_from_spending,
+              excluded_from_spending_overridden,
+              excluded_from_spending_updated_at,
+              cash_flow_role, cash_flow_role_overridden,
+              cash_flow_role_updated_at,
+              is_fixed, is_fixed_overridden, is_fixed_updated_at,
+              created_by, created_at, updated_at
+            )
+            VALUES (
+              $1, $2, $3,
+              CASE WHEN $7::boolean THEN $4 ELSE NULL END,
+              CASE WHEN $7::boolean THEN $5 ELSE NULL END,
+              CASE WHEN $7::boolean THEN $6 ELSE NULL END,
+              $7, CASE WHEN $7::boolean THEN $8::timestamptz ELSE NULL END,
+              CASE WHEN $10::boolean THEN $9::boolean ELSE NULL END,
+              $10,
+              CASE WHEN $10::boolean THEN $11::timestamptz ELSE NULL END,
+              CASE WHEN $13::boolean THEN $12 ELSE NULL END,
+              $13,
+              CASE WHEN $13::boolean THEN $14::timestamptz ELSE NULL END,
+              CASE WHEN $16::boolean THEN $15::boolean ELSE NULL END,
+              $16,
+              CASE WHEN $16::boolean THEN $17::timestamptz ELSE NULL END,
+              $18, COALESCE($19::timestamptz, now()),
+              COALESCE($20::timestamptz, now())
+            )
+            ON CONFLICT (workspace_id, transaction_id)
+              WHERE transaction_id IS NOT NULL
+            DO UPDATE SET
+              category_primary = CASE WHEN $7::boolean
+                THEN EXCLUDED.category_primary
+                ELSE categorization_overrides.category_primary END,
+              category_detailed = CASE WHEN $7::boolean
+                THEN EXCLUDED.category_detailed
+                ELSE categorization_overrides.category_detailed END,
+              category_id = CASE WHEN $7::boolean
+                THEN EXCLUDED.category_id
+                ELSE categorization_overrides.category_id END,
+              category_overridden =
+                categorization_overrides.category_overridden
+                OR $7::boolean,
+              category_updated_at = CASE WHEN $7::boolean
+                THEN EXCLUDED.category_updated_at
+                ELSE categorization_overrides.category_updated_at END,
+              excluded_from_spending = CASE WHEN $10::boolean
+                THEN EXCLUDED.excluded_from_spending
+                ELSE categorization_overrides.excluded_from_spending END,
+              excluded_from_spending_overridden =
+                categorization_overrides.excluded_from_spending_overridden
+                OR $10::boolean,
+              excluded_from_spending_updated_at = CASE WHEN $10::boolean
+                THEN EXCLUDED.excluded_from_spending_updated_at
+                ELSE categorization_overrides.excluded_from_spending_updated_at
+              END,
+              cash_flow_role = CASE WHEN $13::boolean
+                THEN EXCLUDED.cash_flow_role
+                ELSE categorization_overrides.cash_flow_role END,
+              cash_flow_role_overridden =
+                categorization_overrides.cash_flow_role_overridden
+                OR $13::boolean,
+              cash_flow_role_updated_at = CASE WHEN $13::boolean
+                THEN EXCLUDED.cash_flow_role_updated_at
+                ELSE categorization_overrides.cash_flow_role_updated_at END,
+              is_fixed = CASE WHEN $16::boolean
+                THEN EXCLUDED.is_fixed
+                ELSE categorization_overrides.is_fixed END,
+              is_fixed_overridden =
+                categorization_overrides.is_fixed_overridden
+                OR $16::boolean,
+              is_fixed_updated_at = CASE WHEN $16::boolean
+                THEN EXCLUDED.is_fixed_updated_at
+                ELSE categorization_overrides.is_fixed_updated_at END,
+              updated_at = GREATEST(
+                categorization_overrides.updated_at,
+                EXCLUDED.updated_at
+              )
+          `,
+          [
+            randomUUID(),
+            workspaceId,
+            transactionId,
+            categorization.category_primary ?? null,
+            categorization.category_detailed ?? null,
+            categorization.category_id ?? null,
+            applyCategory,
+            sourceCategoryUpdatedAtValue,
+            categorization.excluded_from_spending ?? null,
+            applyExcluded,
+            sourceExcludedUpdatedAtValue,
+            categorization.cash_flow_role ?? null,
+            applyRole,
+            sourceRoleUpdatedAtValue,
+            categorization.is_fixed ?? null,
+            applyFixed,
+            sourceFixedUpdatedAtValue,
+            categorization.created_by ?? userId,
+            categorization.created_at ?? null,
+            categorization.updated_at ?? recovery.pending_updated_at,
+          ],
+        );
+        }
+      }
+
+      await this.#attachRecoveredSplits(client, {
+        workspaceId,
+        transactionId,
+        target,
+        recovery,
+        providerFacts,
+        splits: Array.isArray(userState.splits) ? userState.splits : [],
+        splitOverridden:
+          userState.split_overridden === true ||
+          Object.hasOwn(userState, "splits"),
+        splitUpdatedAt: userState.split_updated_at ?? null,
+        splitVersion: userState.split_version ?? 0,
+        splitNeedsReview: userState.split_needs_review === true,
+        userId,
+      });
+
+      const patterns = Array.isArray(userState.recurring_patterns)
+        ? userState.recurring_patterns
+        : [];
+      const sourceRecurringAmount = Number(providerFacts.amount_minor);
+      const targetRecurringAmount = Number(target.amount_minor);
+      const recurringProviderFactsSafe =
+        Number.isSafeInteger(sourceRecurringAmount) &&
+        Number.isSafeInteger(targetRecurringAmount) &&
+        sourceRecurringAmount !== 0 &&
+        targetRecurringAmount !== 0 &&
+        providerFacts.currency_code === target.currency_code &&
+        Math.sign(sourceRecurringAmount) ===
+          Math.sign(targetRecurringAmount);
+      for (const pattern of patterns) {
+        const matchField = target.normalized_merchant
+          ? "normalized_merchant"
+          : "normalized_name";
+        const normalizedMatchValue = target[matchField]?.trim() ?? "";
+        const recurringIntentSafe =
+          recurringProviderFactsSafe &&
+          targetRecurringAmount < 0 &&
+          (pattern.currency_code ?? providerFacts.currency_code) ===
+            target.currency_code &&
+          Boolean(normalizedMatchValue);
+        const sourceIntentUpdatedAt =
+          pattern.updated_at ?? recovery.pending_updated_at;
+
+        // Split-recency semantics apply to recurring intent too: a newer
+        // explicit rule already authored on the posted row wins. When the
+        // pending rule is newer, retire the older target rule before moving
+        // the source anchor so one logical charge cannot create two streams.
+        await client.query(
+          `
+            UPDATE recurring_pattern_rules target_rule
+            SET active = false
+            WHERE target_rule.workspace_id = $1
+              AND target_rule.source_transaction_id = $2
+              AND target_rule.id <> $3
+              AND target_rule.active = true
+              AND target_rule.updated_at <= $4::timestamptz
+          `,
+          [
+            workspaceId,
+            transactionId,
+            pattern.id,
+            sourceIntentUpdatedAt,
+          ],
+        );
+        await client.query(
+          `
+            UPDATE recurring_pattern_rules source_rule
+            SET active = false
+            WHERE source_rule.workspace_id = $1
+              AND source_rule.id = $2
+              AND source_rule.updated_at <= $4::timestamptz
+              AND (
+                source_rule.source_transaction_id IS NULL
+                OR source_rule.source_transaction_id = $3
+              )
+              AND EXISTS (
+                SELECT 1
+                FROM recurring_pattern_rules target_rule
+                WHERE target_rule.workspace_id = $1
+                  AND target_rule.source_transaction_id = $5
+                  AND target_rule.id <> source_rule.id
+                  AND target_rule.active = true
+                  AND target_rule.updated_at > $4::timestamptz
+              )
+          `,
+          [
+            workspaceId,
+            pattern.id,
+            recovery.pending_transaction_id,
+            sourceIntentUpdatedAt,
+            transactionId,
+          ],
+        );
+
+        if (recurringIntentSafe) {
+          await client.query(
+            `
+              UPDATE recurring_pattern_rules rule
+              SET source_transaction_id = $3,
+                  account_id = $4,
+                  match_field = $5,
+                  normalized_match_value = $6,
+                  anchor_amount_minor = abs($7::bigint),
+                  currency_code = $8,
+                  updated_by = $9
+              WHERE rule.workspace_id = $1
+                AND rule.id = $2
+                AND rule.updated_at <= $10::timestamptz
+                AND (
+                  rule.source_transaction_id IS NULL
+                  OR rule.source_transaction_id = $11
+                )
+                AND NOT EXISTS (
+                  SELECT 1
+                  FROM recurring_pattern_rules target_rule
+                  WHERE target_rule.workspace_id = $1
+                    AND target_rule.source_transaction_id = $3
+                    AND target_rule.id <> rule.id
+                    AND target_rule.active = true
+                    AND target_rule.updated_at > $10::timestamptz
+                )
+            `,
+            [
+              workspaceId,
+              pattern.id,
+              transactionId,
+              target.account_id,
+              matchField,
+              normalizedMatchValue,
+              target.amount_minor,
+              target.currency_code,
+              userId,
+              sourceIntentUpdatedAt,
+              recovery.pending_transaction_id,
+            ],
+          );
+          continue;
+        }
+
+        const review = await client.query(
+          `
+            UPDATE recurring_pattern_rules rule
+            SET source_transaction_id = $3,
+                active = false,
+                updated_by = $4
+            WHERE rule.workspace_id = $1
+              AND rule.id = $2
+              AND rule.active = true
+              AND rule.updated_at <= $5::timestamptz
+              AND (
+                rule.source_transaction_id IS NULL
+                OR rule.source_transaction_id = $6
+              )
+              AND NOT EXISTS (
+                SELECT 1
+                FROM recurring_pattern_rules target_rule
+                WHERE target_rule.workspace_id = $1
+                  AND target_rule.source_transaction_id = $3
+                  AND target_rule.id <> rule.id
+                  AND target_rule.active = true
+                  AND target_rule.updated_at > $5::timestamptz
+              )
+            RETURNING rule.id
+          `,
+          [
+            workspaceId,
+            pattern.id,
+            transactionId,
+            userId,
+            sourceIntentUpdatedAt,
+            recovery.pending_transaction_id,
+          ],
+        );
+        if (review.rows[0]) {
+          await client.query(
+            `
+              UPDATE transactions
+              SET recurring_needs_review = true,
+                  updated_at = now()
+              WHERE workspace_id = $1 AND id = $2
+            `,
+            [workspaceId, transactionId],
+          );
+        }
+      }
+
+      const attached = await client.query(
+        `
+          UPDATE unmatched_pending_transaction_edits
+          SET attached_transaction_id = $3,
+              attached_at = now(),
+              attached_by = $4,
+              updated_at = now()
+          WHERE workspace_id = $1
+            AND id = $2
+            AND attached_at IS NULL
+            AND dismissed_at IS NULL
+          RETURNING *
+        `,
+        [workspaceId, recoveryId, transactionId, userId],
+      );
+      await this.#refreshTransactionSearchDocuments(
+        client,
+        workspaceId,
+        [transactionId],
+      );
+      return attached.rows[0]
+        ? mapPendingEditRecovery(attached.rows[0])
+        : null;
+    });
+  }
+
   async batchEditTransactions(
     workspaceId = DEFAULT_WORKSPACE_ID,
     {
@@ -4456,6 +6794,7 @@ export class PgFinanceRepository {
       changes,
       "excludedFromSpending",
     );
+    const hasCashFlowRole = Object.hasOwn(changes, "cashFlowRole");
     const hasBudgetMonthOffset = Object.hasOwn(
       changes,
       "budgetMonthOffset",
@@ -4474,13 +6813,38 @@ export class PgFinanceRepository {
     return withTransaction(this.#pool, async (client) => {
       const locked = await client.query(
         `
-          SELECT id, posted_on
-          FROM transactions
-          WHERE workspace_id = $1
-            AND id = ANY($2::text[])
-            AND pending = false
-          ORDER BY id
-          FOR UPDATE
+          SELECT
+            candidate.id,
+            candidate.posted_on,
+            EXISTS (
+              SELECT 1
+              FROM recurring_pattern_rules rule
+              WHERE rule.workspace_id = candidate.workspace_id
+                AND rule.active = true
+                AND rule.account_id = candidate.account_id
+                AND rule.currency_code = candidate.currency_code
+                AND CASE rule.match_field
+                  WHEN 'normalized_merchant'
+                    THEN rule.normalized_match_value =
+                      candidate.normalized_merchant
+                  WHEN 'normalized_name'
+                    THEN rule.normalized_match_value =
+                      candidate.normalized_name
+                  ELSE false
+                END
+                AND abs(
+                  rule.anchor_amount_minor -
+                    abs(candidate.amount_minor)
+                ) <= greatest(
+                  200,
+                  round(rule.anchor_amount_minor * 0.2)
+                )
+            ) AS has_active_recurring_pattern
+          FROM transactions candidate
+          WHERE candidate.workspace_id = $1
+            AND candidate.id = ANY($2::text[])
+          ORDER BY candidate.id
+          FOR UPDATE OF candidate
         `,
         [workspaceId, ids],
       );
@@ -4491,47 +6855,46 @@ export class PgFinanceRepository {
       ) {
         return null;
       }
+      const targetCashFlowRole = hasCashFlowRole
+        ? changes.cashFlowRole
+        : hasExcludedFromSpending
+          ? changes.excludedFromSpending
+            ? "transfer"
+            : "spending"
+          : null;
+      if (
+        targetCashFlowRole === "transfer" &&
+        locked.rows.some((row) => row.has_active_recurring_pattern)
+      ) {
+        return {
+          conflict: "active_recurring_pattern",
+          transactionIds: locked.rows
+            .filter((row) => row.has_active_recurring_pattern)
+            .map((row) => row.id),
+        };
+      }
 
       if (hasDisplayName) {
-        if (changes.displayName == null) {
-          await client.query(
-            `
-              UPDATE transaction_metadata
-              SET display_name = NULL,
-                  updated_at = now()
-              WHERE workspace_id = $1
-                AND transaction_id = ANY($2::text[])
-            `,
-            [workspaceId, ids],
-          );
-          await client.query(
-            `
-              DELETE FROM transaction_metadata
-              WHERE workspace_id = $1
-                AND transaction_id = ANY($2::text[])
-                AND display_name IS NULL
-                AND tags_overridden = false
-                AND note IS NULL
-                AND note_version = 0
-                AND budget_month_on IS NULL
-            `,
-            [workspaceId, ids],
-          );
-        } else {
-          await client.query(
-            `
-              INSERT INTO transaction_metadata (
-                workspace_id, transaction_id, display_name, created_by
-              )
-              SELECT $1, selected.transaction_id, $3, $4
-              FROM unnest($2::text[]) AS selected(transaction_id)
-              ON CONFLICT (workspace_id, transaction_id) DO UPDATE SET
-                display_name = EXCLUDED.display_name,
-                updated_at = now()
-            `,
-            [workspaceId, ids, changes.displayName, userId],
-          );
-        }
+        await client.query(
+          `
+            INSERT INTO transaction_metadata (
+              workspace_id,
+              transaction_id,
+              display_name,
+              display_name_overridden,
+              display_name_updated_at,
+              created_by
+            )
+            SELECT $1, selected.transaction_id, $3, true, now(), $4
+            FROM unnest($2::text[]) AS selected(transaction_id)
+            ON CONFLICT (workspace_id, transaction_id) DO UPDATE SET
+              display_name = EXCLUDED.display_name,
+              display_name_overridden = true,
+              display_name_updated_at = now(),
+              updated_at = now()
+          `,
+          [workspaceId, ids, changes.displayName, userId],
+        );
       }
 
       if (hasCategoryPrimary) {
@@ -4543,10 +6906,12 @@ export class PgFinanceRepository {
           `
             INSERT INTO categorization_overrides (
               id, workspace_id, transaction_id, category_primary,
-              category_detailed, created_by
+              category_detailed, category_id,
+              category_overridden, category_updated_at, created_by
             )
             SELECT
-              row.id, $1, row.transaction_id, $3, NULL, $4
+              row.id, $1, row.transaction_id, $3, NULL, NULL,
+              true, now(), $4
             FROM jsonb_to_recordset($2::jsonb) AS row(
               id text,
               transaction_id text
@@ -4556,6 +6921,9 @@ export class PgFinanceRepository {
             DO UPDATE SET
               category_primary = EXCLUDED.category_primary,
               category_detailed = NULL,
+              category_id = NULL,
+              category_overridden = true,
+              category_updated_at = now(),
               updated_at = now()
           `,
           [
@@ -4567,7 +6935,7 @@ export class PgFinanceRepository {
         );
       }
 
-      if (hasExcludedFromSpending) {
+      if (hasExcludedFromSpending || hasCashFlowRole) {
         const overrideRows = ids.map((transactionId) => ({
           id: randomUUID(),
           transaction_id: transactionId,
@@ -4576,10 +6944,15 @@ export class PgFinanceRepository {
           `
             INSERT INTO categorization_overrides (
               id, workspace_id, transaction_id,
-              excluded_from_spending, created_by
+              excluded_from_spending,
+              excluded_from_spending_overridden,
+              excluded_from_spending_updated_at,
+              cash_flow_role, cash_flow_role_overridden,
+              cash_flow_role_updated_at, created_by
             )
-            SELECT
-              row.id, $1, row.transaction_id, $3, $4
+            SELECT row.id, $1, row.transaction_id,
+              $3, $6, CASE WHEN $6::boolean THEN now() ELSE NULL END,
+              $4, true, now(), $5
             FROM jsonb_to_recordset($2::jsonb) AS row(
               id text,
               transaction_id text
@@ -4588,10 +6961,21 @@ export class PgFinanceRepository {
               WHERE transaction_id IS NOT NULL
             DO UPDATE SET
               excluded_from_spending = CASE
-                WHEN $5::boolean
+                WHEN $6::boolean
                   THEN EXCLUDED.excluded_from_spending
                 ELSE categorization_overrides.excluded_from_spending
               END,
+              excluded_from_spending_overridden = CASE
+                WHEN $6::boolean THEN true
+                ELSE categorization_overrides.excluded_from_spending_overridden
+              END,
+              excluded_from_spending_updated_at = CASE
+                WHEN $6::boolean THEN now()
+                ELSE categorization_overrides.excluded_from_spending_updated_at
+              END,
+              cash_flow_role = EXCLUDED.cash_flow_role,
+              cash_flow_role_overridden = true,
+              cash_flow_role_updated_at = now(),
               updated_at = now()
           `,
           [
@@ -4600,6 +6984,11 @@ export class PgFinanceRepository {
             hasExcludedFromSpending
               ? changes.excludedFromSpending
               : null,
+            hasCashFlowRole
+              ? changes.cashFlowRole
+              : changes.excludedFromSpending
+                ? "transfer"
+                : "spending",
             userId,
             hasExcludedFromSpending,
           ],
@@ -4610,12 +6999,14 @@ export class PgFinanceRepository {
         await client.query(
           `
             INSERT INTO transaction_metadata (
-              workspace_id, transaction_id, tags_overridden, created_by
+              workspace_id, transaction_id, tags_overridden,
+              tags_updated_at, created_by
             )
-            SELECT $1, selected.transaction_id, true, $3
+            SELECT $1, selected.transaction_id, true, now(), $3
             FROM unnest($2::text[]) AS selected(transaction_id)
             ON CONFLICT (workspace_id, transaction_id) DO UPDATE SET
               tags_overridden = true,
+              tags_updated_at = now(),
               updated_at = now()
           `,
           [workspaceId, ids, userId],
@@ -4682,24 +7073,27 @@ export class PgFinanceRepository {
               workspace_id,
               transaction_id,
               budget_month_on,
+              budget_month_overridden,
+              budget_month_updated_at,
               created_by
             )
             SELECT
               $1,
               selected.id,
-              CASE
-                WHEN $3::integer = 0 THEN NULL
-                ELSE (
-                  date_trunc('month', selected.posted_on)
-                  + make_interval(months => $3::integer)
-                )::date
-              END,
+              (
+                date_trunc('month', selected.posted_on)
+                + make_interval(months => $3::integer)
+              )::date,
+              true,
+              now(),
               $4
             FROM transactions selected
             WHERE selected.workspace_id = $1
               AND selected.id = ANY($2::text[])
             ON CONFLICT (workspace_id, transaction_id) DO UPDATE SET
               budget_month_on = EXCLUDED.budget_month_on,
+              budget_month_overridden = true,
+              budget_month_updated_at = now(),
               updated_at = now()
           `,
           [
@@ -4718,10 +7112,12 @@ export class PgFinanceRepository {
             WHERE workspace_id = $1
               AND transaction_id = ANY($2::text[])
               AND display_name IS NULL
+              AND display_name_overridden = false
               AND tags_overridden = false
               AND note IS NULL
               AND note_version = 0
               AND budget_month_on IS NULL
+              AND budget_month_overridden = false
           `,
           [workspaceId, ids],
         );
@@ -6711,8 +9107,14 @@ export class PgFinanceRepository {
       `
         SELECT
           t.id AS transaction_id,
+          effective_treatment.effective_cash_flow_role
+            AS cash_flow_role,
           a.active = true AND connection.status <> 'removed'
             AS account_active,
+          COALESCE(
+            NULLIF(btrim(t.normalized_merchant), ''),
+            NULLIF(btrim(t.normalized_name), '')
+          ) IS NOT NULL AS has_stable_identity,
           pattern.id AS pattern_id,
           pattern.stream_id AS pattern_stream_id,
           pattern.stream_type AS pattern_stream_type,
@@ -6727,6 +9129,10 @@ export class PgFinanceRepository {
         JOIN accounts a ON a.id = t.account_id
         JOIN finance_connections connection
           ON connection.id = a.connection_id
+        LEFT JOIN transaction_effective_spending_treatments
+          effective_treatment
+          ON effective_treatment.workspace_id = t.workspace_id
+         AND effective_treatment.transaction_id = t.id
         LEFT JOIN LATERAL (
           SELECT rule.*
           FROM recurring_pattern_rules rule
@@ -6776,7 +9182,9 @@ export class PgFinanceRepository {
     if (!row) return null;
     return {
       transaction_id: row.transaction_id,
+      cash_flow_role: row.cash_flow_role ?? "spending",
       account_active: Boolean(row.account_active),
+      has_stable_identity: Boolean(row.has_stable_identity),
       pattern: row.pattern_id
         ? {
             id: row.pattern_id,
@@ -6917,6 +9325,15 @@ export class PgFinanceRepository {
           actorId,
         ],
       );
+      await client.query(
+        `
+          UPDATE transactions
+          SET recurring_needs_review = false,
+              updated_at = now()
+          WHERE workspace_id = $1 AND id = $2
+        `,
+        [workspaceId, transactionId],
+      );
       return mapRecurringPatternRule(result.rows[0]);
     });
   }
@@ -7009,6 +9426,23 @@ export class PgFinanceRepository {
           ) AS current_display_name,
           current_transaction.category_primary
             AS current_category_primary,
+          current_transaction.cash_flow_role
+            AS current_cash_flow_role,
+          last_payment.transaction_id AS last_transaction_id,
+          last_payment.posted_on AS last_transaction_posted_on,
+          last_payment.amount_minor AS last_transaction_amount_minor,
+          last_payment.currency_code
+            AS last_transaction_currency_code,
+          pending_occurrence.transaction_id
+            AS pending_transaction_id,
+          pending_occurrence.posted_on
+            AS pending_transaction_posted_on,
+          pending_occurrence.authorized_at
+            AS pending_transaction_authorized_at,
+          pending_occurrence.amount_minor
+            AS pending_transaction_amount_minor,
+          pending_occurrence.currency_code
+            AS pending_transaction_currency_code,
           COALESCE(
             stream_transactions.transaction_ids,
             '[]'::jsonb
@@ -7031,8 +9465,14 @@ export class PgFinanceRepository {
         LEFT JOIN LATERAL (
           SELECT
             COALESCE(
-              metadata.display_name,
-              cleanup_rule.display_name,
+              CASE
+                WHEN metadata.display_name_overridden
+                  THEN metadata.display_name
+                ELSE COALESCE(
+                  metadata.display_name,
+                  cleanup_rule.display_name
+                )
+              END,
               t.merchant_name,
               t.name
             ) AS display_name,
@@ -7040,9 +9480,15 @@ export class PgFinanceRepository {
               effective_category.category_name,
               effective_category.source_category_label,
               t.category_primary
-            ) AS category_primary
+            ) AS category_primary,
+            effective_treatment.effective_cash_flow_role
+              AS cash_flow_role
           FROM recurring_stream_transactions rst
           JOIN transactions t ON t.id = rst.transaction_id
+          LEFT JOIN transaction_effective_spending_treatments
+            effective_treatment
+            ON effective_treatment.workspace_id = t.workspace_id
+           AND effective_treatment.transaction_id = t.id
           LEFT JOIN transaction_metadata metadata
             ON metadata.workspace_id = t.workspace_id
            AND metadata.transaction_id = t.id
@@ -7074,6 +9520,115 @@ export class PgFinanceRepository {
           ORDER BY t.posted_on DESC, t.id DESC
           LIMIT 1
         ) current_transaction ON true
+        LEFT JOIN LATERAL (
+          SELECT
+            t.id AS transaction_id,
+            t.posted_on,
+            t.amount_minor,
+            t.currency_code
+          FROM recurring_stream_transactions rst
+          JOIN transactions t ON t.id = rst.transaction_id
+          WHERE rst.stream_id = r.id
+            AND t.pending = false
+          ORDER BY t.posted_on DESC, t.id DESC
+          LIMIT 1
+        ) last_payment ON true
+        LEFT JOIN LATERAL (
+          SELECT
+            pending_candidate.id AS transaction_id,
+            pending_candidate.posted_on,
+            pending_candidate.authorized_at,
+            pending_candidate.amount_minor,
+            pending_candidate.currency_code
+          FROM transactions pending_candidate
+          LEFT JOIN transaction_effective_spending_treatments
+            pending_treatment
+            ON pending_treatment.workspace_id =
+                pending_candidate.workspace_id
+           AND pending_treatment.transaction_id = pending_candidate.id
+          WHERE pending_candidate.workspace_id = r.workspace_id
+            AND pending_candidate.pending = true
+            AND pending_candidate.account_id = r.account_id
+            AND pending_candidate.currency_code = r.currency_code
+            AND pending_candidate.amount_minor < 0
+            AND COALESCE(
+              pending_treatment.effective_cash_flow_role,
+              pending_candidate.cash_flow_role
+            ) <> 'transfer'
+            AND r.next_expected_on IS NOT NULL
+            AND pending_candidate.posted_on BETWEEN
+              r.next_expected_on - CASE r.cadence
+                WHEN 'weekly' THEN 3
+                WHEN 'biweekly' THEN 5
+                WHEN 'monthly' THEN 10
+                WHEN 'quarterly' THEN 21
+                WHEN 'annual' THEN 45
+                ELSE 10
+              END
+              AND r.next_expected_on + CASE r.cadence
+                WHEN 'weekly' THEN 3
+                WHEN 'biweekly' THEN 5
+                WHEN 'monthly' THEN 10
+                WHEN 'quarterly' THEN 21
+                WHEN 'annual' THEN 45
+                ELSE 10
+              END
+            AND abs(
+              abs(pending_candidate.amount_minor) -
+                r.expected_amount_minor
+            ) <= greatest(
+              200,
+              round(r.expected_amount_minor * 0.2)
+            )
+            AND (
+              (
+                pattern.id IS NOT NULL
+                AND CASE pattern.match_field
+                  WHEN 'normalized_merchant'
+                    THEN pattern.normalized_match_value =
+                      pending_candidate.normalized_merchant
+                  WHEN 'normalized_name'
+                    THEN pattern.normalized_match_value =
+                      pending_candidate.normalized_name
+                  ELSE false
+                END
+              )
+              OR (
+                pattern.id IS NULL
+                AND EXISTS (
+                  SELECT 1
+                  FROM recurring_stream_transactions
+                    identity_occurrence
+                  JOIN transactions identity_transaction
+                    ON identity_transaction.id =
+                      identity_occurrence.transaction_id
+                  WHERE identity_occurrence.stream_id = r.id
+                    AND identity_transaction.pending = false
+                    AND (
+                      (
+                        pending_candidate.normalized_merchant IS NOT NULL
+                        AND pending_candidate.normalized_merchant =
+                          identity_transaction.normalized_merchant
+                      )
+                      OR (
+                        pending_candidate.normalized_name IS NOT NULL
+                        AND pending_candidate.normalized_name =
+                          identity_transaction.normalized_name
+                      )
+                    )
+                )
+              )
+            )
+          ORDER BY
+            abs(pending_candidate.posted_on - r.next_expected_on),
+            abs(
+              abs(pending_candidate.amount_minor) -
+                r.expected_amount_minor
+            ),
+            pending_candidate.created_at,
+            pending_candidate.id
+          LIMIT 1
+        ) pending_occurrence ON true
         WHERE r.workspace_id = $1
           AND (
             $2::boolean
@@ -7719,6 +10274,7 @@ export class PgFinanceRepository {
       categoryPrimary = null,
       categoryDetailed = null,
       excludedFromSpending = null,
+      cashFlowRole = null,
       userId = null,
     },
   ) {
@@ -7737,15 +10293,71 @@ export class PgFinanceRepository {
         `
           INSERT INTO categorization_overrides (
             id, workspace_id, transaction_id, category_primary,
-            category_detailed, excluded_from_spending, created_by
+            category_detailed, category_overridden, category_updated_at,
+            excluded_from_spending,
+            excluded_from_spending_overridden,
+            excluded_from_spending_updated_at,
+            cash_flow_role, cash_flow_role_overridden,
+            cash_flow_role_updated_at, created_by
           )
-          VALUES ($1, $2, $3, $4, $5, $6, $7)
+          VALUES (
+            $1, $2, $3, $4, $5,
+            ($4::text IS NOT NULL OR $5::text IS NOT NULL),
+            CASE
+              WHEN $4::text IS NOT NULL OR $5::text IS NOT NULL
+                THEN now()
+              ELSE NULL
+            END,
+            $6, ($6::boolean IS NOT NULL),
+            CASE WHEN $6::boolean IS NOT NULL THEN now() ELSE NULL END,
+            $7, ($7::text IS NOT NULL),
+            CASE WHEN $7::text IS NOT NULL THEN now() ELSE NULL END,
+            $8
+          )
           ON CONFLICT (workspace_id, transaction_id)
             WHERE transaction_id IS NOT NULL
           DO UPDATE SET
-            category_primary = EXCLUDED.category_primary,
-            category_detailed = EXCLUDED.category_detailed,
-            excluded_from_spending = EXCLUDED.excluded_from_spending,
+            category_primary = COALESCE(
+              EXCLUDED.category_primary,
+              categorization_overrides.category_primary
+            ),
+            category_detailed = CASE
+              WHEN EXCLUDED.category_primary IS NOT NULL
+                THEN EXCLUDED.category_detailed
+              ELSE categorization_overrides.category_detailed
+            END,
+            category_overridden = CASE
+              WHEN EXCLUDED.category_overridden THEN true
+              ELSE categorization_overrides.category_overridden
+            END,
+            category_updated_at = CASE
+              WHEN EXCLUDED.category_overridden THEN now()
+              ELSE categorization_overrides.category_updated_at
+            END,
+            excluded_from_spending = COALESCE(
+              EXCLUDED.excluded_from_spending,
+              categorization_overrides.excluded_from_spending
+            ),
+            excluded_from_spending_overridden = CASE
+              WHEN EXCLUDED.excluded_from_spending_overridden THEN true
+              ELSE categorization_overrides.excluded_from_spending_overridden
+            END,
+            excluded_from_spending_updated_at = CASE
+              WHEN EXCLUDED.excluded_from_spending_overridden THEN now()
+              ELSE categorization_overrides.excluded_from_spending_updated_at
+            END,
+            cash_flow_role = COALESCE(
+              EXCLUDED.cash_flow_role,
+              categorization_overrides.cash_flow_role
+            ),
+            cash_flow_role_overridden = CASE
+              WHEN EXCLUDED.cash_flow_role_overridden THEN true
+              ELSE categorization_overrides.cash_flow_role_overridden
+            END,
+            cash_flow_role_updated_at = CASE
+              WHEN EXCLUDED.cash_flow_role_overridden THEN now()
+              ELSE categorization_overrides.cash_flow_role_updated_at
+            END,
             updated_at = now()
           RETURNING *
         `,
@@ -7756,6 +10368,12 @@ export class PgFinanceRepository {
           categoryPrimary,
           categoryDetailed,
           excludedFromSpending,
+          cashFlowRole ??
+            (excludedFromSpending == null
+              ? null
+              : excludedFromSpending
+                ? "transfer"
+                : "spending"),
           userId,
         ],
       );
@@ -8962,6 +11580,12 @@ function mapTransaction(
 ) {
   const projectedSplitCategory = row.split_category ?? null;
   const providerAmountMinor = integer(row.amount_minor);
+  const effectiveCashFlowRole =
+    row.effective_cash_flow_role ??
+    row.cash_flow_role ??
+    (row.effective_excluded_from_spending ?? row.excluded_from_spending
+      ? "transfer"
+      : "spending");
   return {
     id: row.id,
     provider_transaction_id: row.provider_transaction_id ?? null,
@@ -9019,14 +11643,16 @@ function mapTransaction(
     posted_at: dateValue(row.posted_at),
     posted_on: String(row.posted_on),
     pending: row.pending,
+    cash_flow_role: effectiveCashFlowRole,
     excluded_from_spending:
       row.effective_excluded_from_spending ??
-      row.excluded_from_spending ??
-      false,
+      effectiveCashFlowRole !== "spending",
     is_fixed: row.is_fixed ?? false,
     original_transaction_id: row.original_transaction_id ?? null,
     payment_channel: row.payment_channel,
     split_version: Number(row.split_version ?? 0),
+    split_needs_review: Boolean(row.split_needs_review),
+    recurring_needs_review: Boolean(row.recurring_needs_review),
     goal_spend_version: Number(row.goal_spend_version ?? 0),
   };
 }
@@ -9159,6 +11785,7 @@ function mapTransactionCleanupRule(row) {
       row.resolved_category ??
       row.category_primary ??
       null,
+    cash_flow_role: row.cash_flow_role ?? null,
     tags: row.tags == null
       ? null
       : Array.isArray(row.tags)
@@ -9171,6 +11798,31 @@ function mapTransactionCleanupRule(row) {
     updated_by: row.updated_by ?? null,
     created_at: dateValue(row.created_at),
     updated_at: dateValue(row.updated_at),
+  };
+}
+
+function mapPendingEditRecovery(row) {
+  return {
+    id: row.id,
+    workspace_id: row.workspace_id,
+    account_id: row.account_id,
+    account_name: row.account_name ?? null,
+    account_mask: row.account_mask ?? null,
+    institution_name: row.institution_name ?? null,
+    pending_transaction_id: row.pending_transaction_id,
+    provider_pending_transaction_id:
+      row.provider_pending_transaction_id,
+    user_state: jsonObject(row.user_state),
+    provider_facts: jsonObject(row.provider_facts),
+    pending_created_at: dateValue(row.pending_created_at),
+    pending_updated_at: dateValue(row.pending_updated_at),
+    recovered_at: dateValue(row.recovered_at),
+    updated_at: dateValue(row.updated_at),
+    attached_transaction_id: row.attached_transaction_id ?? null,
+    attached_at: dateValue(row.attached_at),
+    attached_by: row.attached_by ?? null,
+    dismissed_at: dateValue(row.dismissed_at),
+    dismissed_by: row.dismissed_by ?? null,
   };
 }
 
@@ -9329,6 +11981,30 @@ function mapRecurring(row) {
     service_family: row.service_family,
     display_name: row.current_display_name ?? row.display_name,
     category_primary: row.current_category_primary ?? null,
+    cash_flow_role: row.current_cash_flow_role ?? null,
+    last_transaction: row.last_transaction_id
+      ? {
+          id: row.last_transaction_id,
+          posted_on: String(row.last_transaction_posted_on),
+          amount_minor: integer(row.last_transaction_amount_minor),
+          currency_code:
+            row.last_transaction_currency_code ?? row.currency_code,
+        }
+      : null,
+    pending_transaction: row.pending_transaction_id
+      ? {
+          id: row.pending_transaction_id,
+          posted_on: String(row.pending_transaction_posted_on),
+          authorized_at: dateValue(
+            row.pending_transaction_authorized_at,
+          ),
+          amount_minor: integer(
+            row.pending_transaction_amount_minor,
+          ),
+          currency_code:
+            row.pending_transaction_currency_code ?? row.currency_code,
+        }
+      : null,
     stream_type: effectiveType,
     detected_stream_type: detectedType,
     stream_type_override: row.stream_type_override ?? null,

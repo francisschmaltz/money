@@ -163,6 +163,37 @@
         currency: remaining.currency || goal.currency_code || "USD",
       };
     };
+    const obligationItems =
+      typeof obligations !== "undefined" && Array.isArray(obligations)
+        ? obligations
+        : [];
+    const obligationCadenceLabel = (cadence) =>
+      ({
+        weekly: "Weekly",
+        biweekly: "Every two weeks",
+        monthly: "Monthly",
+        quarterly: "Quarterly",
+        annual: "Annual",
+      })[cadence] || cadence;
+    const obligationStatusLabel = (status) =>
+      ({
+        upcoming: "Upcoming",
+        overdue: "Overdue",
+        paid: "Paid",
+        matched_pending: "Pending",
+      })[status] || status;
+    const obligationDueLabel = (value) => {
+      if (!value) return "Date unavailable";
+      const date = new Date(`${value}T00:00:00.000Z`);
+      return Number.isNaN(date.getTime())
+        ? value
+        : date.toLocaleDateString(undefined, {
+            timeZone: "UTC",
+            year: "numeric",
+            month: "short",
+            day: "numeric",
+          });
+    };
     const finishedGoals =
       typeof archivedGoals !== "undefined" && Array.isArray(archivedGoals)
         ? archivedGoals
@@ -233,6 +264,51 @@
         <% }) %>
       </section>
     <% } %>
+
+    <section id="obligations" class="card recurring-card plan-section" aria-labelledby="obligations-heading">
+      <div class="section-heading">
+        <div>
+          <p class="card-kicker">Committed housing and debt</p>
+          <h2 id="obligations-heading">Obligations</h2>
+          <p class="obligations-heading-copy">Outside Spending, but reserved in Safe to Spend.</p>
+        </div>
+        <p class="card-kicker"><%= obligationItems.length %> active</p>
+      </div>
+      <div class="recurring-list">
+        <% obligationItems.forEach((obligation) => { %>
+          <div class="recurring-row obligation-row">
+            <span class="list-icon"><i class="ph ph-calendar-check" aria-hidden="true"></i></span>
+            <span class="recurring-row__main">
+              <strong><a href="/recurring?item=<%= encodeURIComponent(obligation.id) %>"><%= obligation.name %></a></strong>
+              <span><%= obligationCadenceLabel(obligation.cadence) %><% if (obligation.account_name) { %> · <%= obligation.account_name %><% } %></span>
+              <span class="obligation-row__schedule">
+                <% if (obligation.status === "matched_pending" && obligation.pending_payment) { %>
+                  <% if (obligation.pending_payment.transaction_id) { %><a href="/transactions?transaction=<%= encodeURIComponent(obligation.pending_payment.transaction_id) %>">Pending<% if (obligation.pending_payment.pending_on) { %> since <time datetime="<%= obligation.pending_payment.pending_on %>"><%= obligationDueLabel(obligation.pending_payment.pending_on) %></time><% } %></a><% } else { %>Pending<% } %>
+                  <% if (obligation.next_due_on) { %> · Expected <time datetime="<%= obligation.next_due_on %>"><%= obligationDueLabel(obligation.next_due_on) %></time><% } %>
+                <% } else if (obligation.status === "overdue" && obligation.next_due_on) { %>
+                  Overdue since <time datetime="<%= obligation.next_due_on %>"><%= obligationDueLabel(obligation.next_due_on) %></time>
+                <% } else if (obligation.status === "paid" && obligation.last_payment) { %>
+                  <% if (obligation.last_payment.transaction_id) { %><a href="/transactions?transaction=<%= encodeURIComponent(obligation.last_payment.transaction_id) %>">Paid <time datetime="<%= obligation.last_payment.paid_on %>"><%= obligationDueLabel(obligation.last_payment.paid_on) %></time></a><% } else { %>Paid <time datetime="<%= obligation.last_payment.paid_on %>"><%= obligationDueLabel(obligation.last_payment.paid_on) %></time><% } %>
+                  <% if (obligation.next_due_on) { %> · Next <time datetime="<%= obligation.next_due_on %>"><%= obligationDueLabel(obligation.next_due_on) %></time><% } %>
+                <% } else if (obligation.next_due_on) { %>
+                  Due <time datetime="<%= obligation.next_due_on %>"><%= obligationDueLabel(obligation.next_due_on) %></time>
+                <% } else { %>
+                  Due date unavailable
+                <% } %>
+                <% if (!["paid", "matched_pending"].includes(obligation.status) && obligation.last_payment) { %>
+                  · <% if (obligation.last_payment.transaction_id) { %><a href="/transactions?transaction=<%= encodeURIComponent(obligation.last_payment.transaction_id) %>">Last paid <time datetime="<%= obligation.last_payment.paid_on %>"><%= obligationDueLabel(obligation.last_payment.paid_on) %></time></a><% } else { %>Last paid <time datetime="<%= obligation.last_payment.paid_on %>"><%= obligationDueLabel(obligation.last_payment.paid_on) %></time><% } %>
+                <% } %>
+              </span>
+            </span>
+            <span class="recurring-row__date obligation-row__status obligation-row__status--<%= obligation.status %>"><%= obligationStatusLabel(obligation.status) %></span>
+            <strong><%= obligation.expected_amount ? formatMoney(obligation.expected_amount) : "Estimate unavailable" %></strong>
+          </div>
+        <% }) %>
+      </div>
+      <% if (!obligationItems.length) { %>
+        <p class="card-note"><i class="ph ph-info" aria-hidden="true"></i> No active housing or debt obligations are detected yet.</p>
+      <% } %>
+    </section>
 
     <section id="goals" class="plan-section" aria-labelledby="goals-heading">
       <div class="section-heading">

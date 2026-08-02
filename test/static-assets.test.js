@@ -21,9 +21,9 @@ test("first-party asset revisions change with the current deployment", async () 
     path.resolve("app/views/partials/head.ejs"),
     "utf8",
   );
-  assert.match(head, /\/css\/money\.css\?v=34/);
+  assert.match(head, /\/css\/money\.css\?v=35/);
   assert.match(head, /\/js\/charts\.js\?v=6/);
-  assert.match(head, /\/js\/money\.js\?v=31/);
+  assert.match(head, /\/js\/money\.js\?v=32/);
   assert.match(head, /\/js\/transactions\.js\?v=3/);
 });
 
@@ -181,7 +181,7 @@ test("transaction bulk editing sends only selected override fields", async () =>
   assert.ok(end > start);
   assert.match(bulkEdit, /data-bulk-transaction-select/);
   assert.match(bulkEdit, /data-bulk-change/);
-  assert.match(bulkEdit, /excluded_from_spending/);
+  assert.match(bulkEdit, /cash_flow_role/);
   assert.doesNotMatch(bulkEdit, /is_fixed/);
   assert.match(bulkEdit, /\/api\/v1\/transactions\/batch-edit/);
   assert.match(bulkEdit, /transaction_ids: transactionIds/);

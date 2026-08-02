@@ -197,6 +197,54 @@ test("manual patterns claim matching history and suppress overlapping automatic 
   assert.equal(fallback[0].stream_type, "subscription");
 });
 
+test("obligations can define recurring bills while transfers remain ineligible", () => {
+  const obligationHistory = [
+    "2026-01-01",
+    "2026-02-01",
+    "2026-03-01",
+  ].map((date, index) => ({
+    ...charge({
+      id: `rent-${index}`,
+      date,
+      merchant: "Apartment Rent",
+      amount: -250_000,
+      category: "RENT_AND_UTILITIES",
+      detailed: "RENT_AND_UTILITIES_RENT",
+    }),
+    cash_flow_role: "obligation",
+    excluded_from_spending: true,
+  }));
+  const transferHistory = [
+    "2026-01-05",
+    "2026-02-05",
+    "2026-03-05",
+  ].map((date, index) => ({
+    ...charge({
+      id: `card-payment-${index}`,
+      date,
+      merchant: "Card Payment",
+      amount: -100_000,
+      category: "LOAN_PAYMENTS",
+      detailed: "LOAN_PAYMENTS_CREDIT_CARD_PAYMENT",
+    }),
+    cash_flow_role: "transfer",
+    excluded_from_spending: false,
+  }));
+
+  const streams = detectRecurringStreams(
+    [...obligationHistory, ...transferHistory],
+    { now: new Date("2026-03-10T00:00:00Z") },
+  );
+
+  assert.equal(streams.length, 1);
+  assert.equal(streams[0].stream_type, "bill");
+  assert.equal(streams[0].cash_flow_role, "obligation");
+  assert.deepEqual(
+    streams[0].transaction_ids,
+    obligationHistory.map((transaction) => transaction.id),
+  );
+});
+
 test("recurring service loads active manual patterns before replacement", async () => {
   let stored;
   const service = new RecurringService({

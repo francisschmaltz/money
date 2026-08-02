@@ -10,6 +10,7 @@ import {
   nextScheduleDueOn,
   workspaceDate,
 } from "./planningAnalytics.js";
+import { buildPlanningObligations } from "./planningObligations.js";
 import { shiftDateOnly } from "./analytics.js";
 import {
   buildUxStressTransactions,
@@ -40,6 +41,7 @@ const GOAL_LIST_STATUSES = new Set(["active", "archived", "all"]);
 export function createDemoPlanningService({
   now = () => new Date("2026-07-27T19:00:00.000Z"),
   scenario = "default",
+  financeService = null,
 } = {}) {
   const stressTransactions =
     scenario === "ux-stress"
@@ -48,15 +50,34 @@ export function createDemoPlanningService({
   const accounts = buildDefaultPlanningAccounts();
   const goals = buildDefaultGoals();
   const recurringStreams = buildDefaultRecurringPayments().map(
-    (stream) => ({
-      id: stream.id,
-      stream_type: stream.type,
-      cadence: stream.cadence,
-      expected_amount_minor: stream.expected_amount.amount_minor,
-      currency_code: stream.expected_amount.currency,
-      next_expected_on: stream.next_estimated_date,
-      status: stream.status,
-    }),
+    (stream) => {
+      const lastTransaction = stream.transactions?.at(-1) ?? null;
+      return {
+        id: stream.id,
+        stream_type: stream.type,
+        cadence: stream.cadence,
+        expected_amount_minor: stream.expected_amount.amount_minor,
+        currency_code: stream.expected_amount.currency,
+        next_expected_on: stream.next_estimated_date,
+        last_seen_on: lastTransaction?.date ?? null,
+        last_transaction: lastTransaction
+          ? {
+              id: lastTransaction.id,
+              posted_on: lastTransaction.date,
+              amount_minor: lastTransaction.amount.amount_minor,
+              currency_code: lastTransaction.amount.currency,
+            }
+          : null,
+        transaction_ids: (stream.transactions ?? []).map(
+          (transaction) => transaction.id,
+        ),
+        status: stream.status,
+        cash_flow_role: stream.cash_flow_role ?? "spending",
+        display_name: stream.service,
+        account_id: stream.account?.id ?? null,
+        account_name: stream.account?.name ?? null,
+      };
+    },
   );
   if (scenario === "ux-stress") {
     goals[0].name =
@@ -90,6 +111,11 @@ export function createDemoPlanningService({
         pending: transaction.pending,
         excluded_from_spending:
           transaction.excluded_from_spending,
+        cash_flow_role:
+          transaction.cash_flow_role ??
+          (transaction.excluded_from_spending
+            ? "transfer"
+            : "spending"),
       },
     ]),
     ...stressTransactions.map((transaction) => [
@@ -100,6 +126,11 @@ export function createDemoPlanningService({
         pending: transaction.pending,
         excluded_from_spending:
           transaction.excluded_from_spending,
+        cash_flow_role:
+          transaction.cash_flow_role ??
+          (transaction.excluded_from_spending
+            ? "transfer"
+            : "spending"),
       },
     ]),
   ]);
@@ -132,13 +163,57 @@ export function createDemoPlanningService({
     partial: false,
   };
 
+  function currentRecurringStreams() {
+    const shared = financeService?.getPlanningRecurringStreams?.();
+    return Array.isArray(shared) ? shared : recurringStreams;
+  }
+
+  async function currentGoalTransaction(transactionId) {
+    const fallback = demoTransactions.get(transactionId) ?? null;
+    if (typeof financeService?.listTransactions !== "function") {
+      return fallback;
+    }
+    let cursor = null;
+    do {
+      const result = await financeService.listTransactions({
+        status: "all",
+        limit: 100,
+        cursor,
+      });
+      const transactions = result?.data?.transactions ?? [];
+      const transaction = transactions.find(
+        (candidate) => candidate.id === transactionId,
+      );
+      if (transaction) {
+        return {
+          amount_minor: Number(
+            transaction.amount_minor ??
+              transaction.amount?.amount_minor,
+          ),
+          currency_code:
+            transaction.currency_code ??
+            transaction.amount?.currency ??
+            null,
+          pending:
+            transaction.pending === true ||
+            transaction.status === "pending",
+          cash_flow_role: demoCashFlowRole(transaction),
+          excluded_from_spending:
+            demoCashFlowRole(transaction) !== "spending",
+        };
+      }
+      cursor = result?.data?.page_info?.next_cursor ?? null;
+    } while (cursor);
+    return null;
+  }
+
   function state(includeArchived = false) {
     return buildPlanningSnapshot({
       accounts,
       goals: goals.filter(
         (goal) => includeArchived || goal.status === "active",
       ),
-      recurringStreams,
+      recurringStreams: currentRecurringStreams(),
       asOf: workspaceDate(now(), "America/Los_Angeles"),
       currency: "USD",
     });
@@ -249,7 +324,7 @@ export function createDemoPlanningService({
         subtitle: "2 active goals",
         source: { label: "Money", url: "/plan" },
         summary:
-          "Safe to Spend reflects liquid cash after card balances, bills expected in the next 30 days, and cash-backed goals.",
+          "Safe to Spend reflects liquid cash after card balances, the next monthly bills plus other bills due within 30 days, and cash-backed goals.",
       };
     },
 
@@ -469,6 +544,7 @@ export function createDemoPlanningService({
 
     async getPlanningOverview({ month_on = null } = {}) {
       const safeToSpend = state();
+      const liveRecurringStreams = currentRecurringStreams();
       const history = goalCatalog(safeToSpend);
       const budgetStatus = await service.getBudgetStatus({
         month_on,
@@ -479,6 +555,9 @@ export function createDemoPlanningService({
       });
       return {
         safeToSpend,
+        obligations: buildPlanningObligations(liveRecurringStreams, {
+          asOf: workspaceDate(now(), "America/Los_Angeles"),
+        }),
         goals: safeToSpend.goals,
         archivedGoals: history.archivedGoals,
         historyInsights: history.historyInsights,
@@ -503,7 +582,7 @@ export function createDemoPlanningService({
     },
 
     async getTransactionGoalSpending({ transaction_id }) {
-      const transaction = demoTransactions.get(transaction_id);
+      const transaction = await currentGoalTransaction(transaction_id);
       if (!transaction) throw demoNotFound("Transaction not found.");
       const goalSpends = structuredClone(
         transactionGoalSpends.get(transaction_id) ?? [],
@@ -523,7 +602,7 @@ export function createDemoPlanningService({
         transaction.pending === false &&
         transaction.currency_code === "USD" &&
         transaction.amount_minor < 0 &&
-        transaction.excluded_from_spending !== true;
+        demoCashFlowRole(transaction) === "spending";
       return {
         data: {
           transaction_id,
@@ -548,7 +627,9 @@ export function createDemoPlanningService({
               ? "Pending transactions cannot be spent from a goal."
               : transaction.amount_minor >= 0
                 ? "Only posted outflows can be spent from a goal."
-                : "Include this outflow in spending before using a goal.",
+                : demoCashFlowRole(transaction) !== "spending"
+                  ? "Only Spending outflows can be spent from a goal."
+                  : "Only posted USD outflows can be spent from a goal.",
         },
         ...freshness,
         warnings: [],
@@ -701,7 +782,9 @@ export function createDemoPlanningService({
     },
 
     async spendFromFinanceGoal(input, actorInput) {
-      const transaction = demoTransactions.get(input.transaction_id);
+      const transaction = await currentGoalTransaction(
+        input.transaction_id,
+      );
       if (!transaction) throw demoNotFound("Transaction not found.");
       if (transaction.pending) {
         throw demoConflict(
@@ -716,9 +799,9 @@ export function createDemoPlanningService({
           "Only posted USD outflows can be spent from a goal.",
         );
       }
-      if (transaction.excluded_from_spending === true) {
+      if (demoCashFlowRole(transaction) !== "spending") {
         throw demoConflict(
-          "Include this outflow in spending before using a goal.",
+          "Only Spending outflows can be spent from a goal.",
         );
       }
       const currentTransactionVersion =
@@ -1286,9 +1369,6 @@ export function createDemoPlanningService({
     async splitTransaction(_input, actorInput) {
       const transaction = demoTransactions.get(_input.transaction_id);
       if (!transaction) throw demoNotFound("Transaction not found.");
-      if (transaction.pending) {
-        throw demoConflict("Pending transactions cannot be split.");
-      }
       if (
         _input.currency != null &&
         _input.currency !== transaction.currency_code
@@ -1780,6 +1860,18 @@ function demoBudgetDepth(name) {
     current = demoBudgetParentName(current);
   }
   return depth;
+}
+
+function demoCashFlowRole(transaction) {
+  const explicit =
+    transaction?.cash_flow_role ?? transaction?.cashFlowRole ?? null;
+  if (["spending", "obligation", "transfer"].includes(explicit)) {
+    return explicit;
+  }
+  return transaction?.excluded_from_spending === true ||
+    transaction?.excludedFromSpending === true
+    ? "transfer"
+    : "spending";
 }
 
 function demoBadRequest(message) {

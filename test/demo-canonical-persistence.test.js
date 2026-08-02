@@ -134,7 +134,7 @@ test("every rendered recurring item is editable and classification persists afte
   );
   assert.match(
     response.text,
-    /<option value="bill" selected>Bill<\/option>/,
+    /<option value="bill"\s+selected\s*>Bill<\/option>/,
   );
 
   const freshService = createDemoFinanceService();
@@ -172,7 +172,7 @@ test("manual transaction patterns persist in transaction and recurring views unt
   assert.match(transactionPage.text, /data-manual="true"/);
   assert.match(
     transactionPage.text,
-    /<option value="bill" selected>Bill<\/option>/,
+    /<option value="bill"\s+selected\s*>Bill<\/option>/,
   );
   assert.match(
     transactionPage.text,
@@ -195,6 +195,35 @@ test("manual transaction patterns persist in transaction and recurring views unt
     .get("/recurring")
     .expect(200);
   assert.doesNotMatch(afterRemoval.text, /Whole Foods/);
+});
+
+test("demo transactions cannot become Transfers while their manual pattern is active", async () => {
+  const service = createDemoFinanceService();
+  const transactionId = "txn_whole_foods";
+  await service.upsertTransactionRecurringPattern({
+    transaction_id: transactionId,
+    type: "bill",
+    cadence: "monthly",
+  });
+
+  await assert.rejects(
+    service.batchEditTransactions({
+      transaction_ids: [transactionId],
+      changes: { cash_flow_role: "transfer" },
+    }),
+    (error) =>
+      error.statusCode === 400 &&
+      /Remove the active Bill or Subscription pattern/.test(
+        error.message,
+      ),
+  );
+
+  const row = (
+    await service.listTransactions({ status: "posted" })
+  ).data.transactions.find(
+    (transaction) => transaction.id === transactionId,
+  );
+  assert.equal(row.cash_flow_role, "spending");
 });
 
 test("web and service portfolio holdings come from the same records", async () => {

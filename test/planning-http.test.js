@@ -233,7 +233,7 @@ test("Dashboard and Plan render one identical Safe to Spend card without a link"
   assert.ok(safeCard(dashboard.text));
   assert.equal(safeCard(dashboard.text), safeCard(plan.text));
   assert.match(dashboard.text, /<h2 id="safe-to-spend-heading">Safe to Spend<\/h2>/);
-  assert.match(dashboard.text, /class="display-money">\$33,734\.73<\/p>/);
+  assert.match(dashboard.text, /class="display-money">\$32,734\.73<\/p>/);
   assert.match(
     safeCard(dashboard.text),
     /Liquid cash[\s\S]*Credit card balances[\s\S]*Expected bills[\s\S]*Goals/,

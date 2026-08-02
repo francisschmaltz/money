@@ -81,6 +81,55 @@ function normalizePlaidLocation(location) {
     : null;
 }
 
+const PLAID_OBLIGATION_CATEGORIES = new Set([
+  "LOAN_PAYMENTS_CAR_PAYMENT",
+  "LOAN_PAYMENTS_MORTGAGE_PAYMENT",
+  "LOAN_PAYMENTS_PERSONAL_LOAN_PAYMENT",
+  "LOAN_PAYMENTS_STUDENT_LOAN_PAYMENT",
+]);
+
+function plaidCategoryKey(value) {
+  return String(value ?? "")
+    .trim()
+    .toLocaleUpperCase("en-US")
+    .replace(/[^A-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+const EXTRA_PRINCIPAL_PAYMENT_PATTERN =
+  /\b(?:(?:extra|additional)\s+principal|principal[\s-]+only)(?:\s+(?:payment|paydown))?\b/i;
+
+function plaidCashFlowRole(primary, detailed, ...descriptions) {
+  const primaryKey = plaidCategoryKey(primary);
+  const detailedKey = plaidCategoryKey(detailed);
+  if (["TRANSFER_IN", "TRANSFER_OUT"].includes(primaryKey)) {
+    return "transfer";
+  }
+  if (
+    primaryKey === "LOAN_PAYMENTS" &&
+    detailedKey === "LOAN_PAYMENTS_CREDIT_CARD_PAYMENT"
+  ) {
+    return "transfer";
+  }
+  if (
+    primaryKey === "LOAN_PAYMENTS" &&
+    descriptions.some((value) =>
+      EXTRA_PRINCIPAL_PAYMENT_PATTERN.test(String(value ?? "")),
+    )
+  ) {
+    return "transfer";
+  }
+  if (
+    (primaryKey === "LOAN_PAYMENTS" &&
+      PLAID_OBLIGATION_CATEGORIES.has(detailedKey)) ||
+    (primaryKey === "RENT_AND_UTILITIES" &&
+      detailedKey === "RENT_AND_UTILITIES_RENT")
+  ) {
+    return "obligation";
+  }
+  return "spending";
+}
+
 export function normalizePlaidAccount(account, institutionName = null) {
   const currency =
     account.balances?.iso_currency_code ??
@@ -123,14 +172,15 @@ export function normalizePlaidTransaction(transaction) {
     transaction.personal_finance_category?.detailed ??
     transaction.category?.[1] ??
     null;
-  const excluded = [
-    "TRANSFER_IN",
-    "TRANSFER_OUT",
-    "LOAN_PAYMENTS",
-  ].includes(primary);
   const merchant = transaction.merchant_name ?? transaction.name ?? "";
   const name =
     transaction.name ?? transaction.merchant_name ?? "Transaction";
+  const cashFlowRole = plaidCashFlowRole(
+    primary,
+    detailed,
+    transaction.name,
+    transaction.merchant_name,
+  );
   return {
     id: stableId("transaction", transaction.transaction_id),
     provider_account_id: transaction.account_id,
@@ -155,7 +205,8 @@ export function normalizePlaidTransaction(transaction) {
     posted_at: transaction.datetime ?? null,
     posted_on: transaction.date,
     pending: Boolean(transaction.pending),
-    excluded_from_spending: excluded,
+    cash_flow_role: cashFlowRole,
+    excluded_from_spending: cashFlowRole !== "spending",
     payment_channel: transaction.payment_channel ?? null,
     provider_location: normalizePlaidLocation(transaction.location),
   };

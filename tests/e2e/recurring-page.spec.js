@@ -46,6 +46,21 @@ test("admins can create and remove a bill pattern from transaction details", asy
     page.getByRole("button", { name: "Remove manual pattern" }),
   ).toBeVisible();
 
+  const organizer = page.locator("details.transaction-organize");
+  await organizer.locator("summary").click();
+  const organizeForm = organizer.locator(
+    "[data-transaction-organize-form]",
+  );
+  await organizeForm
+    .getByLabel("Cash-flow role")
+    .selectOption("transfer");
+  await organizeForm
+    .getByRole("button", { name: "Save changes" })
+    .click();
+  await expect(organizeForm.getByRole("status")).toContainText(
+    "Remove the active Bill or Subscription pattern",
+  );
+
   await page.goto("/recurring");
   const bills = page
     .locator("[data-recurring-section]")

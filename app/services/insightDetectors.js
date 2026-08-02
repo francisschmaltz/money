@@ -397,6 +397,7 @@ export function detectWeeklyInsights(
     (transaction) =>
       transaction.currency_code === currency &&
       !transaction.pending &&
+      !transaction.excluded_from_spending &&
       transaction.amount_minor < 0,
   );
   const reviewed = new Set();

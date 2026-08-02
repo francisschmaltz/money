@@ -75,7 +75,7 @@ test("transaction category and text filters include split categories", async () 
   assert.equal(db.calls[0].params[15], "Exact Merchant");
   assert.match(
     db.calls[0].sql,
-    /COALESCE\( metadata\.display_name, cleanup_rule\.display_name, t\.merchant_name, t\.name \) = \$16/,
+    /COALESCE\( CASE WHEN metadata\.display_name_overridden THEN metadata\.display_name ELSE COALESCE\( metadata\.display_name, cleanup_rule\.display_name \) END, t\.merchant_name, t\.name \) = \$16/,
   );
 });
 

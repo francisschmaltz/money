@@ -106,7 +106,7 @@ test("Plaid OAuth callback renders a resumable authenticated return page", async
   assert.match(response.text, /data-page="plaid-oauth"/);
   assert.match(response.text, /data-plaid-oauth-return/);
   assert.match(response.text, /Returning to Plaid/);
-  assert.match(response.text, /\/js\/money\.js\?v=31/);
+  assert.match(response.text, /\/js\/money\.js\?v=32/);
   assert.doesNotMatch(response.text, /data-search-dialog/);
 });
 
@@ -436,7 +436,7 @@ test("transaction ledger supports selecting rows and choosing bulk overrides", a
     "display_name",
     "category_primary",
     "tags",
-    "excluded_from_spending",
+    "cash_flow_role",
     "budget_month_offset",
   ]) {
     assert.match(
@@ -519,7 +519,7 @@ test("selected transactions expose notes and one-time organization", async () =>
   assert.doesNotMatch(html, /data-transaction-classification/);
 
   const bodyOrder = [
-    "Spending allocation",
+    "Transaction allocation",
     'class="plan-disclosure transaction-disclosure transaction-note-editor"',
     'class="plan-disclosure transaction-disclosure transaction-organize"',
     'class="plan-disclosure transaction-disclosure transaction-recurring-pattern"',
@@ -570,7 +570,7 @@ test("transactions visibly mark a manually overridden Plan month", async () => {
   );
   assert.match(
     html,
-    /Name, tags, included in spending · June 2026/,
+    /Name, tags, spending · June 2026/,
   );
   assert.doesNotMatch(html, /<dt>Plan month<\/dt>/);
 });
@@ -634,7 +634,7 @@ test("manual recurring patterns render editable type, cadence, and removal", asy
 
   assert.match(
     html,
-    /<option value="bill" selected>Bill<\/option>/,
+    /<option value="bill"\s+selected\s*>Bill<\/option>/,
   );
   assert.match(
     html,

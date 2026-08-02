@@ -26,6 +26,7 @@ function fixture() {
     spending: [],
     schedules: [],
   };
+  const recurringStreams = [];
   const savedSplits = [];
   let splitVersion = 0;
   let goalSpendVersion = 0;
@@ -406,6 +407,9 @@ function fixture() {
         },
       ];
     },
+    async listRecurringStreams() {
+      return structuredClone(recurringStreams);
+    },
     async getDataFreshness() {
       return {
         data_as_of: "2026-07-27T12:00:00.000Z",
@@ -433,6 +437,7 @@ function fixture() {
     budgetCategories,
     budgetLines,
     budgetVersions,
+    recurringStreams,
   };
 }
 
@@ -514,8 +519,191 @@ test("Safe to Spend loads upcoming bills using the workspace date", async () => 
   assert.equal(result.data.expected_bills_through_on, "2026-08-26");
   assert.equal(result.data.excluded_expected_bill_count, 1);
   assert.equal(result.data.safe_to_spend.amount_minor, 500_000);
-  assert.match(result.summary, /bills expected in the next 30 days/i);
+  assert.match(
+    result.summary,
+    /next monthly bills plus other bills due within 30 days/i,
+  );
   assert.match(result.warnings[0], /1 active bill estimate was not included/i);
+});
+
+test("planning overview derives paid, overdue, and upcoming obligation bills with matched payments", async () => {
+  const { service, recurringStreams } = fixture();
+  recurringStreams.push(
+    {
+      id: "auto-loan",
+      display_name: "Wells Fargo Auto",
+      stream_type: "bill",
+      cash_flow_role: "obligation",
+      status: "active",
+      cadence: "monthly",
+      account_id: "checking",
+      account_name: "Bee & Bee Checking",
+      expected_amount_minor: 100_000,
+      currency_code: "USD",
+      next_expected_on: "2026-08-16",
+      last_seen_on: "2026-07-16",
+      last_transaction: {
+        id: "txn-auto-loan",
+        posted_on: "2026-07-16",
+        amount_minor: -100_000,
+        currency_code: "USD",
+      },
+    },
+    {
+      id: "student-loan",
+      display_name: "Student Loan",
+      stream_type: "bill",
+      cash_flow_role: "obligation",
+      status: "resumed",
+      cadence: "biweekly",
+      expected_amount_minor: 20_000,
+      currency_code: "USD",
+      next_expected_on: "2026-07-26",
+      last_seen_on: "2026-07-12",
+      last_transaction: {
+        id: "txn-student-loan",
+        posted_on: "2026-07-12",
+        amount_minor: -19_875,
+        currency_code: "USD",
+      },
+    },
+    {
+      id: "mortgage",
+      display_name: "Mortgage",
+      stream_type: "bill",
+      cash_flow_role: "obligation",
+      status: "active",
+      cadence: "monthly",
+      expected_amount_minor: 250_000,
+      currency_code: "USD",
+      next_expected_on: "2026-07-30",
+      pending_transaction: {
+        id: "txn-mortgage-pending",
+        posted_on: "2026-07-27",
+        amount_minor: -250_000,
+        currency_code: "USD",
+      },
+    },
+    {
+      id: "phone",
+      display_name: "Phone",
+      stream_type: "bill",
+      cash_flow_role: "spending",
+      status: "active",
+      cadence: "monthly",
+      expected_amount_minor: 8_000,
+      currency_code: "USD",
+      next_expected_on: "2026-08-04",
+    },
+    {
+      id: "card-payment",
+      display_name: "Card payment",
+      stream_type: "bill",
+      cash_flow_role: "transfer",
+      status: "active",
+      cadence: "monthly",
+      expected_amount_minor: 50_000,
+      currency_code: "USD",
+      next_expected_on: "2026-08-05",
+    },
+    {
+      id: "obligation-subscription",
+      display_name: "Wrongly tagged subscription",
+      stream_type: "subscription",
+      cash_flow_role: "obligation",
+      status: "active",
+      cadence: "monthly",
+      expected_amount_minor: 1_000,
+      currency_code: "USD",
+      next_expected_on: "2026-08-06",
+    },
+    {
+      id: "old-mortgage",
+      display_name: "Old mortgage",
+      stream_type: "bill",
+      cash_flow_role: "obligation",
+      status: "canceled",
+      cadence: "monthly",
+      expected_amount_minor: 200_000,
+      currency_code: "USD",
+      next_expected_on: "2026-08-01",
+    },
+  );
+
+  const overview = await service.getPlanningOverview();
+
+  assert.deepEqual(overview.obligations, [
+    {
+      id: "student-loan",
+      name: "Student Loan",
+      account_id: null,
+      account_name: null,
+      expected_amount: {
+        amount_minor: 20_000,
+        currency: "USD",
+      },
+      cadence: "biweekly",
+      next_due_on: "2026-07-26",
+      status: "overdue",
+      stream_status: "resumed",
+      last_payment: {
+        status: "paid",
+        transaction_id: "txn-student-loan",
+        paid_on: "2026-07-12",
+        amount: {
+          amount_minor: 19_875,
+          currency: "USD",
+        },
+      },
+    },
+    {
+      id: "mortgage",
+      name: "Mortgage",
+      account_id: null,
+      account_name: null,
+      expected_amount: {
+        amount_minor: 250_000,
+        currency: "USD",
+      },
+      cadence: "monthly",
+      next_due_on: "2026-07-30",
+      status: "matched_pending",
+      stream_status: "active",
+      last_payment: null,
+      pending_payment: {
+        status: "pending",
+        transaction_id: "txn-mortgage-pending",
+        pending_on: "2026-07-27",
+        amount: {
+          amount_minor: 250_000,
+          currency: "USD",
+        },
+      },
+    },
+    {
+      id: "auto-loan",
+      name: "Wells Fargo Auto",
+      account_id: "checking",
+      account_name: "Bee & Bee Checking",
+      expected_amount: {
+        amount_minor: 100_000,
+        currency: "USD",
+      },
+      cadence: "monthly",
+      next_due_on: "2026-08-16",
+      status: "paid",
+      stream_status: "active",
+      last_payment: {
+        status: "paid",
+        transaction_id: "txn-auto-loan",
+        paid_on: "2026-07-16",
+        amount: {
+          amount_minor: 100_000,
+          currency: "USD",
+        },
+      },
+    },
+  ]);
 });
 
 test("brokerage allocations cannot consume value already earmarked to other goals", async () => {
@@ -655,19 +843,21 @@ test("finishing releases only unused cash while overspending already hits Safe t
   assert.equal(finishedOver.safe_to_spend.amount_minor, 9_000);
 });
 
-test("transaction splits are posted-only, exact, signed, and reversible", async () => {
-  const { service, savedSplits } = fixture();
-  await assert.rejects(
-    service.splitTransaction({
-      transaction_id: "pending",
-      expected_version: 0,
-      lines: [
-        { category: "Dining", amount_minor: -500 },
-        { category: "Other", amount_minor: -500 },
-      ],
-    }),
-    /Pending transactions/,
+test("transaction splits support pending charges and remain exact, signed, and reversible", async () => {
+  const pendingFixture = fixture();
+  await pendingFixture.service.splitTransaction({
+    transaction_id: "pending",
+    expected_version: 0,
+    lines: [
+      { category: "Dining", amount_minor: -500 },
+      { category: "Other", amount_minor: -500 },
+    ],
+  });
+  assert.deepEqual(
+    pendingFixture.savedSplits.map((line) => line.amount_minor),
+    [-500, -500],
   );
+  const { service, savedSplits } = fixture();
   await assert.rejects(
     service.splitTransaction({
       transaction_id: "posted",
@@ -876,7 +1066,7 @@ test("explicit goal spending survives later cleanup exclusion until reversed", a
       expected_goal_version: 2,
       expected_transaction_version: 1,
     }),
-    /Include this outflow in spending/,
+    /cash-flow role to Spending/,
   );
 });
 

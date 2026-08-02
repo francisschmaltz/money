@@ -5,6 +5,7 @@ export const DEMO_IDS = Object.freeze({
     appleServices: "txn_apple_services",
     delta: "txn_delta_1",
     googleWorkspace: "txn_google_workspace",
+    wellsFargoAuto: "txn_wells_fargo_auto",
     payroll: "txn_payroll",
   }),
   recurring: Object.freeze({
@@ -18,6 +19,7 @@ export const DEMO_IDS = Object.freeze({
     conEdison: "rec_con_edison",
     verizonFios: "rec_verizon_fios",
     geico: "rec_geico",
+    wellsFargoAuto: "rec_wells_fargo_auto",
     shell: "rec_shell",
   }),
   holdings: Object.freeze({

@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createDemoPlanningService } from "../app/services/demoPlanningService.js";
+import { createDemoFinanceService } from "../app/services/demoFinanceService.js";
+import { DEMO_IDS } from "../app/demo/fixtureIds.js";
 
 test("demo planning keeps finished vacation actuals and purpose insights", async () => {
   const service = createDemoPlanningService();
@@ -48,10 +50,99 @@ test("demo planning keeps finished vacation actuals and purpose insights", async
 
   const overview = await service.getPlanningOverview();
   assert.equal(overview.archivedGoals.length, 3);
+  assert.deepEqual(overview.obligations, [
+    {
+      id: "rec_wells_fargo_auto",
+      name: "Wells Fargo Auto",
+      account_id: "account_checking",
+      account_name: "Everyday checking",
+      expected_amount: {
+        amount_minor: 100_000,
+        currency: "USD",
+      },
+      cadence: "monthly",
+      next_due_on: "2026-08-16",
+      status: "paid",
+      stream_status: "active",
+      last_payment: {
+        status: "paid",
+        transaction_id: "txn_wells_fargo_auto",
+        paid_on: "2026-07-16",
+        amount: {
+          amount_minor: 100_000,
+          currency: "USD",
+        },
+      },
+    },
+  ]);
   assert.deepEqual(
     overview.historyInsights,
     all.data.history_insights,
   );
+});
+
+test("demo role edits immediately update obligations and Safe to Spend", async () => {
+  const financeService = createDemoFinanceService();
+  const planningService = createDemoPlanningService({ financeService });
+  const before = await planningService.getPlanningOverview();
+
+  await financeService.batchEditTransactions({
+    transaction_ids: [DEMO_IDS.transactions.wellsFargoAuto],
+    changes: { cash_flow_role: "transfer" },
+  });
+  const after = await planningService.getPlanningOverview();
+
+  assert.equal(before.obligations.length, 1);
+  assert.deepEqual(after.obligations, []);
+  assert.equal(
+    after.safeToSpend.expected_bills.amount_minor,
+    before.safeToSpend.expected_bills.amount_minor - 100_000,
+  );
+});
+
+test("demo goal spending follows the live cash-flow role", async () => {
+  const financeService = createDemoFinanceService();
+  const planningService = createDemoPlanningService({ financeService });
+  const transactionId = DEMO_IDS.transactions.wholeFoods;
+
+  const before = await planningService.getTransactionGoalSpending({
+    transaction_id: transactionId,
+  });
+  assert.equal(before.data.eligible, true);
+
+  await financeService.batchEditTransactions({
+    transaction_ids: [transactionId],
+    changes: { cash_flow_role: "obligation" },
+  });
+  const obligation = await planningService.getTransactionGoalSpending({
+    transaction_id: transactionId,
+  });
+  assert.equal(obligation.data.eligible, false);
+  assert.equal(
+    obligation.data.ineligible_reason,
+    "Only Spending outflows can be spent from a goal.",
+  );
+  await assert.rejects(
+    planningService.spendFromFinanceGoal({
+      transaction_id: transactionId,
+      goal_id: "goal_emergency_fund",
+      source: "cash",
+      amount_minor: 100,
+      expected_goal_version: 1,
+      expected_transaction_version: 0,
+    }),
+    /Only Spending outflows can be spent from a goal/,
+  );
+
+  await financeService.batchEditTransactions({
+    transaction_ids: [transactionId],
+    changes: { cash_flow_role: "spending" },
+  });
+  const restored = await planningService.getTransactionGoalSpending({
+    transaction_id: transactionId,
+  });
+  assert.equal(restored.data.eligible, true);
+  assert.equal(restored.data.ineligible_reason, null);
 });
 
 test("demo goal reads validate and scope history pagination", async () => {

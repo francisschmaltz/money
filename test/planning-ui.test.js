@@ -100,6 +100,27 @@ test("Dashboard and Plan share the same link-free Safe to Spend component", asyn
   assert.match(source, /\.plan-section \.section-heading \{/);
 });
 
+test("Plan keeps recurring obligations outside Spending while showing their due details", async () => {
+  const overview =
+    await createDemoPlanningService().getPlanningOverview();
+  const html = await renderPlan();
+
+  assert.deepEqual(
+    overview.obligations.map((obligation) => obligation.name),
+    ["Wells Fargo Auto"],
+  );
+  assert.match(html, /id="obligations-heading">Obligations<\/h2>/);
+  assert.match(
+    html,
+    /Outside Spending, but reserved in Safe to Spend\./,
+  );
+  assert.match(
+    html,
+    /Wells Fargo Auto[\s\S]*?Monthly · Everyday checking[\s\S]*?href="\/transactions\?transaction=txn_wells_fargo_auto">Paid <time datetime="2026-07-16">Jul 16, 2026<\/time><\/a>[\s\S]*?Next <time datetime="2026-08-16">Aug 16, 2026<\/time>[\s\S]*?>Paid<[\s\S]*?\$1,000\.00/,
+  );
+  assert.doesNotMatch(html, /Con Edison[\s\S]*?id="goals"/);
+});
+
 test("the standing budget is view-only by default with linked category status", async () => {
   const plan = await readFile(
     path.resolve("app/views/plan.ejs"),

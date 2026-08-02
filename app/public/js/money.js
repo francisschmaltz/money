@@ -3489,6 +3489,107 @@
     });
   }
 
+  function pendingEditRecoveries() {
+    const root = document.querySelector(
+      "[data-pending-edit-recoveries]",
+    );
+    if (!root) return;
+    const csrfToken =
+      document.querySelector('meta[name="csrf-token"]')?.content || "";
+
+    const submitRecoveryAction = async (
+      recovery,
+      endpoint,
+      body,
+      progress,
+    ) => {
+      const status = recovery.querySelector(
+        "[data-pending-edit-recovery-status]",
+      );
+      const controls = [
+        ...recovery.querySelectorAll("button, select"),
+      ];
+      controls.forEach((control) => {
+        control.disabled = true;
+      });
+      recovery.setAttribute("aria-busy", "true");
+      if (status) status.textContent = progress;
+      try {
+        const response = await fetch(endpoint, {
+          method: "POST",
+          headers: {
+            Accept: "application/json",
+            "Content-Type": "application/json",
+            "X-CSRF-Token": csrfToken,
+          },
+          body: JSON.stringify(body),
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(
+            payload.message || `Update failed with ${response.status}`,
+          );
+        }
+        if (status) status.textContent = "Saved. Refreshing…";
+        window.setTimeout(() => window.location.reload(), 350);
+      } catch (error) {
+        recovery.removeAttribute("aria-busy");
+        controls.forEach((control) => {
+          control.disabled = false;
+        });
+        if (status) {
+          status.textContent =
+            error.message || "Couldn’t resolve these pending edits.";
+        }
+      }
+    };
+
+    root
+      .querySelectorAll("[data-pending-edit-recovery]")
+      .forEach((recovery) => {
+        const attachForm = recovery.querySelector(
+          "[data-pending-edit-recovery-attach]",
+        );
+        const target = recovery.querySelector(
+          "[data-pending-edit-recovery-target]",
+        );
+        attachForm?.addEventListener("submit", (event) => {
+          event.preventDefault();
+          const transactionId = target?.value;
+          if (!transactionId || !attachForm.dataset.endpoint) {
+            target?.focus();
+            return;
+          }
+          submitRecoveryAction(
+            recovery,
+            attachForm.dataset.endpoint,
+            { transaction_id: transactionId },
+            "Attaching edits…",
+          );
+        });
+
+        const dismiss = recovery.querySelector(
+          "[data-pending-edit-recovery-dismiss]",
+        );
+        dismiss?.addEventListener("click", () => {
+          if (
+            !dismiss.dataset.endpoint ||
+            !window.confirm(
+              "Dismiss these saved edits? This cannot be undone.",
+            )
+          ) {
+            return;
+          }
+          submitRecoveryAction(
+            recovery,
+            dismiss.dataset.endpoint,
+            {},
+            "Dismissing edits…",
+          );
+        });
+      });
+  }
+
   function transactionBulkEdit() {
     const root = document.querySelector("[data-bulk-transactions]");
     if (!root) return;
@@ -3599,8 +3700,8 @@
         display_name: root.querySelector("[data-bulk-display-name]"),
         category_primary: root.querySelector("[data-bulk-category]"),
         tags: root.querySelector("[data-bulk-tags]"),
-        excluded_from_spending: root.querySelector(
-          "[data-bulk-excluded]",
+        cash_flow_role: root.querySelector(
+          "[data-bulk-cash-flow-role]",
         ),
         budget_month_offset: root.querySelector(
           "[data-bulk-budget-month]",
@@ -3721,11 +3822,12 @@
       }
       if (
         root.querySelector(
-          '[data-bulk-change="excluded_from_spending"]',
+          '[data-bulk-change="cash_flow_role"]',
         )?.checked
       ) {
-        changes.excluded_from_spending =
-          root.querySelector("[data-bulk-excluded]")?.value === "true";
+        changes.cash_flow_role =
+          root.querySelector("[data-bulk-cash-flow-role]")?.value ||
+          "spending";
       }
       if (
         root.querySelector(
@@ -3890,8 +3992,8 @@
           const displayName = form.elements.namedItem("display_name");
           const category = form.elements.namedItem("category_primary");
           const tags = form.elements.namedItem("tags");
-          const excluded = form.elements.namedItem(
-            "excluded_from_spending",
+          const cashFlowRole = form.elements.namedItem(
+            "cash_flow_role",
           );
           const budgetMonth = form.elements.namedItem(
             "budget_month_offset",
@@ -3925,10 +4027,10 @@
             changes.tags = parsedTags;
           }
           if (
-            excluded &&
-            excluded.value !== excluded.dataset.initialValue
+            cashFlowRole &&
+            cashFlowRole.value !== cashFlowRole.dataset.initialValue
           ) {
-            changes.excluded_from_spending = excluded.value === "true";
+            changes.cash_flow_role = cashFlowRole.value;
           }
           if (
             budgetMonth &&
@@ -4660,6 +4762,9 @@
       category_primary: root.querySelector(
         "[data-cleanup-rule-category]",
       ),
+      cash_flow_role: root.querySelector(
+        "[data-cleanup-rule-cash-flow-role]",
+      ),
       tags: root.querySelector("[data-cleanup-rule-tags]"),
     };
     let rules = new Map();
@@ -4701,6 +4806,9 @@
           ? `Rename to ${changes.display_name}`
           : null,
         changes.category_primary || null,
+        changes.cash_flow_role
+          ? `Cash-flow role: ${changes.cash_flow_role}`
+          : null,
         Object.hasOwn(changes, "tags")
           ? changes.tags?.length
             ? changes.tags.join(" · ")
@@ -5085,6 +5193,9 @@
       }
       if (changeToggle("tags")?.checked) {
         changes.tags = parseTags(fields.tags?.value);
+      }
+      if (changeToggle("cash_flow_role")?.checked) {
+        changes.cash_flow_role = fields.cash_flow_role?.value;
       }
       if (!Object.keys(changes).length) {
         if (formStatus) {
@@ -6483,6 +6594,7 @@
     plaidLink();
     appleCardImport();
     exportTransactions();
+    pendingEditRecoveries();
     transactionBulkEdit();
     transactionNotes();
     transactionOrganization();

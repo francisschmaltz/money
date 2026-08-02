@@ -90,12 +90,15 @@ export function projectExpectedBills({
     throw new TypeError("windowDays must be an integer from 0 to 366.");
   }
   const throughOn = shiftDateOnly(asOfOn, windowDays);
+  let reservedThroughOn = throughOn;
   let amountMinor = 0;
   let occurrenceCount = 0;
+  let matchedPendingCount = 0;
   let excludedBillCount = 0;
 
   for (const stream of recurringStreams) {
     if (stream.stream_type !== "bill") continue;
+    if (stream.cash_flow_role === "transfer") continue;
     if (!EXPECTED_BILL_STATUSES.has(stream.status)) {
       continue;
     }
@@ -105,7 +108,12 @@ export function projectExpectedBills({
       excludedBillCount += 1;
       continue;
     }
-    if (nextExpectedOn > throughOn) continue;
+    if (
+      stream.cadence !== "monthly" &&
+      nextExpectedOn > throughOn
+    ) {
+      continue;
+    }
     if (
       stream.currency_code !== currency ||
       !Number.isSafeInteger(expectedAmountMinor) ||
@@ -116,9 +124,17 @@ export function projectExpectedBills({
       continue;
     }
 
+    const occurrenceCountBeforeStream = occurrenceCount;
+
     if (!["weekly", "biweekly"].includes(stream.cadence)) {
       amountMinor += expectedAmountMinor;
       occurrenceCount += 1;
+      if (stream.cadence === "monthly" && nextExpectedOn > reservedThroughOn) {
+        reservedThroughOn = nextExpectedOn;
+      }
+      if (stream.pending_transaction?.id) {
+        matchedPendingCount += 1;
+      }
       continue;
     }
 
@@ -145,12 +161,21 @@ export function projectExpectedBills({
       );
       projectedCount += 1;
     }
+    if (
+      occurrenceCount > occurrenceCountBeforeStream &&
+      stream.pending_transaction?.id
+    ) {
+      matchedPendingCount += 1;
+    }
   }
 
   return {
     expected_bills: money(amountMinor, currency),
     expected_bill_occurrence_count: occurrenceCount,
-    expected_bills_through_on: throughOn,
+    expected_bill_matched_pending_count: matchedPendingCount,
+    expected_bill_projected_count:
+      occurrenceCount - matchedPendingCount,
+    expected_bills_through_on: reservedThroughOn,
     excluded_expected_bill_count: excludedBillCount,
   };
 }
@@ -315,7 +340,7 @@ export function buildPlanningSnapshot({
     excluded_currency_count: excludedCurrencyCount,
     alerts,
     formula:
-      "Liquid cash minus credit card balances, bills expected in the next 30 days, and cash-backed goals.",
+      "Liquid cash minus credit card balances, the next monthly bills plus other bills due within 30 days, and cash-backed goals.",
   };
 }
 

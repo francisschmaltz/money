@@ -25,6 +25,11 @@ const BALANCE_GROUPS = new Set([
   "other_liability",
   "excluded",
 ]);
+const CASH_FLOW_ROLES = new Set([
+  "spending",
+  "obligation",
+  "transfer",
+]);
 const MANUAL_ASSET_TYPES = new Set([
   "vehicle",
   "real_estate",
@@ -1189,6 +1194,68 @@ export function createApiRouter({
     },
   );
 
+  router.get(
+    "/api/v1/pending-edit-recoveries",
+    requireAdmin,
+    (request, response, next) => {
+      invokeWithActor(
+        financeService,
+        "listPendingEditRecoveries",
+        {
+          include_resolved: booleanValue(
+            request.query?.include_resolved,
+          ),
+        },
+        request.user,
+        response,
+        next,
+      );
+    },
+  );
+
+  router.post(
+    "/api/v1/pending-edit-recoveries/:recoveryId/attach",
+    requireAdmin,
+    requireCsrf,
+    (request, response, next) => {
+      const transactionId = stringValue(
+        request.body?.transaction_id,
+        128,
+      );
+      if (!transactionId) {
+        invalidRequest(response, "transaction_id is required.");
+        return;
+      }
+      invokeWithActor(
+        financeService,
+        "attachPendingEditRecovery",
+        {
+          recovery_id: request.params.recoveryId,
+          transaction_id: transactionId,
+        },
+        request.user,
+        response,
+        next,
+      );
+    },
+  );
+
+  router.post(
+    "/api/v1/pending-edit-recoveries/:recoveryId/dismiss",
+    requireAdmin,
+    requireCsrf,
+    (request, response, next) => {
+      invokeWithActor(
+        financeService,
+        "dismissPendingEditRecovery",
+        { recovery_id: request.params.recoveryId },
+        request.user,
+        response,
+        next,
+      );
+    },
+  );
+
   router.put(
     "/api/v1/transactions/:transactionId/note",
     requireCsrf,
@@ -1255,6 +1322,10 @@ export function createApiRouter({
             request.body?.excluded_from_spending === undefined
               ? undefined
               : booleanValue(request.body.excluded_from_spending),
+          cash_flow_role:
+            request.body?.cash_flow_role === undefined
+              ? undefined
+              : stringValue(request.body.cash_flow_role, 16),
           user_id: request.user?.id,
         },
         response,
@@ -1863,6 +1934,13 @@ function transactionBatchEditInput(body = {}) {
     if (!Object.hasOwn(body.changes, field)) continue;
     if (typeof body.changes[field] !== "boolean") return null;
     changes[field] = body.changes[field];
+  }
+  if (Object.hasOwn(body.changes, "cash_flow_role")) {
+    const value = body.changes.cash_flow_role;
+    if (typeof value !== "string" || !CASH_FLOW_ROLES.has(value)) {
+      return null;
+    }
+    changes.cash_flow_role = value;
   }
   if (Object.hasOwn(body.changes, "budget_month_offset")) {
     const value = body.changes.budget_month_offset;

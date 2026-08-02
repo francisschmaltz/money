@@ -112,6 +112,18 @@
             <input name="tags" type="text" maxlength="400" placeholder="household, reimbursable" data-cleanup-rule-tags disabled>
             <small>Comma-separated. Leave empty to clear tags.</small>
           </label>
+          <label class="cleanup-edit-field">
+            <span class="cleanup-edit-field__toggle">
+              <input type="checkbox" data-cleanup-rule-change="cash_flow_role">
+              Set cash-flow role
+            </span>
+            <select name="cash_flow_role" data-cleanup-rule-cash-flow-role disabled>
+              <option value="spending">Spending</option>
+              <option value="obligation">Obligation</option>
+              <option value="transfer">Transfer</option>
+            </select>
+            <small>Obligations stay out of Spending but may be Bills. Transfers cannot be Bills.</small>
+          </label>
         </fieldset>
 
         <% if (cleanupTagOptions.length) { %>

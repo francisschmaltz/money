@@ -833,6 +833,14 @@ test("category drill-down keeps split ledger, detail, and summary on the same am
       assert.deepEqual(options, { includeProviderLocation: true });
       return parent;
     },
+    async getTransactionRecurringContext() {
+      return {
+        account_active: true,
+        has_stable_identity: false,
+        pattern: null,
+        linked_stream: null,
+      };
+    },
   };
   const service = createFinanceService({
     repository,
@@ -878,6 +886,14 @@ test("category drill-down keeps split ledger, detail, and summary on the same am
     storeNumber: "42",
     formattedAddress: "123 Main St, New York, NY 10001, US",
   });
+  assert.equal(
+    result.selectedTransaction.recurringPattern.eligible,
+    false,
+  );
+  assert.match(
+    result.selectedTransaction.recurringPattern.ineligibleReason,
+    /stable merchant or statement description/,
+  );
   assert.equal(result.spendingDetails.total.amount_minor, 4_250);
   assert.equal(result.spendingDetails.transactionCount, 1);
   assert.deepEqual(

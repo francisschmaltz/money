@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   buildCashFlow,
+  buildOverview,
   buildPortfolioSummary,
   buildSpendingSummary,
   completedWeeklyPeriods,
@@ -31,6 +32,7 @@ function transaction({
   excluded = false,
   fixed = false,
   pending = false,
+  cashFlowRole,
 }) {
   return {
     id,
@@ -48,6 +50,9 @@ function transaction({
     account_id: "account_1",
     account_name: "Checking",
     excluded_from_spending: excluded,
+    ...(cashFlowRole == null
+      ? {}
+      : { cash_flow_role: cashFlowRole }),
     is_fixed: fixed,
     pending,
   };
@@ -63,7 +68,7 @@ test("weekly periods are complete, adjacent, and non-overlapping", () => {
   );
 });
 
-test("refunds reduce spending while payroll is income and transfers stay excluded", () => {
+test("spending stays narrow while cash-flow outflows include obligations and exclude transfers", () => {
   const rows = [
     transaction({
       id: "purchase",
@@ -88,11 +93,19 @@ test("refunds reduce spending while payroll is income and transfers stay exclude
       date: "2026-07-23",
       amount: -50_000,
       category: "TRANSFER_OUT",
+      cashFlowRole: "transfer",
+    }),
+    transaction({
+      id: "rent",
+      date: "2026-07-24",
+      amount: -100_000,
+      category: "RENT_AND_UTILITIES_RENT",
       excluded: true,
+      cashFlowRole: "obligation",
     }),
     transaction({
       id: "card-payment",
-      date: "2026-07-24",
+      date: "2026-07-25",
       amount: -25_000,
       category: "LOAN_PAYMENTS",
       excluded: true,
@@ -121,8 +134,46 @@ test("refunds reduce spending while payroll is income and transfers stay exclude
     currency,
   });
   assert.equal(cashFlow.income.amount_minor, 100_000);
-  assert.equal(cashFlow.spending.amount_minor, 8_000);
-  assert.equal(cashFlow.net.amount_minor, 92_000);
+  assert.equal(cashFlow.spending.amount_minor, 108_000);
+  assert.equal(cashFlow.outflows.amount_minor, 108_000);
+  assert.equal(cashFlow.net.amount_minor, -8_000);
+  assert.equal(cashFlow.outflow_by_role.spending.amount_minor, 8_000);
+  assert.equal(cashFlow.outflow_by_role.obligation.amount_minor, 100_000);
+  assert.equal(cashFlow.outflow_by_role.transfer.amount_minor, 75_000);
+  assert.equal(cashFlow.classified_outflows.amount_minor, 183_000);
+  assert.equal(
+    Object.values(cashFlow.outflow_by_role).reduce(
+      (sum, total) => sum + total.amount_minor,
+      0,
+    ),
+    cashFlow.classified_outflows.amount_minor,
+  );
+  assert.equal(cashFlow.buckets.length, 1);
+  assert.equal(cashFlow.buckets[0].outflows.amount_minor, 108_000);
+  assert.deepEqual(
+    cashFlow.buckets[0].outflow_by_role,
+    cashFlow.outflow_by_role,
+  );
+  assert.deepEqual(
+    cashFlow.buckets[0].classified_outflows,
+    cashFlow.classified_outflows,
+  );
+
+  const overview = buildOverview({
+    accounts: [],
+    transactions: rows,
+    currency,
+    periodStart: period.start_on,
+    periodEnd: period.end_on,
+  });
+  assert.equal(overview.spending.amount_minor, 8_000);
+  assert.equal(overview.outflows.amount_minor, 108_000);
+  assert.equal(overview.cash_flow.amount_minor, -8_000);
+  assert.deepEqual(overview.outflow_by_role, cashFlow.outflow_by_role);
+  assert.deepEqual(
+    overview.classified_outflows,
+    cashFlow.classified_outflows,
+  );
 });
 
 test("category visualizations roll nested categories into their top-level group", () => {
@@ -233,6 +284,38 @@ test("single-transaction insight review opens that transaction", () => {
   assert.equal(
     finding.actions.find((action) => action.type === "review").web_url,
     "https://money.test/transactions?transaction=transaction-needs-review",
+  );
+});
+
+test("obligations do not influence spending anomaly baselines", () => {
+  const findings = detectWeeklyInsights(
+    [
+      transaction({
+        id: "old-obligation",
+        date: "2026-07-01",
+        amount: -20_000,
+        category: "DINING",
+        merchant: "Shared name",
+        excluded: true,
+      }),
+      transaction({
+        id: "current-spending",
+        date: "2026-07-22",
+        amount: -60_000,
+        category: "DINING",
+        merchant: "Shared name",
+      }),
+    ],
+    { asOf: new Date("2026-07-26T12:00:00Z") },
+  );
+
+  assert.equal(
+    findings.some(
+      (candidate) =>
+        candidate.type === "needs_review" &&
+        candidate.rule.key === "unusual_amount",
+    ),
+    false,
   );
 });
 

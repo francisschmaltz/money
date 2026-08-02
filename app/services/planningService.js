@@ -13,6 +13,7 @@ import {
   nextScheduleDueOn,
   workspaceDate,
 } from "./planningAnalytics.js";
+import { buildPlanningObligations } from "./planningObligations.js";
 
 const DEFAULT_WORKSPACE_ID = "shared";
 const DEFAULT_CURRENCY = "USD";
@@ -83,7 +84,7 @@ export class PlanningService {
         state.snapshot.active_goal_count === 1 ? "" : "s"
       }`,
       path: "/plan",
-      summary: `${formatMoney(state.snapshot.safe_to_spend)} is safe to spend after current card balances, bills expected in the next 30 days, and cash-backed goals.`,
+      summary: `${formatMoney(state.snapshot.safe_to_spend)} is safe to spend after current card balances, the next monthly bills plus other bills due within 30 days, and cash-backed goals.`,
       warnings: state.snapshot.alerts
         .filter((alert) => alert.code === "expected_bills_incomplete")
         .map((alert) => alert.message),
@@ -624,6 +625,13 @@ export class PlanningService {
     const goalCatalog = this.#goalCatalog(goalState);
     return {
       safeToSpend: safe.data,
+      obligations: buildPlanningObligations(
+        goalState.recurringStreams,
+        {
+          currency: this.#currency,
+          asOf: goalState.asOf,
+        },
+      ),
       goals: safe.data.goals,
       archivedGoals: goalCatalog.archivedGoals,
       historyInsights: goalCatalog.historyInsights,
@@ -1603,9 +1611,6 @@ export class PlanningService {
       transactionId,
     );
     if (!transaction) throw notFound("Transaction not found.");
-    if (transaction.pending) {
-      throw conflict("Pending transactions cannot be split.");
-    }
     if (transaction.currency_code !== this.#currency) {
       throw conflict("Only USD transactions can be split in this workspace.");
     }
@@ -1959,11 +1964,12 @@ export class PlanningService {
           ? this.#repository.getWorkspaceTimezone(this.#workspaceId)
           : "America/Los_Angeles",
       ]);
+    const asOf = workspaceDate(this.#now(), timeZone);
     const snapshot = buildPlanningSnapshot({
       accounts,
       goals,
       recurringStreams,
-      asOf: workspaceDate(this.#now(), timeZone),
+      asOf,
       currency: this.#currency,
     });
     if (freshness.partial) {
@@ -1979,6 +1985,7 @@ export class PlanningService {
       goals,
       recurringStreams,
       freshness,
+      asOf,
       snapshot,
     };
   }
@@ -2228,7 +2235,7 @@ function goalSpendIneligibleReason(transaction, amountMinor) {
     return "Only posted outflows can be spent from a goal.";
   }
   if (transaction.excluded_from_spending === true) {
-    return "Include this outflow in spending before using a goal.";
+    return "Change this outflow’s cash-flow role to Spending before using a goal.";
   }
   return null;
 }

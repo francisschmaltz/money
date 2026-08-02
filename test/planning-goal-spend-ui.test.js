@@ -153,7 +153,7 @@ test("blocked posted outflows disclose why goal spending is unavailable", async 
       goal_spend_version: 0,
       eligible: false,
       ineligible_reason:
-        "Mark this transaction Include in spending before assigning it to a goal.",
+        "Change this outflow’s cash-flow role to Spending before using a goal.",
       goal_spends: [],
     },
     selectedTransactionGoals: [],
@@ -162,7 +162,7 @@ test("blocked posted outflows disclose why goal spending is unavailable", async 
   assert.match(html, /<strong>Spend from goal<\/strong>/);
   assert.match(
     html,
-    /Mark this transaction Include in spending before assigning it to a goal\./,
+    /Change this outflow’s cash-flow role to Spending before using a goal\./,
   );
   assert.doesNotMatch(
     html,

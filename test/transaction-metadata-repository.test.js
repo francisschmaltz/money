@@ -136,7 +136,7 @@ test("posted fuzzy matching ranks exact merchants first and keeps raw facts", as
   ]);
 });
 
-test("batch metadata edits lock exact posted rows and refresh search once", async () => {
+test("batch metadata edits lock pending and posted rows and refresh search once", async () => {
   const ids = ["transaction-1", "transaction-2"];
   const db = fakePool(async (sql) => {
     if (sql.includes("FOR UPDATE")) {
@@ -162,7 +162,7 @@ test("batch metadata edits lock exact posted rows and refresh search once", asyn
     transactionIds: ids,
   });
   const lock = db.calls.find((call) => call.sql.includes("FOR UPDATE"));
-  assert.match(lock.sql, /pending = false/);
+  assert.doesNotMatch(lock.sql, /pending = false/);
   assert.deepEqual(lock.params, ["shared", ids]);
   assert.ok(
     db.calls.some((call) =>
@@ -182,6 +182,7 @@ test("batch metadata edits lock exact posted rows and refresh search once", asyn
   assert.ok(classificationOverride);
   assert.deepEqual(classificationOverride.params.slice(2), [
     true,
+    "transfer",
     "user-1",
     true,
   ]);
@@ -224,7 +225,136 @@ test("batch metadata edits lock exact posted rows and refresh search once", asyn
   );
 });
 
-test("Plan month batch edits are relative to each posted month and clear with zero", async () => {
+test("batch edits persist an obligation role without legacy spending input", async () => {
+  const db = fakePool(async (sql) => {
+    if (sql.includes("FOR UPDATE")) {
+      return { rows: [{ id: "pending-rent" }] };
+    }
+    return { rows: [] };
+  });
+  const repository = new PgFinanceRepository(db.pool);
+
+  await repository.batchEditTransactions("shared", {
+    transactionIds: ["pending-rent"],
+    changes: { cashFlowRole: "obligation" },
+    userId: "user-1",
+  });
+
+  const classificationOverride = db.calls.find(
+    (call) =>
+      call.sql.includes("INSERT INTO categorization_overrides") &&
+      call.sql.includes("cash_flow_role = EXCLUDED.cash_flow_role"),
+  );
+  assert.ok(classificationOverride);
+  assert.deepEqual(classificationOverride.params.slice(2), [
+    null,
+    "obligation",
+    "user-1",
+    false,
+  ]);
+});
+
+test("clearing a pending display name records explicit nullable intent", async () => {
+  const db = fakePool(async (sql) => {
+    if (sql.includes("FOR UPDATE")) {
+      return { rows: [{ id: "pending-store" }] };
+    }
+    return { rows: [] };
+  });
+  const repository = new PgFinanceRepository(db.pool);
+
+  await repository.batchEditTransactions("shared", {
+    transactionIds: ["pending-store"],
+    changes: { displayName: null },
+    userId: "user-1",
+  });
+
+  const displayWrite = db.calls.find(
+    (call) =>
+      call.sql.includes("INSERT INTO transaction_metadata") &&
+      call.sql.includes("display_name_overridden"),
+  );
+  assert.ok(displayWrite);
+  assert.deepEqual(displayWrite.params, [
+    "shared",
+    ["pending-store"],
+    null,
+    "user-1",
+  ]);
+  assert.match(displayWrite.sql, /display_name_overridden = true/);
+  const cleanup = db.calls.find((call) =>
+    call.sql.startsWith("DELETE FROM transaction_metadata"),
+  );
+  assert.match(cleanup.sql, /display_name_overridden = false/);
+});
+
+test("transaction reads expose the effective cash-flow role from the view", async () => {
+  const db = fakePool(async (sql) => {
+    if (sql.includes("FROM transactions t")) {
+      return {
+        rows: [
+          transactionRow({
+            id: "rent",
+            cash_flow_role: "spending",
+            effective_cash_flow_role: "obligation",
+            effective_excluded_from_spending: true,
+          }),
+        ],
+      };
+    }
+    return { rows: [] };
+  });
+  const repository = new PgFinanceRepository(db.pool);
+
+  const transaction = await repository.getTransaction("shared", "rent");
+
+  assert.equal(transaction.cash_flow_role, "obligation");
+  assert.equal(transaction.excluded_from_spending, true);
+  const read = db.calls.find((call) =>
+    call.sql.includes("FROM transactions t"),
+  );
+  assert.match(
+    read.sql,
+    /JOIN transaction_effective_spending_treatments effective_treatment/,
+  );
+  assert.match(read.sql, /effective_treatment\.effective_cash_flow_role/);
+});
+
+test("analytics period reads quarantine split parents needing review", async () => {
+  const db = fakePool(async (sql) => {
+    if (sql.includes("WITH transaction_page AS")) {
+      return {
+        rows: [
+          transactionRow({
+            id: "safe",
+            split_needs_review: false,
+          }),
+          transactionRow({
+            id: "needs-review",
+            split_needs_review: true,
+          }),
+        ],
+      };
+    }
+    return { rows: [] };
+  });
+  const repository = new PgFinanceRepository(db.pool);
+
+  const transactions = await repository.getTransactionsForPeriod(
+    "shared",
+    {
+      startOn: "2026-07-01",
+      endOn: "2026-08-01",
+    },
+  );
+
+  assert.deepEqual(
+    transactions.map((transaction) => transaction.id),
+    ["safe"],
+  );
+});
+
+test("Plan month edits persist the selected month, including zero offset", async () => {
   const ids = ["january-rent", "december-rent"];
   const db = fakePool(async (sql) => {
     if (sql.includes("FOR UPDATE")) {
@@ -262,7 +392,7 @@ test("Plan month batch edits are relative to each posted month and clear with ze
     "admin-1",
   ]);
 
-  const clearDb = fakePool(async (sql) => {
+  const currentMonthDb = fakePool(async (sql) => {
     if (sql.includes("FOR UPDATE")) {
       return {
         rows: ids.map((id) => ({
@@ -274,19 +404,23 @@ test("Plan month batch edits are relative to each posted month and clear with ze
     return { rows: [] };
   });
   await new PgFinanceRepository(
-    clearDb.pool,
+    currentMonthDb.pool,
   ).batchEditTransactions("shared", {
     transactionIds: ids,
     changes: { budgetMonthOffset: 0 },
     userId: "admin-1",
   });
-  const clear = clearDb.calls.find(
+  const currentMonth = currentMonthDb.calls.find(
     (call) =>
       call.sql.includes("INSERT INTO transaction_metadata") &&
       call.sql.includes("budget_month_on"),
   );
-  assert.match(clear.sql, /WHEN \$3::integer = 0 THEN NULL/);
-  assert.equal(clear.params[2], 0);
+  assert.match(
+    currentMonth.sql,
+    /date_trunc\('month', selected\.posted_on\)\s*\+ make_interval\(months => \$3::integer\)/,
+  );
+  assert.doesNotMatch(currentMonth.sql, /THEN NULL/);
+  assert.equal(currentMonth.params[2], 0);
 });
 
 test("batch metadata rejects the whole write when any selected row is unavailable", async () => {
@@ -315,7 +449,47 @@ test("batch metadata rejects the whole write when any selected row is unavailabl
   );
 });
 
-test("recurring streams use the latest effective transaction name and category", async () => {
+test("batch role edits atomically reject Transfer while a manual recurring pattern is active", async () => {
+  const db = fakePool(async (sql) => {
+    if (
+      sql.includes("AS has_active_recurring_pattern") &&
+      sql.includes("FOR UPDATE OF candidate")
+    ) {
+      return {
+        rows: [
+          {
+            id: "transaction-1",
+            posted_on: "2026-07-01",
+            has_active_recurring_pattern: true,
+          },
+        ],
+      };
+    }
+    return { rows: [] };
+  });
+  const repository = new PgFinanceRepository(db.pool);
+
+  const result = await repository.batchEditTransactions("shared", {
+    transactionIds: ["transaction-1"],
+    changes: {
+      cashFlowRole: "transfer",
+      excludedFromSpending: true,
+    },
+  });
+
+  assert.deepEqual(result, {
+    conflict: "active_recurring_pattern",
+    transactionIds: ["transaction-1"],
+  });
+  assert.equal(
+    db.calls.some((call) =>
+      call.sql.includes("INSERT INTO categorization_overrides"),
+    ),
+    false,
+  );
+});
+
+test("recurring streams use the latest effective transaction name, category, and role", async () => {
   const db = fakePool(async (sql) => {
     if (sql.includes("FROM recurring_streams r")) {
       return {
@@ -326,6 +500,11 @@ test("recurring streams use the latest effective transaction name and category",
             display_name: "OLD RESTAURANT",
             current_display_name: "Dinner Club",
             current_category_primary: "Food & Drink",
+            current_cash_flow_role: "obligation",
+            last_transaction_id: "transaction-1",
+            last_transaction_posted_on: "2026-07-01",
+            last_transaction_amount_minor: -4_200,
+            last_transaction_currency_code: "USD",
             stream_type: "frequent_spending",
             cadence: "monthly",
             account_id: "account-1",
@@ -353,6 +532,13 @@ test("recurring streams use the latest effective transaction name and category",
 
   assert.equal(streams[0].display_name, "Dinner Club");
   assert.equal(streams[0].category_primary, "Food & Drink");
+  assert.equal(streams[0].cash_flow_role, "obligation");
+  assert.deepEqual(streams[0].last_transaction, {
+    id: "transaction-1",
+    posted_on: "2026-07-01",
+    amount_minor: -4_200,
+    currency_code: "USD",
+  });
   const query = db.calls.find((call) =>
     call.sql.includes("FROM recurring_streams r"),
   );
@@ -363,6 +549,19 @@ test("recurring streams use the latest effective transaction name and category",
     query.sql,
     /current_transaction\.category_primary AS current_category_primary/,
   );
+  assert.match(
+    query.sql,
+    /effective_treatment\.effective_cash_flow_role AS cash_flow_role/,
+  );
+  assert.match(
+    query.sql,
+    /current_transaction\.cash_flow_role AS current_cash_flow_role/,
+  );
+  assert.match(
+    query.sql,
+    /last_payment\.transaction_id AS last_transaction_id/,
+  );
+  assert.match(query.sql, /AND t\.pending = false/);
 });
 
 test("transaction notes increment their version and refresh search", async () => {

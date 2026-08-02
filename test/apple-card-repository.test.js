@@ -34,6 +34,7 @@ function parsedImport() {
         posted_on: "2026-07-02",
         pending: false,
         excluded_from_spending: false,
+        cash_flow_role: "spending",
         payment_channel: "other",
         cardholder_name: "Synthetic User",
         source_transaction_type: "Purchase",
@@ -78,8 +79,17 @@ test("Apple Card import rolls back every write when audit persistence fails", as
     /synthetic audit failure/,
   );
 
-  assert.ok(
-    calls.some((call) => call.sql.startsWith("INSERT INTO transactions")),
+  const transactionInsert = calls.find((call) =>
+    call.sql.startsWith("INSERT INTO transactions"),
+  );
+  assert.ok(transactionInsert);
+  assert.match(
+    transactionInsert.sql,
+    /source_transaction_type, cash_flow_role/,
+  );
+  assert.match(
+    transactionInsert.sql,
+    /cash_flow_role = EXCLUDED\.cash_flow_role/,
   );
   assert.ok(
     calls.some((call) =>

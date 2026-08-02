@@ -74,6 +74,7 @@ test("Safe to Spend subtracts bills expected in the next 30 days but not subscri
       {
         id: "rent",
         stream_type: "bill",
+        cash_flow_role: "obligation",
         status: "active",
         cadence: "monthly",
         expected_amount_minor: 500_000,
@@ -83,6 +84,7 @@ test("Safe to Spend subtracts bills expected in the next 30 days but not subscri
       {
         id: "streaming",
         stream_type: "subscription",
+        cash_flow_role: "spending",
         status: "active",
         cadence: "monthly",
         expected_amount_minor: 2_000,
@@ -95,10 +97,41 @@ test("Safe to Spend subtracts bills expected in the next 30 days but not subscri
 
   assert.equal(snapshot.expected_bills.amount_minor, 500_000);
   assert.equal(snapshot.expected_bill_occurrence_count, 1);
+  assert.equal(snapshot.expected_bill_matched_pending_count, 0);
+  assert.equal(snapshot.expected_bill_projected_count, 1);
   assert.equal(snapshot.expected_bills_through_on, "2026-08-27");
   assert.equal(snapshot.excluded_expected_bill_count, 0);
   assert.equal(snapshot.safe_to_spend.amount_minor, 500_000);
-  assert.match(snapshot.formula, /bills expected in the next 30 days/i);
+  assert.match(
+    snapshot.formula,
+    /next monthly bills plus other bills due within 30 days/i,
+  );
+});
+
+test("a matched pending bill keeps one reservation and exposes its occurrence state", () => {
+  const projection = projectExpectedBills({
+    asOf: "2026-07-28",
+    recurringStreams: [
+      {
+        stream_type: "bill",
+        cash_flow_role: "obligation",
+        status: "active",
+        cadence: "monthly",
+        expected_amount_minor: 100_000,
+        currency_code: "USD",
+        next_expected_on: "2026-08-16",
+        pending_transaction: {
+          id: "pending-auto-loan",
+          amount_minor: -100_000,
+        },
+      },
+    ],
+  });
+
+  assert.equal(projection.expected_bills.amount_minor, 100_000);
+  assert.equal(projection.expected_bill_occurrence_count, 1);
+  assert.equal(projection.expected_bill_matched_pending_count, 1);
+  assert.equal(projection.expected_bill_projected_count, 0);
 });
 
 test("expected bills include repeated and overdue occurrences while exposing unusable estimates", () => {
@@ -175,12 +208,12 @@ test("expected bills include repeated and overdue occurrences while exposing unu
   assert.equal(projection.expected_bills.amount_minor, 1_400);
   assert.equal(projection.expected_bill_occurrence_count, 9);
   assert.equal(projection.expected_bills_through_on, "2026-08-27");
-  assert.equal(projection.excluded_expected_bill_count, 2);
+  assert.equal(projection.excluded_expected_bill_count, 3);
 });
 
-test("calendar-cadence bills reserve only their stored next estimate", () => {
+test("monthly bills always reserve their next estimate while longer cadences stay inside 30 days", () => {
   const projection = projectExpectedBills({
-    asOf: "2026-01-31",
+    asOf: "2026-07-01",
     recurringStreams: [
       {
         stream_type: "bill",
@@ -188,17 +221,49 @@ test("calendar-cadence bills reserve only their stored next estimate", () => {
         cadence: "monthly",
         expected_amount_minor: 500,
         currency_code: "USD",
-        next_expected_on: "2026-01-31",
+        next_expected_on: "2026-08-01",
+      },
+      {
+        stream_type: "bill",
+        status: "active",
+        cadence: "quarterly",
+        expected_amount_minor: 300,
+        currency_code: "USD",
+        next_expected_on: "2026-07-31",
+      },
+      {
+        stream_type: "bill",
+        status: "active",
+        cadence: "quarterly",
+        expected_amount_minor: 3_000,
+        currency_code: "USD",
+        next_expected_on: "2026-08-01",
+      },
+      {
+        stream_type: "bill",
+        status: "active",
+        cadence: "annual",
+        expected_amount_minor: 200,
+        currency_code: "USD",
+        next_expected_on: "2026-07-31",
+      },
+      {
+        stream_type: "bill",
+        status: "active",
+        cadence: "annual",
+        expected_amount_minor: 2_000,
+        currency_code: "USD",
+        next_expected_on: "2026-08-01",
       },
     ],
   });
 
-  assert.equal(projection.expected_bills.amount_minor, 500);
-  assert.equal(projection.expected_bill_occurrence_count, 1);
-  assert.equal(projection.expected_bills_through_on, "2026-03-02");
+  assert.equal(projection.expected_bills.amount_minor, 1_000);
+  assert.equal(projection.expected_bill_occurrence_count, 3);
+  assert.equal(projection.expected_bills_through_on, "2026-08-01");
 });
 
-test("an observed bill stops reserving the occurrence after detection advances it", () => {
+test("an observed monthly bill keeps its next occurrence reserved across a 31-day gap", () => {
   const bill = {
     stream_type: "bill",
     status: "active",
@@ -220,7 +285,56 @@ test("an observed bill stops reserving the occurrence after detection advances i
   });
 
   assert.equal(beforeDetection.expected_bills.amount_minor, 500_000);
-  assert.equal(afterDetection.expected_bills.amount_minor, 0);
+  assert.equal(afterDetection.expected_bills.amount_minor, 500_000);
+  assert.equal(afterDetection.expected_bill_occurrence_count, 1);
+});
+
+test("bill reservations include spending and obligations but ignore transfer streams", () => {
+  const projection = projectExpectedBills({
+    asOf: "2026-07-28",
+    recurringStreams: [
+      {
+        stream_type: "bill",
+        cash_flow_role: "spending",
+        status: "active",
+        cadence: "monthly",
+        expected_amount_minor: 100,
+        currency_code: "USD",
+        next_expected_on: "2026-08-01",
+      },
+      {
+        stream_type: "bill",
+        cash_flow_role: "obligation",
+        status: "active",
+        cadence: "monthly",
+        expected_amount_minor: 200,
+        currency_code: "USD",
+        next_expected_on: "2026-08-01",
+      },
+      {
+        stream_type: "bill",
+        cash_flow_role: "transfer",
+        status: "active",
+        cadence: "monthly",
+        expected_amount_minor: 9_999,
+        currency_code: "USD",
+        next_expected_on: "2026-08-01",
+      },
+      {
+        stream_type: "subscription",
+        cash_flow_role: "spending",
+        status: "active",
+        cadence: "monthly",
+        expected_amount_minor: 8_888,
+        currency_code: "USD",
+        next_expected_on: "2026-08-01",
+      },
+    ],
+  });
+
+  assert.equal(projection.expected_bills.amount_minor, 300);
+  assert.equal(projection.expected_bill_occurrence_count, 2);
+  assert.equal(projection.excluded_expected_bill_count, 0);
 });
 
 test("goal spending releases current earmarks while preserving funded progress", () => {

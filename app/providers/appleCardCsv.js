@@ -301,6 +301,12 @@ export function parseAppleCardCsv(buffer) {
 
     const categoryPrimary =
       CATEGORY_MAP.get(categoryDetailed) ?? categoryDetailed;
+    // Apple exports merchant refunds as Credit rows. Those credits reverse
+    // prior spending, while Payment rows move money between owned accounts.
+    const cashFlowRole =
+      sourceTransactionType.toLocaleLowerCase("en-US") === "payment"
+        ? "transfer"
+        : "spending";
     const transaction = {
       authorized_on: authorizedOn,
       posted_on: postedOn,
@@ -315,7 +321,8 @@ export function parseAppleCardCsv(buffer) {
       cardholder_name: cardholderName,
       source_transaction_type: sourceTransactionType,
       pending: false,
-      excluded_from_spending: sourceTransactionType !== "Purchase",
+      cash_flow_role: cashFlowRole,
+      excluded_from_spending: cashFlowRole !== "spending",
       payment_channel: "other",
     };
     const identity = normalizedIdentity(transaction, originalAmountMinor);
@@ -339,7 +346,10 @@ export function parseAppleCardCsv(buffer) {
       warnings.push({
         row: rowNumber,
         code: "non_purchase_type",
-        message: `${sourceTransactionType} is preserved but excluded from spending.`,
+        message:
+          cashFlowRole === "transfer"
+            ? `${sourceTransactionType} is preserved as a transfer.`
+            : `${sourceTransactionType} is preserved and nets against spending.`,
       });
     }
   });

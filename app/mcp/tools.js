@@ -36,22 +36,22 @@ const TOOL_DEFINITIONS = Object.freeze({
   list_transactions: {
     title: "List finance transactions",
     description:
-      "Search and filter a cursor-paginated ledger of posted and pending transactions. Use this for recent purchases, merchant searches, category questions, or transaction evidence; narrow broad requests with dates or filters.",
+      "Search and filter a cursor-paginated ledger of posted and pending transactions. Each result exposes cash_flow_role: spending appears in Spending reports, obligation appears in Plan Obligations, and transfer appears in neither. excluded_from_spending is a deprecated compatibility read. Narrow broad requests with dates or filters.",
   },
   get_spending_summary: {
     title: "Get spending summary",
     description:
-      "Get deterministic spending totals, comparisons, category or merchant segments, and a bounded series. Transfers and card payments are excluded by the finance service unless explicitly classified otherwise.",
+      "Get deterministic totals, comparisons, category or merchant segments, and a bounded series for transactions whose effective cash_flow_role is spending. Obligations belong in Plan Obligations; transfers and card payments are excluded.",
   },
   get_cash_flow: {
     title: "Get cash flow",
     description:
-      "Get deterministic posted income, spending, net cash flow, and interval buckets for a bounded period. Never treat transfers or investment deposits as income.",
+      "Get deterministic posted income, outflows, net cash flow, interval buckets, and an outflow_by_role reconciliation. Spending and Obligations count as outflows; Transfers remain classified but do not reduce net cash flow. Never treat transfers or investment deposits as income.",
   },
   list_recurring_payments: {
     title: "List recurring payments",
     description:
-      "List detected subscriptions and bills with cadence, monthly or annual equivalents, confidence, estimated next dates, and pagination. Estimated dates and possible duplicates must remain labeled as estimates.",
+      "List detected subscriptions and bills with cadence, monthly or annual equivalents, confidence, estimated next dates, cash-flow roles, and pagination. Bills may be Spending or Obligations; Transfers cannot be recurring. Estimated dates and possible duplicates must remain labeled as estimates.",
   },
   get_net_worth_history: {
     title: "Get net-worth history",

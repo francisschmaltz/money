@@ -199,6 +199,7 @@ test("transaction sync inserts and updates normalized provider names", async () 
         posted_on: "2026-07-27",
         pending: false,
         excluded_from_spending: false,
+        cash_flow_role: "obligation",
         provider_location: {
           address: "123 Main St",
           city: "New York",
@@ -228,6 +229,11 @@ test("transaction sync inserts and updates normalized provider names", async () 
   assert.match(
     insert.sql,
     /provider_location = EXCLUDED\.provider_location/,
+  );
+  assert.match(insert.sql, /cash_flow_role = EXCLUDED\.cash_flow_role/);
+  assert.equal(
+    JSON.parse(insert.params[0])[0].cash_flow_role,
+    "obligation",
   );
   assert.deepEqual(
     JSON.parse(insert.params[0])[0].provider_location,
@@ -317,8 +323,24 @@ test("repository transaction reads include provider location only when requested
   assert.deepEqual(selected.provider_location, row.provider_location);
 });
 
-test("transaction sync carries a pending note to its posted replacement before deletion", async () => {
-  const db = fakePool();
+test("transaction sync atomically carries pending user state before deletion", async () => {
+  const db = fakePool(async (sql) => {
+    if (sql.includes("AS handoff_safe")) {
+      return {
+        rows: [
+          {
+            workspace_id: "shared",
+            pending_id: "pending-transaction",
+            posted_id: "posted-transaction",
+            handoff_safe: true,
+            has_user_state: true,
+            copy_splits: true,
+          },
+        ],
+      };
+    }
+    return { rows: [] };
+  });
   const repository = new PgFinanceRepository(db.pool);
 
   await repository.applyTransactionSync({
@@ -341,23 +363,197 @@ test("transaction sync carries a pending note to its posted replacement before d
     cursor: "cursor-1",
   });
 
-  const copyIndex = db.calls.findIndex((call) =>
-    call.sql.includes("INSERT INTO transaction_metadata"),
+  const handoff = db.calls.find((call) =>
+    call.sql.includes("AS handoff_safe"),
+  );
+  assert.deepEqual(handoff.params, [["pending-provider-id"]]);
+
+  const metadataIndex = db.calls.findIndex(
+    (call) =>
+      call.sql.includes("INSERT INTO transaction_metadata") &&
+      call.sql.includes("pending_metadata.display_name"),
   );
   const deleteIndex = db.calls.findIndex((call) =>
     call.sql.includes("DELETE FROM transactions pending"),
   );
-  assert.ok(copyIndex >= 0);
-  assert.ok(deleteIndex > copyIndex);
+  assert.ok(metadataIndex >= 0);
+  assert.ok(deleteIndex > metadataIndex);
   assert.match(
-    db.calls[copyIndex].sql,
-    /pending_metadata\.note[\s\S]*pending_metadata\.note_version/,
+    db.calls[metadataIndex].sql,
+    /pending_metadata\.display_name[\s\S]*pending_metadata\.tags_overridden[\s\S]*pending_metadata\.note[\s\S]*pending_metadata\.note_version[\s\S]*pending_metadata\.budget_month_on/,
   );
   assert.match(
-    db.calls[copyIndex].sql,
-    /WHERE transaction_metadata\.note IS NULL[\s\S]*transaction_metadata\.note_version = 0/,
+    db.calls[metadataIndex].sql,
+    /transaction_metadata\.note_updated_at <= EXCLUDED\.note_updated_at/,
   );
-  assert.deepEqual(db.calls[copyIndex].params, [
-    ["pending-provider-id"],
+  assert.match(
+    db.calls[metadataIndex].sql,
+    /EXCLUDED\.display_name_overridden = true[\s\S]*THEN EXCLUDED\.display_name/,
+  );
+  assert.match(
+    db.calls[metadataIndex].sql,
+    /EXCLUDED\.budget_month_overridden = true[\s\S]*THEN EXCLUDED\.budget_month_on/,
+  );
+  assert.ok(
+    db.calls.some(
+      (call) =>
+        call.sql.includes("INSERT INTO categorization_overrides") &&
+        call.sql.includes("pending_override.cash_flow_role"),
+    ),
+  );
+  assert.ok(
+    db.calls.some(
+      (call) =>
+        call.sql.includes("INSERT INTO transaction_tag_assignments") &&
+        call.sql.includes("transferable.posted_id"),
+    ),
+  );
+  assert.ok(
+    db.calls.some(
+      (call) =>
+        call.sql.includes("UPDATE recurring_pattern_rules rule") &&
+        call.sql.includes("anchor_amount_minor = abs(posted.amount_minor)"),
+    ),
+  );
+  const splitCopy = db.calls.find(
+    (call) =>
+      call.sql.includes("INSERT INTO transaction_splits") &&
+      call.sql.includes("adjustment_rank"),
+  );
+  assert.ok(splitCopy);
+  assert.match(
+    splitCopy.sql,
+    /posted\.amount_minor - pending\.amount_minor/,
+  );
+  assert.match(
+    handoff.sql,
+    /split_state\.largest_amount_minor[\s\S]*posted\.amount_minor[\s\S]*pending\.amount_minor/,
+  );
+  assert.match(handoff.sql, /pending\.split_needs_review = false/);
+  const refreshIndex = db.calls.findIndex(
+    (call) =>
+      call.sql.includes("INSERT INTO search_documents") &&
+      call.sql.includes("'transaction:' || t.id"),
+  );
+  assert.ok(refreshIndex > deleteIndex);
+});
+
+test("transaction sync quarantines invalid linked splits on the posted row", async () => {
+  const db = fakePool(async (sql) => {
+    if (sql.includes("AS handoff_safe")) {
+      return {
+        rows: [
+          {
+            workspace_id: "shared",
+            pending_id: "pending-transaction",
+            posted_id: "posted-transaction",
+            handoff_safe: false,
+            has_user_state: true,
+            copy_splits: true,
+          },
+        ],
+      };
+    }
+    return { rows: [] };
+  });
+  const repository = new PgFinanceRepository(db.pool);
+
+  await repository.applyTransactionSync({
+    itemId: "item-1",
+    added: [
+      {
+        id: "posted-transaction",
+        provider_account_id: "provider-account-1",
+        provider_transaction_id: "posted-provider-id",
+        provider_pending_transaction_id: "pending-provider-id",
+        name: "Refund",
+        normalized_name: "refund",
+        amount_minor: 4_200,
+        currency_code: "USD",
+        posted_on: "2026-07-27",
+        pending: false,
+        excluded_from_spending: false,
+      },
+    ],
+    cursor: "cursor-2",
+  });
+
+  const metadataIndex = db.calls.findIndex(
+    (call) =>
+      call.sql.includes("INSERT INTO transaction_metadata") &&
+      call.sql.includes("pending_metadata.display_name"),
+  );
+  const splitCopyIndex = db.calls.findIndex(
+    (call) =>
+      call.sql.includes("INSERT INTO transaction_splits") &&
+      call.sql.includes("ranked.reconcile_splits = true"),
+  );
+  const quarantineIndex = db.calls.findIndex(
+    (call) =>
+      call.sql.includes("UPDATE transactions posted") &&
+      call.sql.includes(
+        "split_needs_review = NOT pair.reconcile_splits",
+      ),
+  );
+  const deleteIndex = db.calls.findIndex((call) =>
+    call.sql.includes("DELETE FROM transactions pending"),
+  );
+
+  assert.ok(metadataIndex >= 0);
+  assert.ok(splitCopyIndex > metadataIndex);
+  assert.ok(quarantineIndex > splitCopyIndex);
+  assert.ok(deleteIndex > quarantineIndex);
+  assert.match(
+    db.calls[splitCopyIndex].sql,
+    /WHEN ranked\.reconcile_splits = true[\s\S]*THEN posted\.amount_minor - pending\.amount_minor[\s\S]*ELSE 0/,
+  );
+  assert.ok(
+    db.calls.some(
+      (call) =>
+        call.sql.includes("UPDATE recurring_pattern_rules rule") &&
+        call.sql.includes("source_transaction_id = pair.posted_id"),
+    ),
+  );
+});
+
+test("removed provider rows snapshot unmatched pending edits before deletion", async () => {
+  const db = fakePool();
+  const repository = new PgFinanceRepository(db.pool);
+
+  await repository.applyTransactionSync({
+    itemId: "item-1",
+    removedProviderIds: ["removed-pending-provider-id"],
+    cursor: "cursor-3",
+  });
+
+  const removal = db.calls.find((call) =>
+    call.sql.startsWith("DELETE FROM transactions removed"),
+  );
+  const snapshot = db.calls.find((call) =>
+    call.sql.includes("INSERT INTO unmatched_pending_transaction_edits"),
+  );
+  assert.ok(snapshot);
+  assert.match(snapshot.sql, /transaction_metadata metadata/);
+  assert.match(snapshot.sql, /categorization_overrides override/);
+  assert.match(snapshot.sql, /transaction_splits split/);
+  assert.match(snapshot.sql, /recurring_pattern_rules rule/);
+  assert.match(
+    snapshot.sql,
+    /display_name_overridden[\s\S]*budget_month_overridden/,
+  );
+  assert.deepEqual(snapshot.params, [
+    ["removed-pending-provider-id"],
+    "item-1",
+    [],
+  ]);
+  assert.ok(removal);
+  assert.match(
+    removal.sql,
+    /NOT \( removed\.provider_transaction_id = ANY\(\$3::text\[\]\) \)/,
+  );
+  assert.deepEqual(removal.params, [
+    ["removed-pending-provider-id"],
+    "item-1",
+    [],
   ]);
 });

@@ -532,23 +532,31 @@ test("demo batch edits are atomic and immediately affect transactions and search
   ]);
 
   const freshService = createDemoFinanceService();
-  await assert.rejects(
-    freshService.batchEditTransactions({
-      transaction_ids: ["txn_whole_foods", "txn_con_edison"],
-      changes: { display_name: "Should not stick" },
-    }),
-    (error) =>
-      error.statusCode === 400 &&
-      /Pending transactions/.test(error.message),
-  );
-  const untouched = await freshService.listTransactions({
+  const mixedUpdate = await freshService.batchEditTransactions({
+    transaction_ids: ["txn_whole_foods", "txn_con_edison"],
+    changes: {
+      display_name: "Pending-safe edit",
+      cash_flow_role: "obligation",
+    },
+  });
+  assert.equal(mixedUpdate.updated_count, 2);
+  const updatedPosted = await freshService.listTransactions({
     status: "posted",
   });
   assert.equal(
-    untouched.data.transactions.find(
+    updatedPosted.data.transactions.find(
       (transaction) => transaction.id === "txn_whole_foods",
+    ).cash_flow_role,
+    "obligation",
+  );
+  const updatedPending = await freshService.listTransactions({
+    status: "pending",
+  });
+  assert.equal(
+    updatedPending.data.transactions.find(
+      (transaction) => transaction.id === "txn_con_edison",
     ).display_name,
-    "Whole Foods Market",
+    "Pending-safe edit",
   );
   await assert.rejects(
     freshService.batchEditTransactions({
@@ -562,7 +570,7 @@ test("demo batch edits are atomic and immediately affect transactions and search
   );
 });
 
-test("demo Plan month edits assign an adjacent month and clear back to posted month", async () => {
+test("demo Plan month edits persist the exact selected month", async () => {
   const service = createDemoFinanceService();
   const posted = await service.listTransactions({ status: "posted" });
   const target = posted.data.transactions.find(
@@ -586,7 +594,7 @@ test("demo Plan month edits assign an adjacent month and clear back to posted mo
   edited = (
     await service.listTransactions({ status: "posted" })
   ).data.transactions.find((transaction) => transaction.id === target.id);
-  assert.equal(edited.budget_month_on, null);
+  assert.equal(edited.budget_month_on, "2026-07-01");
 
   await assert.rejects(
     service.batchEditTransactions({
@@ -614,6 +622,7 @@ test("demo cleanup rules apply exact provider normalization without overriding m
     changes: {
       display_name: "Apple billing",
       category_primary: "Shopping",
+      cash_flow_role: "obligation",
       tags: ["Tax"],
     },
     enabled: true,
@@ -630,6 +639,8 @@ test("demo cleanup rules apply exact provider normalization without overriding m
   assert.equal(apple.raw_name, "AAPL SRV 0042");
   assert.equal(apple.display_name, "Apple billing");
   assert.equal(apple.category_primary, "Shopping");
+  assert.equal(apple.cash_flow_role, "obligation");
+  assert.equal(apple.excluded_from_spending, true);
   assert.deepEqual(apple.tags, ["Tax"]);
 
   const merchantWinnerResult =
@@ -745,7 +756,7 @@ test("demo cleanup rules apply exact provider normalization without overriding m
   apple = ledger.data.transactions.find(
     (transaction) => transaction.id === "txn_apple_services",
   );
-  assert.equal(apple.display_name, "Apple billing");
+  assert.equal(apple.display_name, "Apple Services");
 
   await service.batchEditTransactions({
     transaction_ids: ["txn_apple_services"],

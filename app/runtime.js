@@ -21,14 +21,16 @@ export function createRuntime(config) {
     apiKey: config.lmStudio.apiKey,
   });
   if (config.demoMode) {
+    const financeService = createDemoFinanceService({
+      scenario: config.demoScenario,
+    });
     return {
       pool: null,
       narrativeService,
-      financeService: createDemoFinanceService({
-        scenario: config.demoScenario,
-      }),
+      financeService,
       planningService: createDemoPlanningService({
         scenario: config.demoScenario,
+        financeService,
       }),
       plaidSyncService: null,
       appleCardImportService: null,

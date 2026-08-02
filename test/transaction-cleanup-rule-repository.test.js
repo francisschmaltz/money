@@ -163,7 +163,8 @@ test("creating a rule stores match mode and refreshes contained matches", async 
     "AAPL SRV",
     "aapl srv",
   ]);
-  assert.equal(insert.params[8], '["subscription"]');
+  assert.equal(insert.params[8], null);
+  assert.equal(insert.params[9], '["subscription"]');
   const match = db.calls.find((call) =>
     call.sql.startsWith("SELECT id FROM transactions"),
   );
@@ -194,7 +195,7 @@ test("creating a rule stores match mode and refreshes contained matches", async 
   );
   assert.match(
     searchRefresh.sql,
-    /metadata\.display_name, metadata\.note, cleanup_rule\.display_name, t\.merchant_name, t\.name/,
+    /WHEN metadata\.display_name_overridden THEN metadata\.display_name ELSE COALESCE\( metadata\.display_name, cleanup_rule\.display_name \) END, metadata\.note, t\.merchant_name, t\.name/,
   );
 });
 
@@ -322,7 +323,7 @@ test("manual transaction edits beat cleanup output, including empty tags", async
   );
   assert.match(
     effectiveQuery.sql,
-    /COALESCE\( metadata\.display_name, cleanup_rule\.display_name \)/,
+    /WHEN metadata\.display_name_overridden THEN metadata\.display_name ELSE COALESCE\( metadata\.display_name, cleanup_rule\.display_name \) END AS display_name/,
   );
   assert.match(
     effectiveQuery.sql,

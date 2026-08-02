@@ -136,8 +136,12 @@ export function demoTransactionForWeb(transaction) {
     excludedFromSpending: Boolean(
       transaction.excluded_from_spending,
     ),
+    cashFlowRole:
+      transaction.cash_flow_role ??
+      (transaction.excluded_from_spending ? "transfer" : "spending"),
     postedAt: transaction.posted_at ?? null,
     postedOn: transaction.posted_on ?? transaction.date,
+    splitNeedsReview: Boolean(transaction.split_needs_review),
   };
 }
 
@@ -295,6 +299,7 @@ export function demoRecurringForWeb(stream) {
     state: stream.status ?? "active",
     next: compactDemoDate(stream.next_estimated_date),
     type: stream.type,
+    cashFlowRole: stream.cash_flow_role ?? "spending",
     category: stream.category ?? null,
     detectedType: stream.detected_type ?? stream.type,
     classificationSignals: {

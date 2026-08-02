@@ -53,6 +53,16 @@
       year: "numeric",
       timeZone: "UTC",
     }).format(new Date(`${monthOn}T00:00:00.000Z`));
+  const openPendingEditRecoveries =
+    typeof pendingEditRecoveries !== "undefined" &&
+    Array.isArray(pendingEditRecoveries)
+      ? pendingEditRecoveries.filter(
+          (recovery) => recovery.state === "open",
+        )
+      : [];
+  const pendingEditRecoveryTargets = (transactions || []).filter(
+    (transaction) => transaction.status === "posted",
+  );
 %>
 <body data-page="transactions">
   <%- include("partials/site-header", { activePath, viewer }) %>
@@ -64,6 +74,64 @@
       actionHref: "/search",
       actionIcon: "ph-magnifying-glass"
     }) %>
+
+    <% if (viewer?.is_admin && openPendingEditRecoveries.length) { %>
+      <section
+        class="card pending-edit-recoveries"
+        aria-labelledby="pending-edit-recoveries-heading"
+        data-pending-edit-recoveries
+      >
+        <div class="pending-edit-recoveries__heading">
+          <i class="ph ph-warning-circle" aria-hidden="true"></i>
+          <div>
+            <h2 id="pending-edit-recoveries-heading">Pending edits need a transaction</h2>
+            <p>The provider removed <%= openPendingEditRecoveries.length === 1 ? "a pending charge" : `${openPendingEditRecoveries.length} pending charges` %> without linking <%= openPendingEditRecoveries.length === 1 ? "its" : "their" %> posted replacement. Your edits are safe; choose the posted transaction yourself.</p>
+          </div>
+        </div>
+        <div class="pending-edit-recoveries__list">
+          <% openPendingEditRecoveries.forEach((recovery) => { %>
+            <article
+              class="pending-edit-recovery"
+              data-pending-edit-recovery="<%= recovery.id %>"
+            >
+              <div class="pending-edit-recovery__source">
+                <strong><%= recovery.source.name %></strong>
+                <span>
+                  <%= [recovery.source.account, recovery.source.date].filter(Boolean).join(" · ") || "Pending charge" %>
+                  <% if (recovery.source.amount) { %>
+                    · <%= formatMoney(recovery.source.amount) %>
+                  <% } %>
+                </span>
+                <small>Saved: <%= recovery.edited_fields.join(", ") %></small>
+              </div>
+              <form
+                class="pending-edit-recovery__attach"
+                data-pending-edit-recovery-attach
+                data-endpoint="/api/v1/pending-edit-recoveries/<%= recovery.id %>/attach"
+              >
+                <label>
+                  <span class="sr-only">Posted transaction for <%= recovery.source.name %></span>
+                  <select name="transaction_id" required data-pending-edit-recovery-target <%= pendingEditRecoveryTargets.length ? "" : "disabled" %>>
+                    <option value="">Choose posted transaction</option>
+                    <% pendingEditRecoveryTargets.forEach((transaction) => { %>
+                      <option value="<%= transaction.id %>"><%= transaction.merchant %> · <%= transaction.date %> · <%= formatMoney(transaction.providerAmount || transaction.amount) %></option>
+                    <% }) %>
+                  </select>
+                </label>
+                <button class="button button--dark button--compact" type="submit" <%= pendingEditRecoveryTargets.length ? "" : "disabled" %>>Attach edits</button>
+              </form>
+              <button
+                class="button button--ghost button--compact"
+                type="button"
+                data-pending-edit-recovery-dismiss
+                data-endpoint="/api/v1/pending-edit-recoveries/<%= recovery.id %>/dismiss"
+              >Dismiss</button>
+              <p class="pending-edit-recovery__status" role="status" data-pending-edit-recovery-status><%= pendingEditRecoveryTargets.length ? "" : "No posted transactions are visible. Change the filters, then come back." %></p>
+            </article>
+          <% }) %>
+        </div>
+      </section>
+    <% } %>
 
     <form
       class="filter-bar transaction-filter"
@@ -116,7 +184,7 @@
             <option value="date" <%= selectedTransactionSort === "date" ? "selected" : "" %>>Date (newest first)</option>
             <option value="merchant" <%= selectedTransactionSort === "merchant" ? "selected" : "" %>>Merchant (A–Z)</option>
             <option value="category" <%= selectedTransactionSort === "category" ? "selected" : "" %>>Category (A–Z)</option>
-            <option value="cost" <%= selectedTransactionSort === "cost" ? "selected" : "" %>>Spending amount (high to low)</option>
+            <option value="cost" <%= selectedTransactionSort === "cost" ? "selected" : "" %>>Outflow amount (high to low)</option>
           </select>
         </label>
       </div>
@@ -167,8 +235,17 @@
         <%
           const transactionOrganizeFormId =
             `transaction-organize-${selectedTransaction.id}`;
-          const canOrganizeTransaction =
-            viewer?.is_admin && selectedTransaction.status !== "pending";
+          const canOrganizeTransaction = viewer?.is_admin;
+          const selectedCashFlowRole =
+            selectedTransaction.cashFlowRole ||
+            (selectedTransaction.excludedFromSpending
+              ? "transfer"
+              : "spending");
+          const cashFlowRoleLabel = {
+            spending: "Spending",
+            obligation: "Obligation",
+            transfer: "Transfer",
+          }[selectedCashFlowRole] || "Spending";
           const selectedTransactionPostedOn =
             selectedTransaction.dateIso ||
             selectedTransaction.postedOn ||
@@ -242,16 +319,13 @@
           const recurringPattern = viewer?.is_admin
             ? selectedTransaction.recurringPattern ?? {
                 eligible:
-                  selectedTransaction.status === "posted" &&
                   transactionProviderAmount.amount_minor < 0 &&
-                  !selectedTransaction.excludedFromSpending,
+                  selectedCashFlowRole !== "transfer",
                 ineligibleReason:
-                  selectedTransaction.status === "pending"
-                    ? "Post this transaction before creating a recurring pattern."
-                    : transactionProviderAmount.amount_minor >= 0
-                      ? "Recurring patterns can only start from spending transactions."
-                      : selectedTransaction.excludedFromSpending
-                        ? "Include this transaction in spending before creating a recurring pattern."
+                  transactionProviderAmount.amount_minor >= 0
+                      ? "Recurring patterns can only start from outflow transactions."
+                      : selectedCashFlowRole === "transfer"
+                        ? "Transfers cannot define recurring patterns. Change the cash-flow role first."
                         : null,
                 manual: false,
                 type: null,
@@ -259,13 +333,11 @@
                 cadenceSuggested: false,
               }
             : null;
-          const recurringSummary = recurringPattern?.manual
-            ? `${String(recurringPattern.cadence || "Recurring").replace(/^./, (character) => character.toUpperCase())} ${recurringPattern.type || "pattern"}`
-            : selectedTransaction.isFixed
-              ? "Fixed expense detected"
-              : recurringPattern?.eligible
-                ? "Not marked"
-                : recurringPattern?.ineligibleReason || "Unavailable";
+          const recurringSummary = !recurringPattern?.eligible
+            ? recurringPattern?.ineligibleReason || "Unavailable"
+            : recurringPattern.manual
+              ? `${String(recurringPattern.cadence || "Recurring").replace(/^./, (character) => character.toUpperCase())} ${recurringPattern.type || "pattern"}`
+              : "Not marked";
           const transactionNotePreview =
             String(selectedTransaction.note || "")
               .replace(/\s+/g, " ")
@@ -322,10 +394,10 @@
             <div class="transaction-section-heading">
               <div>
                 <p class="card-kicker">Money</p>
-                <h3 id="transaction-allocation-heading">Spending allocation</h3>
+                <h3 id="transaction-allocation-heading">Transaction allocation</h3>
               </div>
               <small>
-                <span><%= selectedTransaction.excludedFromSpending ? "Excluded from spending" : "Included in spending" %></span>
+                <span><%= cashFlowRoleLabel %></span>
                 <span><%= formatPlanMonth(selectedTransactionEffectiveMonth) %> Plan<%= selectedTransaction.budgetMonthOn ? " · manually applied" : "" %></span>
                 <% if (selectedTransaction.isFixed) { %><span>Fixed expense</span><% } %>
               </small>
@@ -353,12 +425,12 @@
                 data-transaction-id="<%= selectedTransaction.id %>"
               >
                 <label>
-                  Spending category
+                  Category
                   <select
                     name="category_primary"
                     data-transaction-organize-category
                     data-initial-value="<%= selectedCategory %>"
-                    aria-label="Spending category"
+                    aria-label="Category"
                   >
                     <% if (!hasSelectedCategory) { %>
                       <option value="<%= selectedCategory %>" selected><%= selectedCategory %></option>
@@ -373,15 +445,12 @@
               </form>
             <% } else { %>
               <div class="transaction-allocation__category-readonly">
-                <span>Spending category</span>
+                <span>Category</span>
                 <strong><%= selectedCategory %></strong>
               </div>
             <% } %>
 
-            <% if (
-              selectedTransaction.status !== "pending" &&
-              selectedTransaction.amount.currency === "USD"
-            ) { %>
+            <% if (selectedTransaction.amount.currency === "USD") { %>
               <details class="plan-disclosure transaction-disclosure transaction-split-editor">
                 <summary>
                   <span>
@@ -398,6 +467,12 @@
                     data-endpoint="/api/v1/transactions/<%= encodeURIComponent(selectedTransaction.id) %>/splits"
                     data-method="PUT"
                   >
+                    <% if (selectedTransaction.splitNeedsReview) { %>
+                      <p class="card-note"><i class="ph ph-warning" aria-hidden="true"></i> This split needs review because the provider amount, sign, or currency changed. It is excluded from posted analytics until you save a valid split.</p>
+                    <% } %>
+                    <% if (selectedTransaction.status === "pending") { %>
+                      <p class="card-note">The final amount may change. Your category choices will carry over when this charge posts.</p>
+                    <% } %>
                     <input type="hidden" name="expected_version" value="<%= typeof selectedTransactionSplitVersion === 'number' ? selectedTransactionSplitVersion : selectedTransaction.splitVersion %>">
                     <% splitRows.forEach(([amount, category], index) => { %>
                       <div data-split-line>
@@ -413,7 +488,7 @@
                   </form>
                 </div>
               </details>
-            <% } else if (selectedTransaction.status !== "pending") { %>
+            <% } else { %>
               <p class="card-note transaction-allocation__notice">Transaction splits currently support USD only.</p>
             <% } %>
 
@@ -543,12 +618,12 @@
               <summary>
                 <span>
                   <strong id="transaction-organize-heading">Organize transaction</strong>
-                  <small>Name, tags, <%= selectedTransaction.excludedFromSpending ? "excluded from spending" : "included in spending" %> · <%= formatPlanMonth(selectedTransactionEffectiveMonth) %></small>
+                  <small>Name, tags, <%= cashFlowRoleLabel.toLowerCase() %> · <%= formatPlanMonth(selectedTransactionEffectiveMonth) %></small>
                 </span>
                 <i class="ph ph-caret-down" aria-hidden="true"></i>
               </summary>
               <div class="plan-disclosure__body transaction-disclosure__body">
-                <p class="card-note">One-time edits only. No automatic cleanup rule is created.</p>
+                <p class="card-note"><%= selectedTransaction.status === "pending" ? "Pending details may change. Your edits will carry over when the charge posts." : "One-time edits only. No automatic cleanup rule is created." %></p>
                 <form
                   id="<%= transactionOrganizeFormId %>"
                   data-transaction-organize-form
@@ -574,14 +649,16 @@
                     >
                   </label>
                   <label>
-                    Spending treatment
+                    Cash-flow role
                     <select
-                      name="excluded_from_spending"
-                      data-initial-value="<%= String(Boolean(selectedTransaction.excludedFromSpending)) %>"
+                      name="cash_flow_role"
+                      data-initial-value="<%= selectedCashFlowRole %>"
                     >
-                      <option value="false" <%= !selectedTransaction.excludedFromSpending ? "selected" : "" %>>Include in spending</option>
-                      <option value="true" <%= selectedTransaction.excludedFromSpending ? "selected" : "" %>>Exclude from spending</option>
+                      <option value="spending" <%= selectedCashFlowRole === "spending" ? "selected" : "" %>>Spending</option>
+                      <option value="obligation" <%= selectedCashFlowRole === "obligation" ? "selected" : "" %>>Obligation</option>
+                      <option value="transfer" <%= selectedCashFlowRole === "transfer" ? "selected" : "" %>>Transfer</option>
                     </select>
+                    <small>Spending appears in spending reports. Obligations stay out of spending but can reserve future bills. Transfers do neither.</small>
                   </label>
                   <label>
                     Apply to Plan month
@@ -600,11 +677,17 @@
                     <button class="button button--secondary" type="submit">Save changes</button>
                   </div>
                 </form>
-                <a class="selected-detail__link" href="/format-rules?transaction=<%= encodeURIComponent(selectedTransaction.id) %>#transaction-cleanup">
-                  Edit similar transactions or create a rule <i class="ph ph-arrow-up-right" aria-hidden="true"></i>
-                </a>
+                <% if (selectedTransaction.status !== "pending") { %>
+                  <a class="selected-detail__link" href="/format-rules?transaction=<%= encodeURIComponent(selectedTransaction.id) %>#transaction-cleanup">
+                    Edit similar transactions or create a rule <i class="ph ph-arrow-up-right" aria-hidden="true"></i>
+                  </a>
+                <% } %>
               </div>
             </details>
+          <% } %>
+
+          <% if (selectedTransaction.recurringNeedsReview) { %>
+            <p class="card-note transaction-review-warning" role="status"><i class="ph ph-warning" aria-hidden="true"></i> The recurring choice needs review because the final sign, currency, or merchant identity changed. It was not attached automatically; review this charge before marking it recurring again.</p>
           <% } %>
 
           <% if (recurringPattern) { %>
@@ -618,6 +701,9 @@
               </summary>
               <div class="plan-disclosure__body transaction-disclosure__body">
                 <p class="card-note">Applies to matching charges from this merchant and account within the same amount range.</p>
+                <% if (selectedTransaction.status === "pending") { %>
+                  <p class="card-note">The pattern will re-anchor to the final amount when this charge posts.</p>
+                <% } %>
                 <% if (recurringPattern.eligible) { %>
                   <form
                     data-transaction-recurring-form
@@ -939,10 +1025,10 @@
             <% } else if (spendingDetails.emptyReason === "zero_net_spending") { %>
               <p>Included purchases and refunds cancel out for this period, so a flat $0 chart would be misleading.</p>
             <% } else { %>
-              <p><%= spendingDetails.eligibility?.matchedTransactionCount ?? transactions.length %> matching transaction<%= (spendingDetails.eligibility?.matchedTransactionCount ?? transactions.length) === 1 ? "" : "s" %> remain visible below, but they are income, transfers, pending, excluded from spending, or otherwise ineligible.</p>
+              <p><%= spendingDetails.eligibility?.matchedTransactionCount ?? transactions.length %> matching transaction<%= (spendingDetails.eligibility?.matchedTransactionCount ?? transactions.length) === 1 ? "" : "s" %> remain visible below, but they are income, Obligations, Transfers, pending, or otherwise ineligible.</p>
             <% } %>
             <% if (spendingDetails.eligibility?.excludedTransactionCount) { %>
-              <p class="card-note"><%= spendingDetails.eligibility.excludedTransactionCount %> matched row<%= spendingDetails.eligibility.excludedTransactionCount === 1 ? " is" : "s are" %> excluded from spending totals.</p>
+              <p class="card-note"><%= spendingDetails.eligibility.excludedTransactionCount %> matched row<%= spendingDetails.eligibility.excludedTransactionCount === 1 ? " has" : "s have" %> a non-Spending cash-flow role and stays out of spending totals.</p>
             <% } %>
           </div>
         </div>
@@ -963,7 +1049,7 @@
         </div>
         <div class="transaction-list-actions">
           <% if (viewer?.is_admin) { %>
-            <button class="button button--secondary" type="button" data-bulk-select-start <%= transactions.some((transaction) => transaction.status !== "pending") ? "" : "disabled" %>>
+            <button class="button button--secondary" type="button" data-bulk-select-start <%= transactions.length ? "" : "disabled" %>>
               <i class="ph ph-check-square-offset" aria-hidden="true"></i> Select &amp; edit
             </button>
           <% } %>
@@ -976,10 +1062,10 @@
         <div class="transaction-selection-bar" data-bulk-selection-bar hidden>
           <label>
             <input type="checkbox" data-bulk-select-all>
-            Select all posted on this page
+            Select all on this page
           </label>
           <strong data-bulk-selected-count role="status" aria-live="polite">0 selected</strong>
-          <span class="transaction-selection-bar__limit">Up to 100 · one-time edits only</span>
+          <span class="transaction-selection-bar__limit">Up to 100 · pending edits carry forward</span>
           <button class="button button--dark" type="button" data-bulk-edit-open disabled>Edit selected</button>
           <button class="button button--ghost" type="button" data-bulk-select-cancel>Cancel</button>
         </div>
@@ -1008,7 +1094,7 @@
               <div>
                 <p class="card-kicker">One-time edit</p>
                 <h2 id="transaction-bulk-heading">Edit <span data-bulk-dialog-count>0</span> transactions</h2>
-                <p>Only checked fields change on the selected transactions. No automatic cleanup rule is created; provider data stays untouched.</p>
+                <p>Only checked fields change on the selected transactions. Pending edits carry to posted replacements. No automatic cleanup rule is created; provider data stays untouched.</p>
               </div>
               <button class="icon-button" type="button" data-bulk-edit-close aria-label="Close bulk editor">
                 <i class="ph ph-x" aria-hidden="true"></i>
@@ -1049,12 +1135,13 @@
 
               <label class="cleanup-edit-field">
                 <span class="cleanup-edit-field__toggle">
-                  <input type="checkbox" data-bulk-change="excluded_from_spending">
-                  Spending treatment
+                  <input type="checkbox" data-bulk-change="cash_flow_role">
+                  Cash-flow role
                 </span>
-                <select disabled data-bulk-excluded>
-                  <option value="false">Include in spending</option>
-                  <option value="true">Exclude from spending</option>
+                <select disabled data-bulk-cash-flow-role>
+                  <option value="spending">Spending</option>
+                  <option value="obligation">Obligation</option>
+                  <option value="transfer">Transfer</option>
                 </select>
               </label>
 

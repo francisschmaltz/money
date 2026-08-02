@@ -60,14 +60,22 @@ reverse_goal_spend
 ```
 
 `get_safe_to_spend` returns liquid USD cash after positive current card
-balances, active USD bills expected from today through 30 days ahead, and
-cash-backed goal earmarks. Its card deliberately contains only the final
-amount, status, formula, factor names and counts, alerts, and bounded IDs for
-goals with positive cash earmarks. Call `get_finance_goal` with one of those
-IDs for dollar details. The bill projection includes only recurring streams
-classified as bills; subscriptions are deliberately excluded. Preserve the
-calculation window and occurrence/exclusion counts, and surface warnings
-instead of implying the estimate is complete.
+balances, the next occurrence of every active USD monthly bill plus other
+active USD bills due within 30 days, and cash-backed goal earmarks. Its card
+deliberately contains only the final amount, status, formula, factor names and
+counts, alerts, and bounded IDs for goals with positive cash earmarks. Call
+`get_finance_goal` with one of those IDs for dollar details. The bill projection
+includes only recurring streams classified as bills; subscriptions are
+deliberately excluded. Preserve the calculation window and
+occurrence/exclusion counts, and surface warnings instead of implying the
+estimate is complete.
+
+`list_transactions` exposes each transaction's effective `cash_flow_role`.
+`spending` appears in Spending reports, `obligation` stays out of Spending and
+appears in Plan Obligations, and `transfer` appears in neither. Bills may use
+the Spending or Obligation role and affect Safe to Spend; Transfers cannot be
+bills. `excluded_from_spending` remains only as a deprecated compatibility
+read.
 
 Money MCP v2 uses decimal currency values and ordinary percentages. Send
 `{amount: 5.21, currency: "USD"}` in card data, decimal `amount` inputs on
@@ -91,10 +99,10 @@ Before calling `spend_from_finance_goal` or `reverse_goal_spend`, call
 These writes only change virtual earmarks and transaction attribution. They do
 not move cash, pay a card, sell brokerage assets, or place a trade.
 
-Eligibility follows the transaction's effective spending treatment. A posted
-USD outflow explicitly marked **Include in spending** can be attributed to a
-goal even when its provider labels it a transfer. Untouched excluded transfers,
-pending transactions, inflows, and non-USD transactions remain ineligible.
+Eligibility follows the transaction's effective cash-flow role. A posted USD
+outflow explicitly assigned the **Spending** role can be attributed to a goal
+even when its provider labels it a transfer. Obligations, Transfers, pending
+transactions, inflows, and non-USD transactions remain ineligible.
 
 Goal spending may exceed the selected source's remaining earmark or the goal
 target. Usage may exceed 100%, but `plan_remaining` stops at zero and

@@ -62,6 +62,9 @@
               <div><dt>Detector signal</dt><dd><%= selectedRecurring.classificationSignals?.hard_negative ? "Discretionary spending category" : selectedRecurring.classificationSignals?.bill_signal ? "Bill category" : selectedRecurring.classificationSignals?.subscription_signal ? "Known subscription service" : "Cadence and amount stability" %></dd></div>
             </dl>
             <% if (viewer?.is_admin) { %>
+              <% if (selectedRecurring.cashFlowRole === "transfer") { %>
+                <p class="card-note"><i class="ph ph-info" aria-hidden="true"></i> Transfers cannot be bills or subscriptions. Change the source transaction’s cash-flow role first.</p>
+              <% } %>
               <form
                 class="settings-form"
                 data-recurring-classification
@@ -70,8 +73,8 @@
                 <label>
                   <span>Correct classification</span>
                   <select name="type">
-                    <option value="subscription" <%= selectedRecurring.type === "subscription" ? "selected" : "" %>>Subscription</option>
-                    <option value="bill" <%= selectedRecurring.type === "bill" ? "selected" : "" %>>Bill</option>
+                    <option value="subscription" <%= selectedRecurring.type === "subscription" ? "selected" : "" %> <%= selectedRecurring.cashFlowRole === "transfer" ? "disabled" : "" %>>Subscription</option>
+                    <option value="bill" <%= selectedRecurring.type === "bill" ? "selected" : "" %> <%= selectedRecurring.cashFlowRole === "transfer" ? "disabled" : "" %>>Bill</option>
                     <option value="frequent_spending" <%= selectedRecurring.type === "frequent_spending" ? "selected" : "" %>>Frequent spending</option>
                   </select>
                 </label>

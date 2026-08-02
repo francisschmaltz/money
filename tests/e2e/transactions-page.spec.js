@@ -49,6 +49,11 @@ test("bulk selection checkboxes share one centerline", async ({ page }) => {
     });
     await startSelection.focus();
     await page.keyboard.press("Enter");
+    await expect(
+      page.locator(
+        '[data-bulk-transaction-row][data-transaction-status="pending"] [data-bulk-transaction-select]',
+      ),
+    ).toBeEnabled();
 
     const alignment = await page.evaluate(() => {
       const center = (element) => {
@@ -227,7 +232,7 @@ test("transaction timelines and sort choices change the ledger", async ({
   await page.goto("/transactions?period=90&sort=cost");
   await expect(
     page.locator(".transaction-row__main strong").first(),
-  ).toHaveText("Delta Air Lines");
+  ).toHaveText("Wells Fargo Auto");
   await expect(
     page.locator(".transaction-row__main strong").last(),
   ).toHaveText(/Acme Payroll|Seacomm Transfer/);
@@ -262,7 +267,7 @@ test("one transaction can change category without creating a rule", async ({
 
   const form = page.locator("[data-transaction-category-form]");
   await expect(form).toBeVisible();
-  await form.getByLabel("Spending category").selectOption({ label: "Dining" });
+  await form.getByLabel("Category").selectOption({ label: "Dining" });
   await Promise.all([
     page.waitForRequest(
       (request) =>
@@ -320,6 +325,57 @@ test("a posted transaction can move to an exact adjacent Plan month on mobile", 
     viewport: document.documentElement.clientWidth,
   }));
   expect(geometry.right).toBeLessThanOrEqual(geometry.viewport);
+});
+
+test("pending charges expose durable edits, roles, recurrence, and splits on mobile", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  let write;
+  await page.route(
+    "**/api/v1/transactions/batch-edit",
+    async (route) => {
+      write = route.request().postDataJSON();
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ updated_count: 1 }),
+      });
+    },
+  );
+  await page.goto("/transactions?transaction=txn_con_edison");
+
+  const body = page.locator(
+    ".entity-detail-dialog__body--transaction",
+  );
+  await expect(
+    body.getByRole("heading", { name: "Transaction allocation" }),
+  ).toBeVisible();
+  await expect(body.locator(".transaction-split-editor")).toContainText(
+    "final amount may change",
+  );
+  await expect(
+    body.locator("details.transaction-recurring-pattern"),
+  ).toContainText("re-anchor to the final amount");
+
+  await body.locator("details.transaction-organize > summary").click();
+  const organizer = body.locator("details.transaction-organize");
+  const form = organizer.locator("[data-transaction-organize-form]");
+  await expect(organizer).toContainText(
+    "Pending details may change. Your edits will carry over when the charge posts.",
+  );
+  await form.getByLabel("Cash-flow role").selectOption("obligation");
+  await form.getByRole("button", { name: "Save changes" }).click();
+  await expect(form.getByRole("status")).toHaveText("Changes saved");
+
+  expect(write).toEqual({
+    transaction_ids: ["txn_con_edison"],
+    changes: { cash_flow_role: "obligation" },
+  });
+  const geometry = await body.evaluate((element) => ({
+    overflow: element.scrollWidth - element.clientWidth,
+  }));
+  expect(geometry.overflow).toBeLessThanOrEqual(1);
 });
 
 test("bulk Plan month changes stay relative to each selected posted month", async ({
@@ -438,7 +494,7 @@ test("transaction details keep custom controls compact and ahead of provider dat
   const provider = body.locator(".transaction-provider-details");
 
   await expect(
-    body.getByRole("heading", { name: "Spending allocation" }),
+    body.getByRole("heading", { name: "Transaction allocation" }),
   ).toBeVisible();
   await expect(note).not.toHaveAttribute("open", "");
   await expect(organize).not.toHaveAttribute("open", "");

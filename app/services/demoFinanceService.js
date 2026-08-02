@@ -510,6 +510,9 @@ function cloneDemoTransaction(transaction) {
   const rawName = transaction.raw_name ?? transaction.description;
   const rawCategory =
     transaction.raw_category_primary ?? transaction.category;
+  const cashFlowRole =
+    transaction.cash_flow_role ??
+    (transaction.excluded_from_spending ? "transfer" : "spending");
   return {
     ...transaction,
     account: { ...transaction.account },
@@ -523,6 +526,8 @@ function cloneDemoTransaction(transaction) {
     note_updated_by: transaction.note_updated_by ?? null,
     note_updated_at: transaction.note_updated_at ?? null,
     budget_month_on: transaction.budget_month_on ?? null,
+    cash_flow_role: cashFlowRole,
+    excluded_from_spending: cashFlowRole !== "spending",
     category_primary: transaction.category_primary ?? rawCategory,
     tags: [...(transaction.tags ?? [])],
   };
@@ -535,6 +540,10 @@ function publicDemoTransaction(transaction) {
     amount: { ...transaction.amount },
     tags: [...transaction.tags],
     split_version: Number(transaction.split_version ?? 0),
+    split_needs_review: Boolean(transaction.split_needs_review),
+    recurring_needs_review: Boolean(
+      transaction.recurring_needs_review,
+    ),
   };
 }
 
@@ -714,7 +723,12 @@ function validatedTransactionCleanupChanges(input) {
   }
   const unsupported = Object.keys(input).filter(
     (field) =>
-      !["display_name", "category_primary", "tags"].includes(field),
+      ![
+        "display_name",
+        "category_primary",
+        "cash_flow_role",
+        "tags",
+      ].includes(field),
   );
   if (unsupported.length) {
     throw transactionCleanupRuleError(
@@ -739,6 +753,19 @@ function validatedTransactionCleanupChanges(input) {
       );
     }
     changes.category_primary = category;
+  }
+  if (Object.hasOwn(input, "cash_flow_role")) {
+    const cashFlowRole = String(input.cash_flow_role ?? "")
+      .trim()
+      .toLowerCase();
+    if (
+      !["spending", "obligation", "transfer"].includes(cashFlowRole)
+    ) {
+      throw transactionCleanupRuleError(
+        "changes.cash_flow_role must be spending, obligation, or transfer",
+      );
+    }
+    changes.cash_flow_role = cashFlowRole;
   }
   if (Object.hasOwn(input, "tags")) {
     if (!Array.isArray(input.tags) || input.tags.length > 20) {
@@ -1035,6 +1062,7 @@ export class DemoFinanceService {
         {
           display_name: transaction.display_name,
           category_primary: transaction.category_primary,
+          cash_flow_role: transaction.cash_flow_role,
           tags: [...transaction.tags],
         },
       ]),
@@ -1112,6 +1140,15 @@ export class DemoFinanceService {
         )
           ? [...winner.changes.tags]
           : [...baseline.tags];
+      }
+      if (
+        !manual.has("cash_flow_role") &&
+        !manual.has("excluded_from_spending")
+      ) {
+        transaction.cash_flow_role =
+          winner?.changes.cash_flow_role ?? baseline.cash_flow_role;
+        transaction.excluded_from_spending =
+          transaction.cash_flow_role !== "spending";
       }
     }
   }
@@ -2296,7 +2333,20 @@ export class DemoFinanceService {
   }
 
   async listRecurringPayments({ kind = "all", limit = 50 } = {}) {
+    const roleByStream = new Map(
+      this.getPlanningRecurringStreams().map((stream) => [
+        stream.id,
+        stream.cash_flow_role,
+      ]),
+    );
     const streams = this.#recurring
+      .map((stream) => ({
+        ...stream,
+        cash_flow_role:
+          roleByStream.get(stream.id) ??
+          stream.cash_flow_role ??
+          "spending",
+      }))
       .filter((stream) => {
         if (kind === "subscriptions") return stream.type === "subscription";
         if (kind === "bills") return stream.type === "bill";
@@ -2320,6 +2370,48 @@ export class DemoFinanceService {
         page_info: { has_more: false, next_cursor: null },
         freshness: FRESHNESS,
       },
+    });
+  }
+
+  getPlanningRecurringStreams() {
+    const transactionsById = new Map(
+      this.#transactions.map((transaction) => [transaction.id, transaction]),
+    );
+    return this.#recurring.map((stream) => {
+      const linked = (stream.transactions ?? [])
+        .map((transaction) => transactionsById.get(transaction.id))
+        .filter(Boolean)
+        .filter((transaction) => !transaction.pending)
+        .sort((left, right) =>
+          String(left.posted_on ?? left.date).localeCompare(
+            String(right.posted_on ?? right.date),
+          ),
+        );
+      const last = linked.at(-1) ?? null;
+      return {
+        id: stream.id,
+        stream_type: stream.type,
+        cadence: stream.cadence,
+        expected_amount_minor: stream.expected_amount.amount_minor,
+        currency_code: stream.expected_amount.currency,
+        next_expected_on: stream.next_estimated_date,
+        last_seen_on: last?.posted_on ?? last?.date ?? null,
+        last_transaction: last
+          ? {
+              id: last.id,
+              posted_on: last.posted_on ?? last.date,
+              amount_minor: last.amount.amount_minor,
+              currency_code: last.amount.currency,
+            }
+          : null,
+        transaction_ids: linked.map((transaction) => transaction.id),
+        status: stream.status,
+        cash_flow_role:
+          last?.cash_flow_role ?? stream.cash_flow_role ?? "spending",
+        display_name: stream.service,
+        account_id: stream.account?.id ?? null,
+        account_name: stream.account?.name ?? null,
+      };
     });
   }
 
@@ -2700,6 +2792,48 @@ export class DemoFinanceService {
       transaction.category_primary = category;
       transaction.category = category;
     }
+    const explicitCashFlowRole =
+      input.cashFlowRole ?? input.cash_flow_role ?? null;
+    const legacyExcluded =
+      input.excludedFromSpending ??
+      input.excluded_from_spending ??
+      null;
+    if (
+      explicitCashFlowRole != null &&
+      !["spending", "obligation", "transfer"].includes(
+        explicitCashFlowRole,
+      )
+    ) {
+      const error = new TypeError(
+        "cash_flow_role must be spending, obligation, or transfer",
+      );
+      error.statusCode = 400;
+      throw error;
+    }
+    if (legacyExcluded != null && typeof legacyExcluded !== "boolean") {
+      const error = new TypeError(
+        "excluded_from_spending must be a boolean",
+      );
+      error.statusCode = 400;
+      throw error;
+    }
+    const cashFlowRole =
+      explicitCashFlowRole ??
+      (legacyExcluded == null
+        ? null
+        : legacyExcluded
+          ? "transfer"
+          : "spending");
+    if (transaction && cashFlowRole != null) {
+      let manual = this.#manualTransactionFields.get(transaction.id);
+      if (!manual) {
+        manual = new Set();
+        this.#manualTransactionFields.set(transaction.id, manual);
+      }
+      manual.add("cash_flow_role");
+      transaction.cash_flow_role = cashFlowRole;
+      transaction.excluded_from_spending = cashFlowRole !== "spending";
+    }
     return { updated: true, classification: input };
   }
 
@@ -2956,17 +3090,12 @@ export class DemoFinanceService {
       error.statusCode = 404;
       throw error;
     }
-    if (selected.some((transaction) => transaction.pending)) {
-      const error = new TypeError("Pending transactions cannot be edited");
-      error.statusCode = 400;
-      throw error;
-    }
-
     const recognizedChanges = [
       "display_name",
       "category_primary",
       "tags",
       "excluded_from_spending",
+      "cash_flow_role",
       "budget_month_offset",
     ].filter((field) => Object.hasOwn(changes, field));
     if (recognizedChanges.length === 0) {
@@ -3002,6 +3131,38 @@ export class DemoFinanceService {
       }
     }
     if (
+      Object.hasOwn(changes, "cash_flow_role") &&
+      !["spending", "obligation", "transfer"].includes(
+        changes.cash_flow_role,
+      )
+    ) {
+      const error = new TypeError(
+        "cash_flow_role must be spending, obligation, or transfer",
+      );
+      error.statusCode = 400;
+      throw error;
+    }
+    const targetCashFlowRole = Object.hasOwn(
+      changes,
+      "cash_flow_role",
+    )
+      ? changes.cash_flow_role
+      : Object.hasOwn(changes, "excluded_from_spending")
+        ? changes.excluded_from_spending
+          ? "transfer"
+          : "spending"
+        : null;
+    if (
+      targetCashFlowRole === "transfer" &&
+      selected.some(
+        (transaction) => transaction.recurring_pattern?.manual,
+      )
+    ) {
+      throw demoCategoryError(
+        "Remove the active Bill or Subscription pattern before changing its cash-flow role to Transfer.",
+      );
+    }
+    if (
       Object.hasOwn(changes, "budget_month_offset") &&
       (
         !Number.isInteger(changes.budget_month_offset) ||
@@ -3025,13 +3186,12 @@ export class DemoFinanceService {
         const displayName = String(
           changes.display_name ?? "",
         ).trim();
-        if (displayName) {
-          manual.add("display_name");
-          transaction.display_name = displayName;
-          transaction.merchant = transaction.display_name;
-        } else {
-          manual.delete("display_name");
-        }
+        manual.add("display_name");
+        transaction.display_name =
+          displayName ||
+          transaction.raw_merchant ||
+          transaction.raw_name;
+        transaction.merchant = transaction.display_name;
       }
       if (Object.hasOwn(changes, "category_primary")) {
         manual.add("category_primary");
@@ -3051,16 +3211,22 @@ export class DemoFinanceService {
         manual.add("excluded_from_spending");
         transaction.excluded_from_spending =
           changes.excluded_from_spending;
+        transaction.cash_flow_role = changes.excluded_from_spending
+          ? "transfer"
+          : "spending";
+      }
+      if (Object.hasOwn(changes, "cash_flow_role")) {
+        manual.add("cash_flow_role");
+        transaction.cash_flow_role = changes.cash_flow_role;
+        transaction.excluded_from_spending =
+          changes.cash_flow_role !== "spending";
       }
       if (Object.hasOwn(changes, "budget_month_offset")) {
         manual.add("budget_month_on");
-        transaction.budget_month_on =
-          changes.budget_month_offset === 0
-            ? null
-            : shiftDemoTransactionMonth(
-                transaction.posted_on ?? transaction.date,
-                changes.budget_month_offset,
-              );
+        transaction.budget_month_on = shiftDemoTransactionMonth(
+          transaction.posted_on ?? transaction.date,
+          changes.budget_month_offset,
+        );
       }
     }
     this.#refreshTransactionCleanupRuleApplications();
@@ -3515,7 +3681,7 @@ export class DemoFinanceService {
     if (
       !["subscription", "bill", "frequent_spending"].includes(type)
     ) {
-      throw new TypeError("Invalid recurring classification");
+      throw demoCategoryError("Invalid recurring classification");
     }
     const stream = this.#recurring.find(
       (candidate) => candidate.id === streamId,
@@ -3524,6 +3690,17 @@ export class DemoFinanceService {
       const error = new Error("Recurring stream not found");
       error.statusCode = 404;
       throw error;
+    }
+    const currentRole = this.getPlanningRecurringStreams().find(
+      (candidate) => candidate.id === streamId,
+    )?.cash_flow_role;
+    if (
+      currentRole === "transfer" &&
+      type !== "frequent_spending"
+    ) {
+      throw demoCategoryError(
+        "Transfers cannot be classified as bills or subscriptions",
+      );
     }
     stream.type = type;
     const pattern = this.#recurringPatterns.get(
@@ -3558,7 +3735,7 @@ export class DemoFinanceService {
     const type = String(input.type ?? "");
     const cadence = String(input.cadence ?? "");
     if (!["subscription", "bill"].includes(type)) {
-      throw new TypeError("type must be subscription or bill");
+      throw demoCategoryError("type must be subscription or bill");
     }
     if (
       ![
@@ -3569,7 +3746,7 @@ export class DemoFinanceService {
         "annual",
       ].includes(cadence)
     ) {
-      throw new TypeError(
+      throw demoCategoryError(
         "cadence must be weekly, biweekly, monthly, quarterly, or annual",
       );
     }
@@ -3577,19 +3754,14 @@ export class DemoFinanceService {
       (transaction) => transaction.id === transactionId,
     );
     if (!source) throw demoCategoryError("Transaction not found", 404);
-    if (source.pending) {
-      throw new TypeError(
-        "Pending transactions cannot define recurring patterns",
-      );
-    }
     if (source.amount.amount_minor >= 0) {
-      throw new TypeError(
-        "Recurring patterns require a spending transaction",
+      throw demoCategoryError(
+        "Recurring patterns require an outflow transaction",
       );
     }
-    if (source.excluded_from_spending) {
-      throw new TypeError(
-        "Transactions excluded from spending cannot define recurring patterns",
+    if (source.cash_flow_role === "transfer") {
+      throw demoCategoryError(
+        "Transfers cannot define recurring patterns",
       );
     }
     const normalizedMerchant = normalizeMerchant(
@@ -3605,6 +3777,11 @@ export class DemoFinanceService {
       matchField === "normalized_merchant"
         ? normalizedMerchant
         : normalizedName;
+    if (!normalizedValue) {
+      throw demoCategoryError(
+        "Transaction has no stable merchant or statement match",
+      );
+    }
     const anchorAmount = Math.abs(source.amount.amount_minor);
     const tolerance = Math.max(200, Math.round(anchorAmount * 0.2));
     const accountId = source.account.id;
@@ -3643,7 +3820,7 @@ export class DemoFinanceService {
               );
         return (
           !transaction.pending &&
-          !transaction.excluded_from_spending &&
+          transaction.cash_flow_role !== "transfer" &&
           transaction.amount.amount_minor < 0 &&
           transaction.account.id === accountId &&
           candidate === normalizedValue &&
@@ -3669,13 +3846,28 @@ export class DemoFinanceService {
         ineligibleReason: null,
       };
     }
+    if (source.pending) {
+      source.recurring_pattern = {
+        eligible: true,
+        manual: true,
+        patternId: pattern.id,
+        streamId: pattern.streamId,
+        type,
+        cadence,
+        cadenceSuggested: false,
+        ineligibleReason: null,
+        pending: true,
+      };
+    }
     const amounts = matches.map((transaction) =>
       Math.abs(transaction.amount.amount_minor),
     );
-    const expectedAmount = Math.round(
-      amounts.reduce((sum, amount) => sum + amount, 0) /
-        amounts.length,
-    );
+    const expectedAmount = amounts.length
+      ? Math.round(
+          amounts.reduce((sum, amount) => sum + amount, 0) /
+            amounts.length,
+        )
+      : anchorAmount;
     const last = matches.at(-1) ?? source;
     const lastDate = last.posted_on ?? last.date;
     const monthly = Math.round(
@@ -3706,6 +3898,7 @@ export class DemoFinanceService {
       },
       icon: "ph-repeat",
       category: source.category_primary ?? source.category,
+      cash_flow_role: source.cash_flow_role,
       manual_pattern_rule_id: pattern.id,
       classification_signals: {
         manual_pattern: true,

@@ -6857,6 +6857,33 @@ kbd {
   margin: 2px 0 0;
 }
 
+.obligations-heading-copy {
+  margin: 4px 0 0;
+  color: var(--ink-soft);
+  font-size: 0.78rem;
+}
+
+.obligation-row__schedule {
+  margin-top: 2px;
+}
+
+.obligation-row__schedule a,
+.obligation-row__main strong a {
+  color: inherit;
+}
+
+.obligation-row__status {
+  font-weight: 700;
+}
+
+.obligation-row__status--overdue {
+  color: var(--red);
+}
+
+.obligation-row__status--matched_pending {
+  color: #8a6700;
+}
+
 .goal-section__actions {
   display: flex;
   align-items: center;
@@ -8426,6 +8453,93 @@ svg {
   font-variant-numeric: tabular-nums;
 }
 
+.pending-edit-recoveries {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border-color: color-mix(in srgb, var(--amber) 32%, var(--line));
+  background: color-mix(in srgb, var(--amber-soft) 58%, var(--surface));
+}
+
+.pending-edit-recoveries__heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.pending-edit-recoveries__heading > i {
+  flex: none;
+  margin-top: 2px;
+  color: var(--amber);
+  font-size: 1.2rem;
+}
+
+.pending-edit-recoveries__heading h2 {
+  font-size: 0.96rem;
+}
+
+.pending-edit-recoveries__heading p,
+.pending-edit-recovery__source span,
+.pending-edit-recovery__source small,
+.pending-edit-recovery__status {
+  color: var(--ink-soft);
+  font-size: 0.76rem;
+}
+
+.pending-edit-recoveries__list {
+  display: grid;
+  gap: 10px;
+}
+
+.pending-edit-recovery {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(300px, 1.35fr) auto;
+  align-items: end;
+  gap: 10px;
+  padding-top: 10px;
+  border-top: 1px solid color-mix(in srgb, var(--amber) 22%, var(--line));
+}
+
+.pending-edit-recovery__source {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.pending-edit-recovery__source strong,
+.pending-edit-recovery__source span,
+.pending-edit-recovery__source small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pending-edit-recovery__attach {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 8px;
+}
+
+.pending-edit-recovery__attach label,
+.pending-edit-recovery__attach select {
+  min-width: 0;
+  width: 100%;
+}
+
+.pending-edit-recovery__attach select {
+  min-height: 44px;
+}
+
+.pending-edit-recovery__status {
+  grid-column: 1 / -1;
+  min-height: 1.1em;
+}
+
+.pending-edit-recovery[aria-busy="true"] {
+  opacity: 0.68;
+}
+
 .transaction-filter {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -8877,6 +8991,17 @@ svg {
 
   .account-row__balance strong {
     white-space: nowrap;
+  }
+
+  .pending-edit-recovery,
+  .pending-edit-recovery__attach {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+  }
+
+  .pending-edit-recovery > .button,
+  .pending-edit-recovery__attach .button {
+    width: 100%;
   }
 
   .transaction-filter {
