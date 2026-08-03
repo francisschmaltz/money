@@ -96,11 +96,35 @@ function viewerFromRequest(request, fallback) {
   };
 }
 
+function setReadModelServerTiming(response, timings) {
+  if (!Array.isArray(timings) || timings.length === 0) return;
+  const value = timings
+    .slice(0, 4)
+    .map((timing, index) => {
+      const model = String(timing.model ?? `model-${index + 1}`)
+        .toLowerCase()
+        .replace(/[^a-z0-9-]+/g, "-")
+        .slice(0, 40);
+      const duration = Number.isFinite(timing.totalMs)
+        ? Math.max(0, timing.totalMs)
+        : 0;
+      const outcome = ["hit", "miss", "refresh", "bypass"].includes(
+        timing.outcome,
+      )
+        ? timing.outcome
+        : "bypass";
+      return `read-model-${model};dur=${duration};desc="${outcome}"`;
+    })
+    .join(", ");
+  response.set("Server-Timing", value);
+}
+
 export function createWebRouter({
   requireAuth = (_req, _res, next) => next(),
   requireAdmin = (_req, _res, next) => next(),
   financeService = null,
   planningService = null,
+  readModelService = null,
   demoMode = false,
   demoScenario = "default",
   mapkitTokenProvider = null,
@@ -158,32 +182,51 @@ export function createWebRouter({
     { dataView = view, locals = {} } = {},
   ) {
     const pageTitle = pageMeta(req.path);
-    const planning =
+    let planning = null;
+    let serviceModel = null;
+    if (
       dataView === "dashboard" &&
       typeof planningService?.getSafeToSpend === "function"
-        ? {
-            safeToSpend: (
-              await planningService.getSafeToSpend()
-            ).data,
-          }
-        : dataView === "plan" &&
-            typeof planningService?.getPlanningOverview === "function"
-          ? await planningService.getPlanningOverview({
-              month_on: null,
-            })
-          : null;
-    const serviceModel =
-      dataView === "plan"
-        ? planning
-        : demoMode
-          ? await demoPageModel(
-              dataView,
-              req.query,
-              demo,
-              financeService,
-              planningService,
-            )
-          : await financeService?.getPageData?.(dataView, req);
+    ) {
+      const loadDashboard = () =>
+        Promise.all([
+          planningService.getSafeToSpend({}, req),
+          demoMode
+            ? demoPageModel(
+                dataView,
+                req.query,
+                demo,
+                financeService,
+                planningService,
+              )
+            : financeService?.getPageData?.(dataView, req),
+        ]);
+      const [safeToSpend, finance] =
+        typeof readModelService?.runCoherentRequest === "function"
+          ? await readModelService.runCoherentRequest(req, loadDashboard)
+          : await loadDashboard();
+      planning = { safeToSpend: safeToSpend.data };
+      serviceModel = finance;
+    } else if (
+      dataView === "plan" &&
+      typeof planningService?.getPlanningOverview === "function"
+    ) {
+      planning = await planningService.getPlanningOverview(
+        { month_on: null },
+        req,
+      );
+      serviceModel = planning;
+    } else {
+      serviceModel = demoMode
+        ? await demoPageModel(
+            dataView,
+            req.query,
+            demo,
+            financeService,
+            planningService,
+          )
+        : await financeService?.getPageData?.(dataView, req);
+    }
     if (!demoMode && dataView !== "plan") {
       assertPageModel(dataView, serviceModel);
     }
@@ -215,7 +258,7 @@ export function createWebRouter({
             })
           : null,
         typeof planningService?.getSafeToSpend === "function"
-          ? planningService.getSafeToSpend()
+          ? planningService.getSafeToSpend({}, req)
           : null,
       ]);
       if (split) {
@@ -228,6 +271,7 @@ export function createWebRouter({
       serviceModel.selectedTransactionGoals =
         safeToSpend?.data?.goals ?? [];
     }
+    setReadModelServerTiming(res, req.readModelTimings);
     if (view === "dashboard" && serviceModel?.hasAccounts === false) {
       res.render("states/empty", {
         viewer: viewerFromRequest(req, null),

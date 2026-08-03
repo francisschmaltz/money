@@ -124,6 +124,7 @@ export function createApp({
   appleCardImportService,
   oidcConfiguration = null,
   mapkitTokenProvider = null,
+  readModelService = null,
 } = {}) {
   if (!config) throw new TypeError("config is required.");
 
@@ -233,6 +234,7 @@ export function createApp({
     response.status(ready ? 200 : 503).json({
       status: ready ? "ready" : "not_ready",
       database: databaseReady ? "ready" : "unavailable",
+      cache: readModelService?.status?.() ?? "disabled",
       ...(state.failures.length ? { missing: state.failures } : {}),
     });
   });
@@ -355,6 +357,7 @@ export function createApp({
       requireAdmin,
       financeService,
       planningService,
+      readModelService,
       demoMode: config.demoMode,
       demoScenario: config.demoScenario,
       mapkitTokenProvider: effectiveMapkitTokenProvider,

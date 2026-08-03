@@ -208,19 +208,25 @@ export class AppleCardImportService {
     const connection =
       await this.#repository.getAppleCardConnection(this.#workspaceId);
     if (!connection) return false;
-    await this.#repository.removeFinanceConnection(connection.id, {
-      retainHistory,
-    });
+    const removed = await this.#repository.removeFinanceConnection(
+      connection.id,
+      { retainHistory },
+    );
+    if (!removed) return false;
     await this.#enqueueDerived();
     return true;
   }
 
   async #enqueueDerived() {
     if (!this.#jobQueue) return;
+    const client = this.#repository.transactionClient?.() ?? null;
     await this.#jobQueue.enqueue(
       "finance.detect_recurring",
       { workspaceId: this.#workspaceId },
-      { dedupeKey: this.#workspaceId },
+      {
+        dedupeKey: this.#workspaceId,
+        ...(client ? { client } : {}),
+      },
     );
   }
 }

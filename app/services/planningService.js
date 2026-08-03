@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
 
 import { formatMinorMoney } from "../currency.js";
 import { money, shiftDateOnly } from "./analytics.js";
@@ -53,6 +54,7 @@ export class PlanningService {
   #currency;
   #now;
   #baseUrl;
+  #readContext = new AsyncLocalStorage();
 
   constructor({
     repository,
@@ -74,8 +76,105 @@ export class PlanningService {
     this.#baseUrl = baseUrl.replace(/\/$/, "");
   }
 
+  #memoizedRead(key, operation) {
+    const context = this.#readContext.getStore();
+    if (!context) return operation();
+    if (!context.has(key)) {
+      context.set(key, Promise.resolve().then(operation));
+    }
+    return context.get(key);
+  }
+
+  #workspaceTimezone() {
+    return this.#memoizedRead("workspace-timezone", () =>
+      typeof this.#repository.getWorkspaceTimezone === "function"
+        ? this.#repository.getWorkspaceTimezone(this.#workspaceId)
+        : "America/Los_Angeles",
+    );
+  }
+
+  #dataFreshness() {
+    return this.#memoizedRead("data-freshness", () =>
+      this.#financeRepository.getDataFreshness(this.#workspaceId),
+    );
+  }
+
+  #budgetCategoryVersions() {
+    return this.#memoizedRead("budget-category-versions", () =>
+      typeof this.#repository.listBudgetCategoryVersions === "function"
+        ? this.#repository.listBudgetCategoryVersions(this.#workspaceId)
+        : [],
+    );
+  }
+
+  #spendingCategories() {
+    return this.#memoizedRead("spending-categories", () =>
+      typeof this.#financeRepository.listSpendingCategories === "function"
+        ? this.#financeRepository.listSpendingCategories(this.#workspaceId)
+        : [],
+    );
+  }
+
+  #budgetSettings() {
+    return this.#memoizedRead("budget-settings", () =>
+      typeof this.#repository.getBudgetSettings === "function"
+        ? this.#repository.getBudgetSettings(this.#workspaceId)
+        : { version: 0, income_category_ids: [] },
+    );
+  }
+
+  #budgetIncome({ categories, budgetSettings, currentMonth }) {
+    return this.#memoizedRead("budget-income", async () => {
+      const incomeCategoryIds = budgetSettings.income_category_ids ?? [];
+      const selectedIncomeIds = categorySubtreeIds(
+        categories,
+        incomeCategoryIds,
+      );
+      const incomeStart = addMonthsToMonth(currentMonth, -4);
+      const [incomeTransactions, incomeSplits] = incomeCategoryIds.length
+        ? await Promise.all([
+            this.#financeRepository.getTransactionsForPeriod(
+              this.#workspaceId,
+              {
+                startOn: incomeStart,
+                endOn: currentMonth,
+                dateMode: "budget",
+              },
+            ),
+            this.#repository.listTransactionSplits(
+              this.#workspaceId,
+              {
+                startOn: incomeStart,
+                endOn: currentMonth,
+                dateMode: "budget",
+              },
+            ),
+          ])
+        : [[], []];
+      const averageIncomeMinor = incomeCategoryIds.length
+        ? Math.round(
+            netIncomeForTransactions(
+              incomeTransactions,
+              selectedIncomeIds,
+              this.#currency,
+              incomeSplits,
+            ) / 4,
+          )
+        : 0;
+      return {
+        averageIncomeMinor,
+        incomeCategoryIds,
+        selectedIncomeIds,
+      };
+    });
+  }
+
   async getSafeToSpend() {
     const state = await this.#planningState();
+    return this.#safeToSpendResult(state);
+  }
+
+  #safeToSpendResult(state) {
     return result({
       data: state.snapshot,
       freshness: state.freshness,
@@ -207,9 +306,7 @@ export class PlanningService {
     month_on = null,
     include_available_categories = false,
   } = {}) {
-    const timeZone = await this.#repository.getWorkspaceTimezone(
-      this.#workspaceId,
-    );
+    const timeZone = await this.#workspaceTimezone();
     const month = monthStart(
       month_on == null
         ? workspaceDate(this.#now(), timeZone)
@@ -235,21 +332,9 @@ export class PlanningService {
           null,
           { includeExact: month < currentMonth },
         ),
-        typeof this.#repository.listBudgetCategoryVersions ===
-        "function"
-          ? this.#repository.listBudgetCategoryVersions(
-              this.#workspaceId,
-            )
-          : [],
-        typeof this.#financeRepository.listSpendingCategories ===
-        "function"
-          ? this.#financeRepository.listSpendingCategories(
-              this.#workspaceId,
-            )
-          : [],
-        typeof this.#repository.getBudgetSettings === "function"
-          ? this.#repository.getBudgetSettings(this.#workspaceId)
-          : { version: 0, income_category_ids: [] },
+        this.#budgetCategoryVersions(),
+        this.#spendingCategories(),
+        this.#budgetSettings(),
         this.#financeRepository.getTransactionsForPeriod(
           this.#workspaceId,
           { startOn: month, endOn, dateMode: "budget" },
@@ -259,10 +344,17 @@ export class PlanningService {
           endOn,
           dateMode: "budget",
         }),
-        this.#financeRepository.getDataFreshness(this.#workspaceId),
+        this.#dataFreshness(),
       ]);
-    const incomeCategoryIds =
-      budgetSettings.income_category_ids ?? [];
+    const {
+      averageIncomeMinor,
+      incomeCategoryIds,
+      selectedIncomeIds,
+    } = await this.#budgetIncome({
+      categories,
+      budgetSettings,
+      currentMonth,
+    });
     const goalSpendTotals =
       typeof this.#repository.listActiveGoalSpendTotals ===
         "function" && transactions.length
@@ -282,47 +374,12 @@ export class PlanningService {
       goal_attributed_minor:
         goalAttributedByTransaction.get(transaction.id) ?? 0,
     }));
-    const selectedIncomeIds = categorySubtreeIds(
-      categories,
-      incomeCategoryIds,
-    );
     const actualIncomeMinor = netIncomeForTransactions(
       transactions,
       selectedIncomeIds,
       this.#currency,
       splits,
     );
-    const incomeStart = addMonthsToMonth(currentMonth, -4);
-    const [incomeTransactions, incomeSplits] = incomeCategoryIds.length
-      ? await Promise.all([
-          this.#financeRepository.getTransactionsForPeriod(
-            this.#workspaceId,
-            {
-              startOn: incomeStart,
-              endOn: currentMonth,
-              dateMode: "budget",
-            },
-          ),
-          this.#repository.listTransactionSplits(
-            this.#workspaceId,
-            {
-              startOn: incomeStart,
-              endOn: currentMonth,
-              dateMode: "budget",
-            },
-          ),
-        ])
-      : [[], []];
-    const averageIncomeMinor = incomeCategoryIds.length
-      ? Math.round(
-          netIncomeForTransactions(
-            incomeTransactions,
-            selectedIncomeIds,
-            this.#currency,
-            incomeSplits,
-          ) / 4,
-        )
-      : 0;
     const data = buildBudgetStatus({
       monthOn: month,
       budgetLines,
@@ -584,17 +641,30 @@ export class PlanningService {
   }
 
   async getPlanningOverview({ month_on = null } = {}) {
+    if (!this.#readContext.getStore()) {
+      return this.#readContext.run(new Map(), () =>
+        this.getPlanningOverview({ month_on }),
+      );
+    }
+    const timeZone = await this.#workspaceTimezone();
+    const requestedMonth = monthStart(
+      month_on == null
+        ? workspaceDate(this.#now(), timeZone)
+        : requiredDate(month_on, "month_on"),
+    );
     const [
-      safe,
       budget,
+      previousBudget,
       goalState,
       scheduleRuns,
       auditEvents,
     ] = await Promise.all([
-      this.getSafeToSpend(),
       this.getBudgetStatus({
-        month_on,
+        month_on: requestedMonth,
         include_available_categories: true,
+      }),
+      this.getBudgetStatus({
+        month_on: previousMonth(requestedMonth),
       }),
       this.#planningState({ includeArchived: true }),
       this.#repository.listGoalScheduleRuns(this.#workspaceId, {
@@ -602,9 +672,7 @@ export class PlanningService {
       }),
       this.#repository.listAuditEvents(this.#workspaceId, { limit: 30 }),
     ]);
-    const previousBudget = await this.getBudgetStatus({
-      month_on: previousMonth(budget.data.month_on),
-    });
+    const safe = this.#safeToSpendResult(goalState);
     const scheduleAlerts = scheduleRuns
       .filter((run) => run.status === "skipped_brokerage_capacity")
       .map((run) => ({
@@ -1959,10 +2027,8 @@ export class PlanningService {
               { includeInactive: false },
             )
           : [],
-        this.#financeRepository.getDataFreshness(this.#workspaceId),
-        typeof this.#repository.getWorkspaceTimezone === "function"
-          ? this.#repository.getWorkspaceTimezone(this.#workspaceId)
-          : "America/Los_Angeles",
+        this.#dataFreshness(),
+        this.#workspaceTimezone(),
       ]);
     const asOf = workspaceDate(this.#now(), timeZone);
     const snapshot = buildPlanningSnapshot({

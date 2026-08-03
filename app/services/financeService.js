@@ -1,3 +1,5 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+
 import {
   buildCashFlow,
   buildBalanceSummary,
@@ -92,6 +94,7 @@ export class FinanceService {
   #currency;
   #baseUrl;
   #narrativeService;
+  #pageReadContext = new AsyncLocalStorage();
 
   constructor({
     repository,
@@ -110,6 +113,19 @@ export class FinanceService {
     this.#workspaceId = workspaceId;
     this.#currency = currency;
     this.#baseUrl = baseUrl.replace(/\/$/, "");
+  }
+
+  #dataFreshness() {
+    const context = this.#pageReadContext.getStore();
+    if (!context) {
+      return this.#repository.getDataFreshness(this.#workspaceId);
+    }
+    if (!context.freshness) {
+      context.freshness = Promise.resolve().then(() =>
+        this.#repository.getDataFreshness(this.#workspaceId),
+      );
+    }
+    return context.freshness;
   }
 
   async getFinanceOverview({ asOf, as_of } = {}) {
@@ -156,7 +172,7 @@ export class FinanceService {
       historical
         ? []
         : this.#repository.listRecurringStreams(this.#workspaceId),
-      this.#repository.getDataFreshness(this.#workspaceId),
+      this.#dataFreshness(),
       historical
         ? optionalRepositoryCall(
             this.#repository,
@@ -278,7 +294,7 @@ export class FinanceService {
       this.#repository.listAccounts(this.#workspaceId, {
         includeInactive: includeClosed,
       }),
-      this.#repository.getDataFreshness(this.#workspaceId),
+      this.#dataFreshness(),
       optionalRepositoryCall(
         this.#repository,
         "listManualAssets",
@@ -392,7 +408,7 @@ export class FinanceService {
     const [accounts, snapshotResult, freshness] = await Promise.all([
       this.#repository.listAccounts(this.#workspaceId),
       snapshotRead,
-      this.#repository.getDataFreshness(this.#workspaceId),
+      this.#dataFreshness(),
     ]);
     const { snapshots } = snapshotResult;
     if (snapshotResult.error) {
@@ -551,7 +567,7 @@ export class FinanceService {
         this.#workspaceId,
         repositoryOptions,
       ),
-      this.#repository.getDataFreshness(this.#workspaceId),
+      this.#dataFreshness(),
     ]);
     const transactions = page.transactions.map(transactionCard);
     const pending = transactions.filter(
@@ -631,7 +647,7 @@ export class FinanceService {
             endOn: current.end_on,
           },
         ),
-        this.#repository.getDataFreshness(this.#workspaceId),
+        this.#dataFreshness(),
         groupBy === "category" || category
           ? optionalRepositoryCall(
               this.#repository,
@@ -715,7 +731,7 @@ export class FinanceService {
           endOn: current.end_on,
         },
       ),
-      this.#repository.getDataFreshness(this.#workspaceId),
+      this.#dataFreshness(),
       category
         ? optionalRepositoryCall(
             this.#repository,
@@ -775,7 +791,7 @@ export class FinanceService {
       this.#repository.listRecurringStreams(this.#workspaceId, {
         includeInactive,
       }),
-      this.#repository.getDataFreshness(this.#workspaceId),
+      this.#dataFreshness(),
     ]);
     const filtered = streams.filter(
       (stream) =>
@@ -850,7 +866,7 @@ export class FinanceService {
         startOn,
         endOn,
       }),
-      this.#repository.getDataFreshness(this.#workspaceId),
+      this.#dataFreshness(),
       optionalRepositoryCall(
         this.#repository,
         "listManualAssets",
@@ -950,7 +966,7 @@ export class FinanceService {
           startOn,
           endOn,
         }),
-        this.#repository.getDataFreshness(this.#workspaceId),
+        this.#dataFreshness(),
         optionalRepositoryCall(
           this.#repository,
           "listAccounts",
@@ -1098,7 +1114,7 @@ export class FinanceService {
           this.#workspaceId,
           findingQuery,
         ),
-        this.#repository.getDataFreshness(this.#workspaceId),
+        this.#dataFreshness(),
         optionalRepositoryCall(
           this.#repository,
           "getInsightSettings",
@@ -2405,9 +2421,7 @@ export class FinanceService {
   }
 
   async getInsightStatus() {
-    const freshness = await this.#repository.getDataFreshness(
-      this.#workspaceId,
-    );
+    const freshness = await this.#dataFreshness();
     return this.#buildInsightStatus(freshness);
   }
 
@@ -3192,11 +3206,44 @@ export class FinanceService {
     return { split: true, category: split };
   }
 
-  async getPageData(view, request = {}) {
-    const query = request.query ?? {};
-    const freshness = await this.#repository.getDataFreshness(
-      this.#workspaceId,
+  async getTransactionPageOverlay(transactionId) {
+    const id = requiredId(transactionId, "transaction_id");
+    const [transaction, recurringContext] = await Promise.all([
+      this.#repository.getTransaction(this.#workspaceId, id, {
+        includeProviderLocation: true,
+      }),
+      optionalRepositoryCall(
+        this.#repository,
+        "getTransactionRecurringContext",
+        null,
+        this.#workspaceId,
+        id,
+      ),
+    ]);
+    if (!transaction) return { selectedTransaction: null };
+    const selectedTransaction = webTransaction(
+      {
+        ...transactionCard(transaction),
+        location: transactionLocation(transaction.provider_location),
+      },
+      { includeLocation: true },
     );
+    selectedTransaction.recurringPattern =
+      webTransactionRecurringContext(
+        selectedTransaction,
+        recurringContext,
+      );
+    return { selectedTransaction };
+  }
+
+  async getPageData(view, request = {}) {
+    if (!this.#pageReadContext.getStore()) {
+      return this.#pageReadContext.run({}, () =>
+        this.getPageData(view, request),
+      );
+    }
+    const query = request.query ?? {};
+    const freshness = await this.#dataFreshness();
     const base = {
       freshness: freshnessLabel(freshness),
     };
@@ -3376,7 +3423,9 @@ export class FinanceService {
               endOn: periods.end_on,
             },
           ),
-          this.listAccounts({ limit: 100 }),
+          this.#repository.listAccounts(this.#workspaceId, {
+            includeInactive: false,
+          }),
           this.#repository.listTransactionCategories(this.#workspaceId),
           optionalRepositoryCall(
             this.#repository,
@@ -3482,7 +3531,9 @@ export class FinanceService {
             activeSegmentKey: null,
           },
         ),
-        accounts: flattenAccountGroups(accounts.data.groups).map(webAccount),
+        accounts: accounts.map((account) =>
+          webAccount(accountCard(account)),
+        ),
         categories: categoryDefinitions.length
           ? categoryDefinitions.map((category) => ({
               value: category.id,
@@ -3804,10 +3855,14 @@ export class FinanceService {
 
   async #enqueueRecompute() {
     if (!this.#jobQueue) return false;
+    const client = this.#repository.transactionClient?.() ?? null;
     await this.#jobQueue.enqueue(
       "finance.detect_recurring",
       { workspaceId: this.#workspaceId },
-      { dedupeKey: this.#workspaceId },
+      {
+        dedupeKey: this.#workspaceId,
+        ...(client ? { client } : {}),
+      },
     );
     return true;
   }

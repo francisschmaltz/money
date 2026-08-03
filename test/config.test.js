@@ -34,6 +34,63 @@ test("database TLS verification defaults on and can be explicitly disabled", () 
   assert.equal(config.database.sslRejectUnauthorized, false);
 });
 
+test("read-model cache defaults off and validates Redis configuration", () => {
+  const defaults = loadConfig({ NODE_ENV: "test", DEMO_MODE: "true" });
+  assert.deepEqual(defaults.readModelCache, {
+    mode: "off",
+    redisUrl: "",
+  });
+
+  const configured = loadConfig({
+    NODE_ENV: "test",
+    DEMO_MODE: "true",
+    READ_MODEL_CACHE_MODE: "serve",
+    REDIS_URL: "redis://redis.example:6379",
+  });
+  assert.equal(configured.readModelCache.mode, "serve");
+  assert.equal(
+    configured.readModelCache.redisUrl,
+    "redis://redis.example:6379",
+  );
+
+  assert.throws(
+    () =>
+      loadConfig({
+        NODE_ENV: "test",
+        DEMO_MODE: "true",
+        READ_MODEL_CACHE_MODE: "warm",
+      }),
+    /REDIS_URL is required/,
+  );
+  assert.throws(
+    () =>
+      loadConfig({
+        NODE_ENV: "test",
+        DEMO_MODE: "true",
+        READ_MODEL_CACHE_MODE: "serve",
+        REDIS_URL: "https://redis.example",
+      }),
+    /redis:\/\/ or rediss:\/\//,
+  );
+});
+
+test("production caching accepts configured Redis endpoints", () => {
+  const production = {
+    NODE_ENV: "production",
+    AUTH_MODE: "oidc",
+    PUBLIC_BASE_URL: "https://money.example.com",
+    DATABASE_URL: "postgres://money:secret@db/money",
+    READ_MODEL_CACHE_MODE: "warm",
+  };
+  assert.equal(
+    loadConfig({
+      ...production,
+      REDIS_URL: "redis://redis.example:6379",
+    }).readModelCache.mode,
+    "warm",
+  );
+});
+
 test("production rejects mock authentication", () => {
   assert.throws(
     () =>

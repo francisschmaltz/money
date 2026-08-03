@@ -179,6 +179,7 @@ test("Plaid removal queues one derived-data rebuild after invalidation", async (
         assert.equal(itemId, "item-1");
         assert.deepEqual(options, { retainHistory: true });
         events.push("invalidate");
+        return true;
       },
     },
     secretRepository: {
@@ -207,8 +208,8 @@ test("Plaid removal queues one derived-data rebuild after invalidation", async (
   );
   assert.deepEqual(events, [
     "provider",
-    "secret",
     "invalidate",
+    "secret",
     "recompute",
   ]);
 });

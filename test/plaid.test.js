@@ -490,6 +490,100 @@ test("sync service keeps credentials at the secret boundary and preserves pendin
   assert.ok(states.some((state) => state.status === "active"));
 });
 
+test("sync fences read models before its first write and publishes after success", async () => {
+  const { service, events } = readModelFenceSyncHarness();
+
+  await service.syncItem("local-item", { enqueueDerived: false });
+
+  const markIndex = events.indexOf("mark:shared:local-item:1");
+  assert.ok(markIndex > events.indexOf("tx:start:1"));
+  assert.ok(markIndex < events.indexOf("run:start:1"));
+  assert.ok(markIndex < events.indexOf("item:syncing:1"));
+  assert.ok(markIndex < events.indexOf("provider:accounts:none"));
+  assert.ok(markIndex < events.indexOf("accounts:upsert:none"));
+  assert.equal(events[0], "lock:acquire:local-item");
+  assert.equal(events.at(-1), "lock:release:local-item");
+  assert.deepEqual(
+    events.filter((event) => event.startsWith("publish:")),
+    ["publish:shared:local-item:plaid.sync-finished:2"],
+  );
+  assert.ok(
+    events.indexOf("run:finish:succeeded:2") <
+      events.indexOf(
+        "publish:shared:local-item:plaid.sync-finished:2",
+      ),
+  );
+  assert.ok(
+    events.indexOf(
+      "publish:shared:local-item:plaid.sync-finished:2",
+    ) <
+      events.indexOf("tx:commit:2"),
+  );
+});
+
+test("a partially applied sync publishes its failure boundary", async () => {
+  const syncError = new Error("transaction page failed");
+  const { service, events } = readModelFenceSyncHarness({ syncError });
+
+  await assert.rejects(
+    service.syncItem("local-item", { enqueueDerived: false }),
+    syncError,
+  );
+
+  assert.ok(events.includes("accounts:upsert:none"));
+  assert.deepEqual(
+    events.filter((event) => event.startsWith("mark:")),
+    ["mark:shared:local-item:1"],
+  );
+  assert.deepEqual(
+    events.filter((event) => event.startsWith("publish:")),
+    ["publish:shared:local-item:plaid.sync-partial-failure:2"],
+  );
+  assert.ok(
+    events.indexOf("run:finish:failed:2") <
+      events.indexOf(
+        "publish:shared:local-item:plaid.sync-partial-failure:2",
+      ),
+  );
+  assert.ok(
+    events.indexOf(
+      "publish:shared:local-item:plaid.sync-partial-failure:2",
+    ) <
+      events.indexOf("tx:commit:2"),
+  );
+});
+
+test("missing Plaid Items and credentials do not touch the read-model fence", async () => {
+  for (const scenario of [
+    {
+      options: { item: null },
+      message: "Item not found",
+    },
+    {
+      options: { accessToken: null },
+      message: "credential not found",
+    },
+  ]) {
+    const { service, events } = readModelFenceSyncHarness(
+      scenario.options,
+    );
+
+    await assert.rejects(
+      service.syncItem("local-item", { enqueueDerived: false }),
+      new RegExp(scenario.message, "i"),
+    );
+    assert.equal(
+      events.some(
+        (event) =>
+          event.startsWith("mark:") ||
+          event.startsWith("publish:") ||
+          event.startsWith("tx:start:"),
+      ),
+      false,
+    );
+  }
+});
+
 test("sync service does not request unsupported liability details for auto loans", async () => {
   let liabilityRequests = 0;
   const { service, states } = liabilitySyncHarness({
@@ -725,4 +819,137 @@ function liabilitySyncHarness({ account, getLiabilities }) {
     now: () => new Date("2026-08-01T12:00:00Z"),
   });
   return { service, states };
+}
+
+function readModelFenceSyncHarness({
+  item = {
+    id: "local-item",
+    workspace_id: "shared",
+    institution_name: "Bank",
+    transactions_cursor: null,
+    status: "active",
+  },
+  accessToken = "access-token",
+  syncError = null,
+} = {}) {
+  const events = [];
+  let currentClient = null;
+  let transactionNumber = 0;
+  const record = (label) => {
+    events.push(`${label}:${currentClient?.number ?? "none"}`);
+  };
+  const repository = {
+    async withPlaidSyncLock(itemId, operation) {
+      events.push(`lock:acquire:${itemId}`);
+      try {
+        return await operation();
+      } finally {
+        events.push(`lock:release:${itemId}`);
+      }
+    },
+    async transaction(operation) {
+      const previousClient = currentClient;
+      const client = { number: ++transactionNumber };
+      currentClient = client;
+      record("tx:start");
+      try {
+        const result = await operation(client);
+        record("tx:commit");
+        return result;
+      } catch (error) {
+        record("tx:rollback");
+        throw error;
+      } finally {
+        currentClient = previousClient;
+      }
+    },
+    async getPlaidItem() {
+      record("item:get");
+      return item;
+    },
+    async startSyncRun() {
+      record("run:start");
+      return "run";
+    },
+    async updatePlaidItemState(_itemId, state) {
+      record(`item:${state.status}`);
+    },
+    async upsertAccounts() {
+      record("accounts:upsert");
+    },
+    async deactivateMissingAccounts() {
+      record("accounts:deactivate");
+    },
+    async applyTransactionSync() {
+      record("transactions:apply");
+    },
+    async takeDailySnapshots() {
+      record("snapshots:take");
+    },
+    async rebuildSearchDocuments() {
+      record("search:rebuild");
+    },
+    async finishSyncRun(_runId, result) {
+      record(`run:finish:${result.status}`);
+    },
+  };
+  const provider = {
+    async getAccounts() {
+      record("provider:accounts");
+      return {
+        accounts: [
+          {
+            account_id: "provider-account",
+            name: "Checking",
+            type: "depository",
+            subtype: "checking",
+            balances: {
+              current: 100,
+              available: 90,
+              iso_currency_code: "USD",
+            },
+          },
+        ],
+      };
+    },
+    async syncTransactions() {
+      record("provider:transactions");
+      if (syncError) throw syncError;
+      return {
+        added: [],
+        modified: [],
+        removed: [],
+        nextCursor: "cursor",
+      };
+    },
+  };
+  const service = new PlaidSyncService({
+    provider,
+    repository,
+    secretRepository: {
+      async get() {
+        record("secret:get");
+        return accessToken;
+      },
+    },
+    now: () => new Date("2026-08-01T12:00:00Z"),
+    async markReadModelSourceUnstable(client, workspaceId, itemId) {
+      assert.equal(client, currentClient);
+      events.push(
+        `mark:${workspaceId}:${itemId}:${client.number}`,
+      );
+    },
+    async publishReadModelBoundary(
+      client,
+      workspaceId,
+      itemId,
+      reason,
+    ) {
+      assert.equal(client, currentClient);
+      events.push(
+        `publish:${workspaceId}:${itemId}:${reason}:${client.number}`,
+      );
+    },
+  });
+  return { service, events };
 }

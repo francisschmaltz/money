@@ -1,11 +1,19 @@
 import { randomUUID } from "node:crypto";
 
+function readModelCacheUnavailable() {
+  const error = new Error("Read-model Redis warm is unavailable");
+  error.name = "ReadModelCacheUnavailableError";
+  return error;
+}
+
 export class FinanceWorker {
   #queue;
   #handlers;
   #workerId;
   #pollIntervalMs;
   #timer = null;
+  #recoveryTimer = null;
+  #recoveryOperation = null;
   #running = false;
   #activeOperation = null;
 
@@ -16,6 +24,8 @@ export class FinanceWorker {
     recurringService,
     insightService,
     planningService = null,
+    readModelService = null,
+    readModelPublisher = null,
     workerId = `money-${randomUUID()}`,
     pollIntervalMs = 1_000,
   }) {
@@ -30,9 +40,22 @@ export class FinanceWorker {
       [
         "finance.detect_recurring",
         async (payload) => {
-          await recurringService.detectAndStore({
-            workspaceId: payload.workspaceId,
-          });
+          const detect = () =>
+            recurringService.detectAndStore({
+              workspaceId: payload.workspaceId,
+            });
+          const publishesEachStage =
+            typeof readModelPublisher?.mutate === "function";
+          if (publishesEachStage) {
+            await readModelPublisher.mutate(
+              "recurring.settled",
+              detect,
+              { assumeChanged: true },
+            );
+          } else {
+            await detect();
+            await readModelPublisher?.publish?.("recurring.settled");
+          }
           await this.#queue.enqueue(
             "finance.generate_insights",
             { workspaceId: payload.workspaceId },
@@ -57,9 +80,19 @@ export class FinanceWorker {
             );
             return;
           }
-          return insightService.generateAll({
-            workspaceId: payload.workspaceId,
-          });
+          const generate = () =>
+            insightService.generateAll({
+              workspaceId: payload.workspaceId,
+            });
+          if (typeof readModelPublisher?.mutate === "function") {
+            return readModelPublisher.mutate(
+              "insights.settled",
+              generate,
+            );
+          }
+          const result = await generate();
+          await readModelPublisher?.publish?.("insights.settled");
+          return result;
         },
       ],
       [
@@ -80,17 +113,89 @@ export class FinanceWorker {
               enqueueDerived: false,
             });
           }
-          await repository.takeDailySnapshots(
-            payload.workspaceId,
-            new Date().toISOString().slice(0, 10),
-          );
-          await recurringService.detectAndStore({
-            workspaceId: payload.workspaceId,
-          });
-          await insightService.generateAll({
-            workspaceId: payload.workspaceId,
-          });
+          const takeSnapshots = async () => {
+            await repository.takeDailySnapshots(
+              payload.workspaceId,
+              new Date().toISOString().slice(0, 10),
+            );
+            return { updated: true };
+          };
+          const publishesEachStage =
+            typeof readModelPublisher?.mutate === "function";
+          if (publishesEachStage) {
+            await readModelPublisher.mutate(
+              "nightly.snapshots",
+              takeSnapshots,
+              { assumeChanged: true },
+            );
+            await readModelPublisher.mutate(
+              "nightly.recurring",
+              () => recurringService.detectAndStore({
+                workspaceId: payload.workspaceId,
+              }),
+              { assumeChanged: true },
+            );
+            await readModelPublisher.mutate(
+              "nightly.insights",
+              () => insightService.generateAll({
+                workspaceId: payload.workspaceId,
+              }),
+            );
+          } else {
+            await takeSnapshots();
+            await recurringService.detectAndStore({
+              workspaceId: payload.workspaceId,
+            });
+            await insightService.generateAll({
+              workspaceId: payload.workspaceId,
+            });
+          }
           await planningService?.processDueGoalSchedules?.();
+          if (publishesEachStage) {
+            await readModelPublisher?.queueWarm?.("nightly.settled");
+          } else {
+            await readModelPublisher?.publish?.("nightly.settled");
+          }
+        },
+      ],
+      [
+        "finance.warm_read_models",
+        async (payload) => {
+          if (!readModelService) return;
+          const cacheStatus = readModelService.status?.();
+          if (cacheStatus === "disabled") return;
+          if (cacheStatus === "degraded") {
+            const recovered =
+              await readModelService.recoverCache?.();
+            if (!recovered) throw readModelCacheUnavailable();
+          }
+          if (
+            typeof this.#queue.hasPendingReadModelDependencies ===
+              "function" &&
+            (await this.#queue.hasPendingReadModelDependencies(
+              payload.workspaceId,
+            ))
+          ) {
+            await readModelPublisher?.queueWarm?.(
+              payload.reason ?? "dependency-wait",
+              payload.revision ?? null,
+              {
+                runAt: new Date(Date.now() + 15_000),
+                strict: true,
+              },
+            );
+            return;
+          }
+          const result = await readModelService.warmCanonicalModels({
+            reason: payload.reason ?? "scheduled",
+          });
+          if (result.changedDuringWarm) {
+            await readModelPublisher?.queueWarm?.(
+              "revision-changed",
+              result.revision,
+              { strict: true },
+            );
+          }
         },
       ],
     ]);
@@ -101,11 +206,22 @@ export class FinanceWorker {
       jobTypes: [...this.#handlers.keys()],
     });
     if (!job) return false;
+    const heartbeatTimer =
+      typeof this.#queue.heartbeat === "function"
+        ? setInterval(() => {
+            this.#queue
+              .heartbeat(job.id, this.#workerId)
+              .catch(() => {});
+          }, 60_000)
+        : null;
+    heartbeatTimer?.unref?.();
     try {
       await this.#handlers.get(job.type)(job.payload);
       await this.#queue.complete(job.id);
     } catch (error) {
       await this.#queue.fail(job.id, error);
+    } finally {
+      if (heartbeatTimer) clearInterval(heartbeatTimer);
     }
     return true;
   }
@@ -114,6 +230,16 @@ export class FinanceWorker {
     if (this.#running) return;
     this.#running = true;
     await this.#queue.recoverStale();
+    this.#recoveryTimer = setInterval(() => {
+      if (this.#recoveryOperation) return;
+      this.#recoveryOperation = this.#queue
+        .recoverStale()
+        .catch(() => {})
+        .finally(() => {
+          this.#recoveryOperation = null;
+        });
+    }, 60_000);
+    this.#recoveryTimer.unref?.();
     const tick = async () => {
       if (!this.#running) return;
       try {
@@ -138,8 +264,13 @@ export class FinanceWorker {
     this.#running = false;
     if (this.#timer) clearTimeout(this.#timer);
     this.#timer = null;
+    if (this.#recoveryTimer) clearInterval(this.#recoveryTimer);
+    this.#recoveryTimer = null;
     if (this.#activeOperation) {
       await this.#activeOperation.catch(() => {});
+    }
+    if (this.#recoveryOperation) {
+      await this.#recoveryOperation;
     }
   }
 }

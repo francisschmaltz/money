@@ -12,6 +12,9 @@ import { buildDemoModel } from "../app/demo/webFixtures.js";
 import {
   createDemoFinanceService,
 } from "../app/services/demoFinanceService.js";
+import {
+  createDemoPlanningService,
+} from "../app/services/demoPlanningService.js";
 
 const viewsRoot = path.resolve("app/views");
 const demo = buildDemoModel();
@@ -91,6 +94,35 @@ test("Format Rules routes split automatic rules from spending categories", async
   );
   assert.match(categories.text, /data-category-manager/);
   assert.doesNotMatch(categories.text, /data-cleanup-rules/);
+});
+
+test("page cache timing is bounded and safe for Server-Timing", async () => {
+  const app = express();
+  app.set("views", viewsRoot);
+  app.set("view engine", "ejs");
+  const planning = createDemoPlanningService();
+  app.use(createWebRouter({
+    demoMode: true,
+    planningService: {
+      async getSafeToSpend(input, req) {
+        req.readModelTimings = [
+          {
+            model: "dashboard\"\r\nx-private",
+            outcome: "hit",
+            totalMs: 12.3,
+          },
+        ];
+        return planning.getSafeToSpend(input);
+      },
+    },
+  }));
+
+  const response = await request(app).get("/").expect(200);
+  assert.equal(
+    response.headers["server-timing"],
+    'read-model-dashboard-x-private;dur=12.3;desc="hit"',
+  );
+  assert.doesNotMatch(response.headers["server-timing"], /[\r\n]/);
 });
 
 test("Plaid OAuth callback renders a resumable authenticated return page", async () => {

@@ -28,10 +28,15 @@ export class PgJobQueue {
   async enqueue(
     jobType,
     payload = {},
-    { dedupeKey = null, runAt = this.#now(), maxAttempts = 5 } = {},
+    {
+      dedupeKey = null,
+      runAt = this.#now(),
+      maxAttempts = 5,
+      client = this.#pool,
+    } = {},
   ) {
     const id = randomUUID();
-    const result = await this.#pool.query(
+    const result = await client.query(
       `
         INSERT INTO jobs (
           id, job_type, payload, dedupe_key, run_at, max_attempts
@@ -100,6 +105,40 @@ export class PgJobQueue {
           WHERE c.workspace_id = $1
             AND j.job_type = 'plaid.sync_item'
             AND j.status = ANY(ARRAY['queued', 'running']::text[])
+        ) AS pending
+      `,
+      [workspaceId],
+    );
+    return Boolean(result.rows[0]?.pending);
+  }
+
+  async hasPendingReadModelDependencies(workspaceId) {
+    const result = await this.#pool.query(
+      `
+        SELECT EXISTS (
+          SELECT 1
+          FROM jobs j
+          LEFT JOIN finance_connections c
+            ON j.job_type = 'plaid.sync_item'
+           AND c.id = j.payload->>'itemId'
+          WHERE j.job_type = ANY(
+              ARRAY[
+                'plaid.sync_item',
+                'finance.detect_recurring',
+                'finance.generate_insights',
+                'finance.nightly_refresh'
+              ]::text[]
+            )
+            AND j.status = ANY(ARRAY['queued', 'running']::text[])
+            AND (
+              j.job_type <> 'finance.nightly_refresh'
+              OR j.status = 'running'
+              OR j.run_at <= now()
+            )
+            AND (
+              j.payload->>'workspaceId' = $1
+              OR c.workspace_id = $1
+            )
         ) AS pending
       `,
       [workspaceId],
@@ -187,6 +226,21 @@ export class PgJobQueue {
     );
   }
 
+  async heartbeat(jobId, workerId) {
+    const result = await this.#pool.query(
+      `
+        UPDATE jobs
+        SET locked_at = now(),
+            updated_at = now()
+        WHERE id = $1
+          AND status = 'running'
+          AND locked_by = $2
+      `,
+      [jobId, workerId],
+    );
+    return result.rowCount > 0;
+  }
+
   async fail(jobId, error, { retryDelayMs } = {}) {
     return withTransaction(this.#pool, async (client) => {
       const current = await client.query(
@@ -238,6 +292,8 @@ export class PgJobQueue {
           ],
         );
         replacement = queued.rows[0];
+      } else {
+        await this.#settleAbandonedReadModelSyncs(client, row);
       }
 
       const failed = await client.query(
@@ -273,6 +329,7 @@ export class PgJobQueue {
       for (const row of stale.rows) {
         const attempts = Number(row.attempts);
         const maxAttempts = Number(row.max_attempts);
+        let canSettleJob = true;
         if (attempts < maxAttempts) {
           await client.query(
             `
@@ -299,7 +356,11 @@ export class PgJobQueue {
               maxAttempts,
             ],
           );
+        } else {
+          canSettleJob =
+            await this.#settleAbandonedReadModelSyncs(client, row);
         }
+        if (!canSettleJob) continue;
         await client.query(
           `
             UPDATE jobs
@@ -315,6 +376,103 @@ export class PgJobQueue {
       }
       return stale.rowCount;
     });
+  }
+
+  async #settleAbandonedReadModelSyncs(client, job) {
+    if (
+      !["plaid.sync_item", "finance.nightly_refresh"].includes(
+        job.job_type,
+      )
+    ) {
+      return true;
+    }
+    const itemId = job.payload?.itemId ?? null;
+    const workspaceId = job.payload?.workspaceId ?? null;
+    const candidates = await client.query(
+      `
+        SELECT workspace_id, connection_id
+        FROM workspace_read_model_active_syncs
+        WHERE (
+            $1 = 'plaid.sync_item'
+            AND connection_id = $2
+          )
+          OR (
+            $1 = 'finance.nightly_refresh'
+            AND workspace_id = $3
+          )
+        FOR UPDATE
+      `,
+      [job.job_type, itemId, workspaceId],
+    );
+
+    let allSettled = true;
+    for (const candidate of candidates.rows) {
+      const successor = await client.query(
+        `
+          SELECT EXISTS (
+            SELECT 1
+            FROM jobs successor
+            WHERE successor.id <> $1
+              AND successor.job_type = 'plaid.sync_item'
+              AND successor.payload->>'itemId' = $2
+              AND successor.status = ANY(
+                ARRAY['queued', 'running']::text[]
+              )
+          ) AS pending
+        `,
+        [job.id, candidate.connection_id],
+      );
+      if (successor.rows[0]?.pending === true) continue;
+
+      const lockKey =
+        `money:plaid-sync:${candidate.connection_id}`;
+      const lock = await client.query(
+        `
+          SELECT pg_try_advisory_xact_lock(
+            hashtextextended($1, 0)
+          ) AS acquired
+        `,
+        [lockKey],
+      );
+      if (lock.rows[0]?.acquired !== true) {
+        allSettled = false;
+        continue;
+      }
+
+      const publication = await client.query(
+        `
+          WITH settled_sync AS (
+            DELETE FROM workspace_read_model_active_syncs
+            WHERE workspace_id = $1
+              AND connection_id = $2
+            RETURNING workspace_id
+          )
+          UPDATE workspace_read_model_revisions revision_row
+          SET revision = revision_row.revision + 1,
+              updated_at = now()
+          WHERE revision_row.workspace_id = $1
+            AND EXISTS (SELECT 1 FROM settled_sync)
+          RETURNING revision_row.revision
+        `,
+        [candidate.workspace_id, candidate.connection_id],
+      );
+      const revision = publication.rows[0]?.revision;
+      if (revision == null) continue;
+      await this.enqueue(
+        "finance.warm_read_models",
+        {
+          workspaceId: candidate.workspace_id,
+          revision: String(revision),
+          reason: "plaid.sync-abandoned",
+        },
+        {
+          dedupeKey: candidate.workspace_id,
+          maxAttempts: 100,
+          client,
+        },
+      );
+    }
+    return allSettled;
   }
 }
 

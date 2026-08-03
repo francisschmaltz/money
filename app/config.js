@@ -38,6 +38,21 @@ const nodeEnvironmentSchema = z.enum(["development", "test", "production"]);
 const authModeSchema = z.enum(["mock", "oidc"]);
 const plaidEnvironmentSchema = z.enum(["sandbox", "development", "production"]);
 const demoScenarioSchema = z.enum(["default", "ux-stress"]);
+const readModelCacheModeSchema = z.enum(["off", "warm", "serve"]);
+
+function optionalRedisUrl(value) {
+  const candidate = String(value || "").trim();
+  if (!candidate) return "";
+  try {
+    const parsed = new URL(candidate);
+    if (!["redis:", "rediss:"].includes(parsed.protocol)) {
+      throw new TypeError();
+    }
+    return parsed.href;
+  } catch {
+    throw new Error("REDIS_URL must be an absolute redis:// or rediss:// URL.");
+  }
+}
 
 export function loadConfig(environment = process.env, argv = process.argv.slice(2)) {
   const argument = (name) => {
@@ -68,7 +83,16 @@ export function loadConfig(environment = process.env, argv = process.argv.slice(
   const demoScenario = demoScenarioSchema.parse(
     environment.DEMO_SCENARIO || "default",
   );
+  const readModelCacheMode = readModelCacheModeSchema.parse(
+    environment.READ_MODEL_CACHE_MODE || "off",
+  );
+  const redisUrl = optionalRedisUrl(environment.REDIS_URL);
 
+  if (readModelCacheMode !== "off" && !redisUrl) {
+    throw new Error(
+      "REDIS_URL is required when READ_MODEL_CACHE_MODE is warm or serve.",
+    );
+  }
   if (production && authMode === "mock") {
     throw new Error("AUTH_MODE=mock is forbidden in production.");
   }
@@ -131,6 +155,10 @@ export function loadConfig(environment = process.env, argv = process.argv.slice(
         environment.DATABASE_SSL_REJECT_UNAUTHORIZED,
         true,
       ),
+    },
+    readModelCache: {
+      mode: readModelCacheMode,
+      redisUrl,
     },
     auth: {
       mode: authMode,

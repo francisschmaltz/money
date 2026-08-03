@@ -54,6 +54,7 @@ flowchart LR
     Web --> Finance["Finance service"]
     MCP --> Finance
     Finance --> Postgres[("PostgreSQL")]
+    Finance --> Redis[("Bounded Redis read models")]
     Plaid["Plaid + webhooks"] --> Sync["Plaid sync service"]
     Sync --> Postgres
     AppleCard["Apple Card CSV"] --> Web
@@ -250,7 +251,8 @@ contract.
 Health endpoints:
 
 - `GET /health/live`: process liveness.
-- `GET /health/ready`: required configuration plus PostgreSQL readiness.
+- `GET /health/ready`: required configuration plus PostgreSQL readiness, with
+  a non-gating Redis cache status.
 
 Production runs:
 
@@ -258,8 +260,9 @@ Production runs:
   and then listens for HTTP traffic.
 - `npm run migrate` remains available as a manual maintenance command.
 
-The in-process worker handles Plaid sync, recurring detection, and insight
-generation.
+The in-process worker handles Plaid sync, recurring detection, insight
+generation, and proactive read-model warming. Redis caches only allowlisted
+computed JSON models; PostgreSQL revisions invalidate them after writes.
 LM Studio is optional: leave its model blank to keep deterministic findings
 without generated narrative.
 

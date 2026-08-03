@@ -1,16 +1,25 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 
 import { withTransaction } from "./pool.js";
+import { bumpWorkspaceReadModelRevision } from "./workspaceReadModelRevision.js";
 
 const DEFAULT_WORKSPACE_ID = "shared";
 
 export class PgPlanningRepository {
   #pool;
+  #publishReadModelRevision;
   #transactionContext = new AsyncLocalStorage();
 
-  constructor(pool) {
+  constructor(pool, { publishReadModelRevision = null } = {}) {
     if (!pool) throw new TypeError("pool is required");
+    if (
+      publishReadModelRevision != null &&
+      typeof publishReadModelRevision !== "function"
+    ) {
+      throw new TypeError("publishReadModelRevision must be a function");
+    }
     this.#pool = pool;
+    this.#publishReadModelRevision = publishReadModelRevision;
   }
 
   #client() {
@@ -135,6 +144,16 @@ export class PgPlanningRepository {
       if (!completed.rows[0]) {
         throw new Error("Idempotent plan write could not be completed.");
       }
+      const revision = await bumpWorkspaceReadModelRevision(
+        client,
+        workspaceId,
+      );
+      await this.#publishReadModelRevision?.({
+        client,
+        workspaceId,
+        revision,
+        reason: "planning.write",
+      });
       return { executed: true, response };
     });
   }
@@ -916,6 +935,16 @@ export class PgPlanningRepository {
           "Goal schedule changed while its due run was being applied.",
         );
       }
+      const revision = await bumpWorkspaceReadModelRevision(
+        client,
+        workspaceId,
+      );
+      await this.#publishReadModelRevision?.({
+        client,
+        workspaceId,
+        revision,
+        reason: "planning.goal-schedules",
+      });
       return {
         replayed: false,
         run_id: runId,

@@ -16,6 +16,14 @@ const OPTIONAL_PRODUCT_ERRORS = new Set([
   "PRODUCTS_NOT_SUPPORTED",
   "ADDITIONAL_CONSENT_REQUIRED",
 ]);
+const READ_MODEL_CHANGED = Symbol.for("money.readModelChanged");
+
+function webhookResult(value, changed) {
+  Object.defineProperty(value, READ_MODEL_CHANGED, {
+    value: Boolean(changed),
+  });
+  return value;
+}
 
 export class PlaidSyncService {
   #provider;
@@ -24,6 +32,8 @@ export class PlaidSyncService {
   #jobQueue;
   #now;
   #workspaceId;
+  #markReadModelSourceUnstable;
+  #publishReadModelBoundary;
 
   constructor({
     provider,
@@ -32,6 +42,8 @@ export class PlaidSyncService {
     jobQueue = null,
     now = () => new Date(),
     workspaceId = "shared",
+    markReadModelSourceUnstable = null,
+    publishReadModelBoundary = null,
   }) {
     if (!provider || !repository || !secretRepository) {
       throw new TypeError(
@@ -44,6 +56,23 @@ export class PlaidSyncService {
     this.#jobQueue = jobQueue;
     this.#now = now;
     this.#workspaceId = workspaceId;
+    if (
+      markReadModelSourceUnstable != null &&
+      typeof markReadModelSourceUnstable !== "function"
+    ) {
+      throw new TypeError(
+        "markReadModelSourceUnstable must be a function",
+      );
+    }
+    this.#markReadModelSourceUnstable =
+      markReadModelSourceUnstable;
+    if (
+      publishReadModelBoundary != null &&
+      typeof publishReadModelBoundary !== "function"
+    ) {
+      throw new TypeError("publishReadModelBoundary must be a function");
+    }
+    this.#publishReadModelBoundary = publishReadModelBoundary;
   }
 
   createLinkToken({ userId, redirectUri = null }) {
@@ -73,12 +102,16 @@ export class PlaidSyncService {
       status: "active",
       errorCode: null,
     });
-    const job = await this.#jobQueue.enqueue(
+    const response = { queued: true, item_id: itemId, job_id: null };
+    await this.#enqueueJob(
       "plaid.sync_item",
       { itemId },
       { dedupeKey: itemId },
+      (job) => {
+        response.job_id = job.id;
+      },
     );
-    return { queued: true, item_id: itemId, job_id: job.id };
+    return response;
   }
 
   async exchangeAndLink({
@@ -110,7 +143,7 @@ export class PlaidSyncService {
     });
 
     if (this.#jobQueue) {
-      await this.#jobQueue.enqueue(
+      await this.#enqueueJob(
         "plaid.sync_item",
         { itemId: item.id },
         { dedupeKey: item.id },
@@ -120,19 +153,36 @@ export class PlaidSyncService {
   }
 
   async syncItem(itemId, { enqueueDerived = true } = {}) {
+    const sync = () =>
+      this.#syncItem(itemId, { enqueueDerived });
+    if (typeof this.#repository.withPlaidSyncLock === "function") {
+      return this.#repository.withPlaidSyncLock(itemId, sync);
+    }
+    return sync();
+  }
+
+  async #syncItem(itemId, { enqueueDerived }) {
     const item = await this.#repository.getPlaidItem(itemId);
     if (!item || item.status === "removed") {
       throw new Error("Plaid Item not found");
     }
     const accessToken = await this.#requiredAccessToken(itemId);
-    const runId = await this.#repository.startSyncRun({
-      workspaceId: item.workspace_id,
-      itemId,
-      syncType: "plaid_full",
-    });
-    await this.#repository.updatePlaidItemState(itemId, {
-      status: "syncing",
-      errorCode: null,
+    let runId;
+    await this.#transaction(async (client) => {
+      await this.#markReadModelSourceUnstable?.(
+        client,
+        item.workspace_id,
+        itemId,
+      );
+      runId = await this.#repository.startSyncRun({
+        workspaceId: item.workspace_id,
+        itemId,
+        syncType: "plaid_full",
+      });
+      await this.#repository.updatePlaidItemState(itemId, {
+        status: "syncing",
+        errorCode: null,
+      });
     });
 
     const stats = {
@@ -145,6 +195,7 @@ export class PlaidSyncService {
       liabilities: 0,
       optional_product_warnings: [],
     };
+    let finalBoundaryCommitted = false;
 
     try {
       const accountResponse = await this.#provider.getAccounts(accessToken);
@@ -232,24 +283,33 @@ export class PlaidSyncService {
         }
       }
 
-      await this.#repository.updatePlaidItemState(itemId, {
-        status: "active",
-        errorCode: null,
-        lastSyncedAt: this.#now(),
-        coverageWarnings: stats.optional_product_warnings,
+      await this.#transaction(async (client) => {
+        await this.#repository.updatePlaidItemState(itemId, {
+          status: "active",
+          errorCode: null,
+          lastSyncedAt: this.#now(),
+          coverageWarnings: stats.optional_product_warnings,
+        });
+        await this.#repository.takeDailySnapshots(
+          item.workspace_id,
+          dateOnly(this.#now()),
+        );
+        await this.#repository.rebuildSearchDocuments(item.workspace_id);
+        await this.#repository.finishSyncRun(runId, {
+          status: "succeeded",
+          stats,
+        });
+        await this.#publishReadModelBoundary?.(
+          client,
+          item.workspace_id,
+          itemId,
+          "plaid.sync-finished",
+        );
       });
-      await this.#repository.takeDailySnapshots(
-        item.workspace_id,
-        dateOnly(this.#now()),
-      );
-      await this.#repository.rebuildSearchDocuments(item.workspace_id);
-      await this.#repository.finishSyncRun(runId, {
-        status: "succeeded",
-        stats,
-      });
+      finalBoundaryCommitted = true;
 
       if (this.#jobQueue && enqueueDerived) {
-        await this.#jobQueue.enqueue(
+        await this.#enqueueJob(
           "finance.detect_recurring",
           { workspaceId: item.workspace_id },
           { dedupeKey: item.workspace_id },
@@ -261,18 +321,28 @@ export class PlaidSyncService {
         error instanceof PlaidApiError
           ? error.code ?? "PLAID_ERROR"
           : "SYNC_ERROR";
-      await this.#repository.updatePlaidItemState(itemId, {
-        status:
-          error instanceof PlaidApiError && error.requiresReauth
-            ? "reauth_required"
-            : "error",
-        errorCode: code,
-      });
-      await this.#repository.finishSyncRun(runId, {
-        status: "failed",
-        stats,
-        errorCode: code,
-      });
+      if (!finalBoundaryCommitted) {
+        await this.#transaction(async (client) => {
+          await this.#repository.updatePlaidItemState(itemId, {
+            status:
+              error instanceof PlaidApiError && error.requiresReauth
+                ? "reauth_required"
+                : "error",
+            errorCode: code,
+          });
+          await this.#repository.finishSyncRun(runId, {
+            status: "failed",
+            stats,
+            errorCode: code,
+          });
+          await this.#publishReadModelBoundary?.(
+            client,
+            item.workspace_id,
+            itemId,
+            "plaid.sync-partial-failure",
+          );
+        });
+      }
       throw error;
     }
   }
@@ -291,10 +361,17 @@ export class PlaidSyncService {
         throw error;
       }
     }
-    await this.#secretRepository.delete(itemId);
-    await this.#repository.removePlaidItem(itemId, { retainHistory });
+    const removed = await this.#transaction(async (client) => {
+      const changed = await this.#repository.removePlaidItem(itemId, {
+        retainHistory,
+      });
+      if (!changed) return false;
+      await this.#secretRepository.delete(itemId, client ?? undefined);
+      return true;
+    });
+    if (!removed) return false;
     if (this.#jobQueue) {
-      await this.#jobQueue.enqueue(
+      await this.#enqueueJob(
         "finance.detect_recurring",
         { workspaceId: item.workspace_id },
         { dedupeKey: item.workspace_id },
@@ -325,7 +402,9 @@ export class PlaidSyncService {
     const item = webhook.item_id
       ? await this.#repository.getPlaidItemByProviderId(webhook.item_id)
       : null;
-    if (!item) return { accepted: true, ignored: true };
+    if (!item) {
+      return webhookResult({ accepted: true, ignored: true }, false);
+    }
 
     const reauthWebhookCodes = new Set([
       "PENDING_EXPIRATION",
@@ -353,7 +432,7 @@ export class PlaidSyncService {
         status: reauth ? "reauth_required" : "error",
         errorCode,
       });
-      return { accepted: true, queued: false };
+      return webhookResult({ accepted: true, queued: false }, true);
     }
 
     if (
@@ -365,13 +444,16 @@ export class PlaidSyncService {
         errorCode: null,
       });
       if (this.#jobQueue) {
-        await this.#jobQueue.enqueue(
+        await this.#enqueueJob(
           "plaid.sync_item",
           { itemId: item.id },
           { dedupeKey: item.id },
         );
       }
-      return { accepted: true, queued: Boolean(this.#jobQueue) };
+      return webhookResult(
+        { accepted: true, queued: Boolean(this.#jobQueue) },
+        true,
+      );
     }
 
     const shouldSync =
@@ -380,13 +462,34 @@ export class PlaidSyncService {
       webhook.webhook_type === "INVESTMENTS_TRANSACTIONS" ||
       webhook.webhook_type === "LIABILITIES";
     if (shouldSync && this.#jobQueue) {
-      await this.#jobQueue.enqueue(
+      await this.#enqueueJob(
         "plaid.sync_item",
         { itemId: item.id },
         { dedupeKey: item.id },
       );
     }
-    return { accepted: true, queued: shouldSync && Boolean(this.#jobQueue) };
+    return webhookResult(
+      { accepted: true, queued: shouldSync && Boolean(this.#jobQueue) },
+      false,
+    );
+  }
+
+  #transaction(operation) {
+    if (typeof this.#repository.transaction === "function") {
+      return this.#repository.transaction(operation);
+    }
+    return operation(null);
+  }
+
+  async #enqueueJob(jobType, payload, options, onEnqueued = null) {
+    if (!this.#jobQueue) return null;
+    const client = this.#repository.transactionClient?.() ?? null;
+    const job = await this.#jobQueue.enqueue(jobType, payload, {
+      ...options,
+      ...(client ? { client } : {}),
+    });
+    onEnqueued?.(job);
+    return job;
   }
 
   async #requiredAccessToken(itemId) {

@@ -73,6 +73,7 @@ job "money" {
         MCP_ALLOWED_HOSTS    = "money.example.com,money"
         WORKER_POLL_INTERVAL_MS = "5000"
         NIGHTLY_INSIGHTS_HOUR_UTC = "9"
+        READ_MODEL_CACHE_MODE  = "serve"
       }
 
       template {
@@ -85,6 +86,7 @@ job "money" {
           DATABASE_URL={{ .database_url | toJSON }}
           DATABASE_SSL={{ .database_ssl | toJSON }}
           DATABASE_SSL_REJECT_UNAUTHORIZED={{ .database_ssl_reject_unauthorized | toJSON }}
+          REDIS_URL={{ .redis_url | toJSON }}
           PLAID_CLIENT_ID={{ .plaid_client_id | toJSON }}
           PLAID_SECRET={{ .plaid_secret | toJSON }}
           PLAID_WEBHOOK_URL={{ .plaid_webhook_url | toJSON }}

@@ -232,6 +232,65 @@ for (const periodCase of PERIOD_CASES) {
   });
 }
 
+test("dashboard cold loads share one freshness read across nested models", async () => {
+  let freshnessReads = 0;
+  const service = createFinanceService({
+    repository: {
+      async getDataFreshness() {
+        freshnessReads += 1;
+        return FRESHNESS;
+      },
+      async listAccounts() {
+        return [];
+      },
+      async getTransactionsForPeriod() {
+        return [];
+      },
+      async getHoldings() {
+        return [];
+      },
+      async listRecurringStreams() {
+        return [];
+      },
+    },
+    now: () => NOW,
+  });
+  service.getSpendingSummary = async () => ({
+    data: {
+      period: { start_on: "2026-07-01", end_on: "2026-07-27" },
+      previous_period: { start_on: "2026-06-01", end_on: "2026-06-27" },
+      total: usd(0),
+      previous_total: usd(0),
+      trend: {
+        amount: usd(0),
+        percent_basis_points: 0,
+        direction: "flat",
+      },
+      segments: [],
+      series: [],
+      transaction_count: 0,
+      currency: "USD",
+    },
+  });
+  service.getFinanceInsights = async () => ({
+    data: {
+      weekly: { findings: [] },
+      investments: { findings: [] },
+      subscriptions: { findings: [] },
+    },
+  });
+  service.listTransactions = async () => ({
+    data: { transactions: [], page_info: {} },
+  });
+  service.getNetWorthHistory = async () => ({
+    data: { currency: "USD", series: [] },
+  });
+
+  await service.getPageData("dashboard", { query: {} });
+
+  assert.equal(freshnessReads, 1);
+});
+
 test("dashboard rejects unknown period names by falling back to one month", async () => {
   const { calls, service } = createDashboardHarness();
 

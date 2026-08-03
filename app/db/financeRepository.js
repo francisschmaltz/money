@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { withTransaction } from "./pool.js";
 import { stableId } from "../services/ids.js";
 
@@ -329,9 +330,58 @@ function inferBalanceGroup(account) {
 
 export class PgFinanceRepository {
   #pool;
+  #transactionContext = new AsyncLocalStorage();
 
   constructor(pool) {
+    if (!pool) throw new TypeError("pool is required");
     this.#pool = pool;
+  }
+
+  #client() {
+    return this.#transactionContext.getStore()?.client ?? this.#pool;
+  }
+
+  async #withTransaction(operation) {
+    const existing = this.#transactionContext.getStore();
+    if (existing) return operation(existing.client);
+    return withTransaction(this.#pool, (client) =>
+      this.#transactionContext.run({ client }, () => operation(client)),
+    );
+  }
+
+  transactionClient() {
+    return this.#transactionContext.getStore()?.client ?? null;
+  }
+
+  async withPlaidSyncLock(itemId, operation) {
+    if (typeof operation !== "function") {
+      throw new TypeError("Plaid sync operation is required");
+    }
+    const client = await this.#pool.connect();
+    const lockKey = `money:plaid-sync:${itemId}`;
+    try {
+      await client.query(
+        "SELECT pg_advisory_lock(hashtextextended($1, 0))",
+        [lockKey],
+      );
+    } catch (error) {
+      client.release(true);
+      throw error;
+    }
+    try {
+      return await operation();
+    } finally {
+      try {
+        await client.query(
+          "SELECT pg_advisory_unlock(hashtextextended($1, 0))",
+          [lockKey],
+        );
+        client.release();
+      } catch {
+        // Destroying the session releases its advisory locks server-side.
+        client.release(true);
+      }
+    }
   }
 
   async #assertBudgetHierarchy(client, workspaceId) {
@@ -2586,7 +2636,7 @@ export class PgFinanceRepository {
   }
 
   transaction(operation) {
-    return withTransaction(this.#pool, operation);
+    return this.#withTransaction(operation);
   }
 
   async upsertUser(
@@ -2600,7 +2650,7 @@ export class PgFinanceRepository {
   ) {
     const normalizedEmail = String(email ?? "").trim().toLowerCase();
     if (!normalizedEmail) throw new TypeError("email is required");
-    return withTransaction(this.#pool, async (client) => {
+    return this.#withTransaction(async (client) => {
       const result = await client.query(
         `
           INSERT INTO users (
@@ -2639,7 +2689,7 @@ export class PgFinanceRepository {
     if (typeof userId !== "string" || !userId.trim()) {
       throw new TypeError("userId is required");
     }
-    const result = await this.#pool.query(
+    const result = await this.#client().query(
       `
         SELECT appearance_preference
         FROM users
@@ -2668,7 +2718,7 @@ export class PgFinanceRepository {
         "appearance must be exactly system, light, or dark",
       );
     }
-    const result = await this.#pool.query(
+    const result = await this.#client().query(
       `
         UPDATE users
         SET appearance_preference = $2,
@@ -2695,7 +2745,7 @@ export class PgFinanceRepository {
       institutionName = null,
       consentExpiresAt = null,
     },
-    client = this.#pool,
+    client = this.#client(),
   ) {
     const existing = await client.query(
       `
@@ -2748,7 +2798,7 @@ export class PgFinanceRepository {
     return this.getPlaidItem(connectionId, client);
   }
 
-  async getPlaidItem(itemId, client = this.#pool) {
+  async getPlaidItem(itemId, client = this.#client()) {
     const result = await client.query(
       `
         SELECT c.*, p.provider_item_id, p.institution_id,
@@ -2765,7 +2815,7 @@ export class PgFinanceRepository {
 
   async getPlaidItemByProviderId(
     providerItemId,
-    client = this.#pool,
+    client = this.#client(),
   ) {
     const result = await client.query(
       `
@@ -2783,7 +2833,7 @@ export class PgFinanceRepository {
 
   async listPlaidItems(
     workspaceId = DEFAULT_WORKSPACE_ID,
-    client = this.#pool,
+    client = this.#client(),
   ) {
     const result = await client.query(
       `
@@ -2804,7 +2854,7 @@ export class PgFinanceRepository {
 
   async listFinanceConnections(
     workspaceId = DEFAULT_WORKSPACE_ID,
-    client = this.#pool,
+    client = this.#client(),
   ) {
     const result = await client.query(
       `
@@ -2851,7 +2901,7 @@ export class PgFinanceRepository {
 
   async getAppleCardConnection(
     workspaceId = DEFAULT_WORKSPACE_ID,
-    client = this.#pool,
+    client = this.#client(),
   ) {
     const result = await client.query(
       `
@@ -2877,7 +2927,7 @@ export class PgFinanceRepository {
   async findExistingTransactionProviderIds(
     workspaceId = DEFAULT_WORKSPACE_ID,
     providerTransactionIds = [],
-    client = this.#pool,
+    client = this.#client(),
   ) {
     if (!providerTransactionIds.length) return [];
     const result = await client.query(
@@ -2902,7 +2952,7 @@ export class PgFinanceRepository {
     actorId = null,
     importedAt = new Date(),
   }) {
-    return withTransaction(this.#pool, async (client) => {
+    return this.#withTransaction(async (client) => {
       const connectionId = stableId(
         "connection",
         `${workspaceId}:apple-card`,
@@ -3153,7 +3203,7 @@ export class PgFinanceRepository {
     lastFour = null,
     updatedAt = new Date(),
   }) {
-    return withTransaction(this.#pool, async (client) => {
+    return this.#withTransaction(async (client) => {
       const result = await client.query(
         `
           UPDATE accounts a
@@ -3235,7 +3285,7 @@ export class PgFinanceRepository {
       lastSyncedAt,
       coverageWarnings,
     },
-    client = this.#pool,
+    client = this.#client(),
   ) {
     await client.query(
       `
@@ -3279,7 +3329,7 @@ export class PgFinanceRepository {
     connectionId,
     { retainHistory = false } = {},
   ) {
-    return withTransaction(this.#pool, async (client) => {
+    return this.#withTransaction(async (client) => {
       const item = await client.query(
         `
           SELECT workspace_id
@@ -3447,7 +3497,7 @@ export class PgFinanceRepository {
     itemId,
     accounts,
     { syncedAt = new Date() } = {},
-    client = this.#pool,
+    client = this.#client(),
   ) {
     if (!accounts.length) return;
     await client.query(
@@ -3503,7 +3553,7 @@ export class PgFinanceRepository {
   async deactivateMissingAccounts(
     itemId,
     activeProviderAccountIds,
-    client = this.#pool,
+    client = this.#client(),
   ) {
     await client.query(
       `
@@ -3534,7 +3584,7 @@ export class PgFinanceRepository {
           transaction.providerPendingTransactionId,
       )
       .filter(Boolean);
-    await withTransaction(this.#pool, async (client) => {
+    await this.#withTransaction(async (client) => {
       if (removedProviderIds.length) {
         await this.#snapshotUnmatchedPendingEdits(client, {
           providerIds: removedProviderIds,
@@ -3665,7 +3715,7 @@ export class PgFinanceRepository {
     itemId,
     { securities = [], holdings = [], transactions = [], asOf = new Date() },
   ) {
-    await withTransaction(this.#pool, async (client) => {
+    await this.#withTransaction(async (client) => {
       if (securities.length) {
         await client.query(
           `
@@ -3790,7 +3840,7 @@ export class PgFinanceRepository {
   }
 
   async replaceLiabilities(itemId, liabilities, { asOf = new Date() } = {}) {
-    await withTransaction(this.#pool, async (client) => {
+    await this.#withTransaction(async (client) => {
       await client.query(
         "DELETE FROM liabilities WHERE account_id IN (SELECT id FROM accounts WHERE connection_id = $1)",
         [itemId],
@@ -3832,7 +3882,7 @@ export class PgFinanceRepository {
     workspaceId = DEFAULT_WORKSPACE_ID,
     snapshotOn = new Date().toISOString().slice(0, 10),
   ) {
-    await withTransaction(this.#pool, async (client) => {
+    await this.#withTransaction(async (client) => {
       await client.query(
         `
           INSERT INTO daily_account_snapshots (
@@ -3888,7 +3938,7 @@ export class PgFinanceRepository {
   async listAccounts(
     workspaceId = DEFAULT_WORKSPACE_ID,
     { includeInactive = false } = {},
-    client = this.#pool,
+    client = this.#client(),
   ) {
     const result = await client.query(
       `
@@ -3924,7 +3974,7 @@ export class PgFinanceRepository {
       "balanceGroup",
       { nullable: true },
     );
-    return withTransaction(this.#pool, async (client) => {
+    return this.#withTransaction(async (client) => {
       const result = await client.query(
         `
           UPDATE accounts a
@@ -3980,7 +4030,7 @@ export class PgFinanceRepository {
         ? null
         : normalizeDateOnly(valuedOn, "valuedOn");
 
-    return withTransaction(this.#pool, async (client) => {
+    return this.#withTransaction(async (client) => {
       const result = await client.query(
         `
           INSERT INTO manual_assets (
@@ -4031,7 +4081,7 @@ export class PgFinanceRepository {
   ) {
     const normalizedAsOf =
       normalizeDateOnly(asOf ?? new Date(), "asOf");
-    const result = await this.#pool.query(
+    const result = await this.#client().query(
       `
         SELECT
           a.*,
@@ -4060,7 +4110,7 @@ export class PgFinanceRepository {
   ) {
     const normalizedAsOf =
       normalizeDateOnly(asOf ?? new Date(), "asOf");
-    const result = await this.#pool.query(
+    const result = await this.#client().query(
       `
         SELECT
           a.*,
@@ -4146,7 +4196,7 @@ export class PgFinanceRepository {
       return this.getManualAsset(workspaceId, assetId);
     }
 
-    return withTransaction(this.#pool, async (client) => {
+    return this.#withTransaction(async (client) => {
       const result = await client.query(
         `
           WITH updated AS (
@@ -4267,7 +4317,7 @@ export class PgFinanceRepository {
   async listWorkspaceMembers(
     workspaceId = DEFAULT_WORKSPACE_ID,
   ) {
-    const result = await this.#pool.query(
+    const result = await this.#client().query(
       `
         SELECT u.id, u.display_name
         FROM workspace_members wm
@@ -4289,7 +4339,7 @@ export class PgFinanceRepository {
     workspaceId = DEFAULT_WORKSPACE_ID,
     { includeArchived = true } = {},
   ) {
-    const result = await this.#pool.query(
+    const result = await this.#client().query(
       `
         SELECT *
         FROM credit_score_sources
@@ -4306,7 +4356,7 @@ export class PgFinanceRepository {
     workspaceId = DEFAULT_WORKSPACE_ID,
     sourceId,
   ) {
-    const result = await this.#pool.query(
+    const result = await this.#client().query(
       `
         SELECT *
         FROM credit_score_sources
@@ -4322,7 +4372,7 @@ export class PgFinanceRepository {
   async listCreditScoreObservations(
     workspaceId = DEFAULT_WORKSPACE_ID,
   ) {
-    const result = await this.#pool.query(
+    const result = await this.#client().query(
       `
         SELECT observation.*
         FROM credit_score_observations observation
@@ -4368,7 +4418,7 @@ export class PgFinanceRepository {
       80,
       { nullable: true },
     );
-    const result = await this.#pool.query(
+    const result = await this.#client().query(
       `
         INSERT INTO credit_score_sources (
           id, workspace_id, user_id, label, bureau, scoring_model
@@ -4428,7 +4478,7 @@ export class PgFinanceRepository {
           { nullable: true },
         )
       : null;
-    const result = await this.#pool.query(
+    const result = await this.#client().query(
       `
         UPDATE credit_score_sources
         SET label = CASE WHEN $4::boolean THEN $5 ELSE label END,
@@ -4473,7 +4523,7 @@ export class PgFinanceRepository {
       archivedOn,
       "archivedOn",
     );
-    const result = await this.#pool.query(
+    const result = await this.#client().query(
       `
         UPDATE credit_score_sources
         SET archived_on = $4, updated_at = now()
@@ -4505,7 +4555,7 @@ export class PgFinanceRepository {
       "observedOn",
     );
     const normalizedScore = normalizeCreditScore(score);
-    const result = await this.#pool.query(
+    const result = await this.#client().query(
       `
         INSERT INTO credit_score_observations (
           id, source_id, observed_on, score
@@ -4538,7 +4588,7 @@ export class PgFinanceRepository {
     workspaceId = DEFAULT_WORKSPACE_ID,
     assetId,
   ) {
-    return withTransaction(this.#pool, async (client) => {
+    return this.#withTransaction(async (client) => {
       await client.query(
         `
           DELETE FROM search_documents
@@ -4573,7 +4623,7 @@ export class PgFinanceRepository {
     const normalizedValue = normalizeNonnegativeMinor(valueMinor);
     const normalizedCurrency =
       currencyCode == null ? null : normalizeCurrencyCode(currencyCode);
-    return withTransaction(this.#pool, async (client) => {
+    return this.#withTransaction(async (client) => {
       const result = await client.query(
         `
           INSERT INTO manual_asset_valuations (
@@ -4639,7 +4689,7 @@ export class PgFinanceRepository {
     const normalizedEnd =
       endOn == null ? null : normalizeDateOnly(endOn, "endOn");
     const boundedLimit = Math.max(1, Math.min(2_000, Number(limit) || 366));
-    const result = await this.#pool.query(
+    const result = await this.#client().query(
       `
         SELECT v.*
         FROM manual_asset_valuations v
@@ -4680,7 +4730,7 @@ export class PgFinanceRepository {
     } = {},
   ) {
     const useBudgetMonth = dateMode === "budget";
-    const result = await this.#pool.query(
+    const result = await this.#client().query(
       `
         SELECT
           split.*,
@@ -4818,7 +4868,7 @@ export class PgFinanceRepository {
           "transaction_sort_cost DESC, posted_on DESC, id DESC",
       },
     }[normalizedSort];
-    const result = await this.#pool.query(
+    const result = await this.#client().query(
       `
         WITH transaction_page AS (
         SELECT
@@ -5284,7 +5334,7 @@ export class PgFinanceRepository {
     transactionId,
     { includeProviderLocation = false } = {},
   ) {
-    const result = await this.#pool.query(
+    const result = await this.#client().query(
       `
         SELECT
           t.*,
@@ -5445,7 +5495,7 @@ export class PgFinanceRepository {
     workspaceId = DEFAULT_WORKSPACE_ID,
     { includeDisabled = true, limit = 200 } = {},
   ) {
-    const result = await this.#pool.query(
+    const result = await this.#client().query(
       `
         WITH winning_rules AS (
           SELECT
@@ -5521,7 +5571,7 @@ export class PgFinanceRepository {
       userId = null,
     },
   ) {
-    return withTransaction(this.#pool, async (client) => {
+    return this.#withTransaction(async (client) => {
       const result = await client.query(
         `
           INSERT INTO transaction_cleanup_rules (
@@ -5590,7 +5640,7 @@ export class PgFinanceRepository {
       userId = null,
     },
   ) {
-    return withTransaction(this.#pool, async (client) => {
+    return this.#withTransaction(async (client) => {
       const existing = await client.query(
         `
           SELECT *
@@ -5666,7 +5716,7 @@ export class PgFinanceRepository {
     workspaceId = DEFAULT_WORKSPACE_ID,
     { ruleId },
   ) {
-    return withTransaction(this.#pool, async (client) => {
+    return this.#withTransaction(async (client) => {
       const existing = await client.query(
         `
           SELECT *
@@ -5710,7 +5760,7 @@ export class PgFinanceRepository {
   async rerunTransactionCleanupRules(
     workspaceId = DEFAULT_WORKSPACE_ID,
   ) {
-    return withTransaction(this.#pool, async (client) => {
+    return this.#withTransaction(async (client) => {
       const transactions = await client.query(
         `
           SELECT id
@@ -5746,7 +5796,7 @@ export class PgFinanceRepository {
     workspaceId = DEFAULT_WORKSPACE_ID,
     { limit = 200 } = {},
   ) {
-    const result = await this.#pool.query(
+    const result = await this.#client().query(
       `
         SELECT
           tag.id,
@@ -5811,7 +5861,7 @@ export class PgFinanceRepository {
         availableTags: await availableTagsPromise,
       };
     }
-    const result = await this.#pool.query(
+    const result = await this.#client().query(
       `
         WITH candidates AS (
           SELECT
@@ -6038,7 +6088,7 @@ export class PgFinanceRepository {
     workspaceId = DEFAULT_WORKSPACE_ID,
     { includeResolved = false, limit = 100 } = {},
   ) {
-    const result = await this.#pool.query(
+    const result = await this.#client().query(
       `
         SELECT
           recovery.*,
@@ -6072,7 +6122,7 @@ export class PgFinanceRepository {
     workspaceId = DEFAULT_WORKSPACE_ID,
     { recoveryId, userId = null },
   ) {
-    const result = await this.#pool.query(
+    const result = await this.#client().query(
       `
         UPDATE unmatched_pending_transaction_edits
         SET dismissed_at = now(),
@@ -6089,7 +6139,7 @@ export class PgFinanceRepository {
     if (result.rows[0]) {
       return mapPendingEditRecovery(result.rows[0]);
     }
-    const existing = await this.#pool.query(
+    const existing = await this.#client().query(
       `
         SELECT *
         FROM unmatched_pending_transaction_edits
@@ -6109,7 +6159,7 @@ export class PgFinanceRepository {
     workspaceId = DEFAULT_WORKSPACE_ID,
     { recoveryId, transactionId, userId = null },
   ) {
-    return withTransaction(this.#pool, async (client) => {
+    return this.#withTransaction(async (client) => {
       const recoveryResult = await client.query(
         `
           SELECT *
@@ -6862,7 +6912,7 @@ export class PgFinanceRepository {
         ]
       : [];
 
-    return withTransaction(this.#pool, async (client) => {
+    return this.#withTransaction(async (client) => {
       const locked = await client.query(
         `
           SELECT
@@ -7196,7 +7246,7 @@ export class PgFinanceRepository {
       userId = null,
     },
   ) {
-    return withTransaction(this.#pool, async (client) => {
+    return this.#withTransaction(async (client) => {
       const transaction = await client.query(
         `
           SELECT id
@@ -7290,7 +7340,7 @@ export class PgFinanceRepository {
     transactionId,
     originalTransactionId,
   ) {
-    const result = await this.#pool.query(
+    const result = await this.#client().query(
       `
         UPDATE transactions refund
         SET original_transaction_id = original_transaction.id,
@@ -7314,7 +7364,7 @@ export class PgFinanceRepository {
     workspaceId = DEFAULT_WORKSPACE_ID,
     { includeMerged = false } = {},
   ) {
-    const result = await this.#pool.query(
+    const result = await this.#client().query(
       `
         WITH category_transactions AS (
           SELECT
@@ -7433,7 +7483,7 @@ export class PgFinanceRepository {
     workspaceId = DEFAULT_WORKSPACE_ID,
     value,
   ) {
-    const result = await this.#pool.query(
+    const result = await this.#client().query(
       `
         SELECT
           category.id,
@@ -7468,7 +7518,7 @@ export class PgFinanceRepository {
   ) {
     const categoryId = stableId("category", randomUUID());
     try {
-      await withTransaction(this.#pool, async (client) => {
+      await this.#withTransaction(async (client) => {
         if (parentCategoryId) {
           const parent = await client.query(
             `
@@ -7623,7 +7673,7 @@ export class PgFinanceRepository {
   ) {
     let changed = false;
     try {
-      changed = await withTransaction(this.#pool, async (client) => {
+      changed = await this.#withTransaction(async (client) => {
         const currentResult = await client.query(
           `
             SELECT
@@ -7969,7 +8019,7 @@ export class PgFinanceRepository {
   ) {
     let result;
     try {
-      result = await withTransaction(this.#pool, async (client) => {
+      result = await this.#withTransaction(async (client) => {
         const locked = await client.query(
           `
             SELECT *
@@ -8480,7 +8530,7 @@ export class PgFinanceRepository {
       userId = null,
     },
   ) {
-    const other = await this.#pool.query(
+    const other = await this.#client().query(
       `
         SELECT id, version
         FROM spending_categories
@@ -8521,7 +8571,7 @@ export class PgFinanceRepository {
   ) {
     let result;
     try {
-      result = await withTransaction(this.#pool, async (client) => {
+      result = await this.#withTransaction(async (client) => {
         const currentResult = await client.query(
           `
             SELECT
@@ -8693,7 +8743,7 @@ export class PgFinanceRepository {
       .map((category) => category.path);
 
     /* c8 ignore start -- retained for old-schema test doubles */
-    const result = await this.#pool.query(
+    const result = await this.#client().query(
       `
         WITH base_categories AS (
           SELECT DISTINCT
@@ -8813,7 +8863,7 @@ export class PgFinanceRepository {
     workspaceId = DEFAULT_WORKSPACE_ID,
     { startOn = null, endOn = null } = {},
   ) {
-    const result = await this.#pool.query(
+    const result = await this.#client().query(
       `
         SELECT
           s.*,
@@ -8848,7 +8898,7 @@ export class PgFinanceRepository {
   }
 
   async getHoldings(workspaceId = DEFAULT_WORKSPACE_ID) {
-    const result = await this.#pool.query(
+    const result = await this.#client().query(
       `
         SELECT
           h.*, s.name AS security_name, s.ticker_symbol, s.security_type,
@@ -8908,7 +8958,7 @@ export class PgFinanceRepository {
       activeAccountsOnly = false,
     } = {},
   ) {
-    const result = await this.#pool.query(
+    const result = await this.#client().query(
       `
         SELECT
           s.*,
@@ -8968,7 +9018,7 @@ export class PgFinanceRepository {
       activeAccountsOnly = false,
     } = {},
   ) {
-    const result = await this.#pool.query(
+    const result = await this.#client().query(
       `
         SELECT it.*
         FROM investment_transactions it
@@ -9005,7 +9055,7 @@ export class PgFinanceRepository {
     workspaceId = DEFAULT_WORKSPACE_ID,
     streams,
   ) {
-    await withTransaction(this.#pool, async (client) => {
+    await this.#withTransaction(async (client) => {
       const activeIds = streams.map((stream) => stream.id);
       await client.query(
         `
@@ -9138,7 +9188,7 @@ export class PgFinanceRepository {
     workspaceId = DEFAULT_WORKSPACE_ID,
     { activeOnly = false } = {},
   ) {
-    const result = await this.#pool.query(
+    const result = await this.#client().query(
       `
         SELECT *
         FROM recurring_pattern_rules
@@ -9155,7 +9205,7 @@ export class PgFinanceRepository {
     workspaceId = DEFAULT_WORKSPACE_ID,
     transactionId,
   ) {
-    const result = await this.#pool.query(
+    const result = await this.#client().query(
       `
         SELECT
           t.id AS transaction_id,
@@ -9266,7 +9316,7 @@ export class PgFinanceRepository {
       actorId = null,
     } = {},
   ) {
-    return withTransaction(this.#pool, async (client) => {
+    return this.#withTransaction(async (client) => {
       const sourceResult = await client.query(
         `
           SELECT
@@ -9395,7 +9445,7 @@ export class PgFinanceRepository {
     transactionId,
     { actorId = null } = {},
   ) {
-    return withTransaction(this.#pool, async (client) => {
+    return this.#withTransaction(async (client) => {
       const result = await client.query(
         `
           WITH source AS (
@@ -9466,7 +9516,7 @@ export class PgFinanceRepository {
     workspaceId = DEFAULT_WORKSPACE_ID,
     { includeInactive = false } = {},
   ) {
-    const result = await this.#pool.query(
+    const result = await this.#client().query(
       `
         SELECT
           r.*,
@@ -9709,7 +9759,7 @@ export class PgFinanceRepository {
     ) {
       throw new TypeError("Invalid recurring classification");
     }
-    return withTransaction(this.#pool, async (client) => {
+    return this.#withTransaction(async (client) => {
       if (type === "frequent_spending") {
         await client.query(
           `
@@ -9758,7 +9808,7 @@ export class PgFinanceRepository {
     workspaceId = DEFAULT_WORKSPACE_ID,
     findingId,
   ) {
-    const result = await this.#pool.query(
+    const result = await this.#client().query(
       `
         UPDATE recurring_streams
         SET stream_type_override = NULL,
@@ -9780,7 +9830,7 @@ export class PgFinanceRepository {
     family,
     findings,
   ) {
-    await withTransaction(this.#pool, async (client) => {
+    await this.#withTransaction(async (client) => {
       const preferenceResult = await client.query(
         `
           SELECT finding_key, disposition, reason_code, updated_by, updated_at
@@ -9891,7 +9941,7 @@ export class PgFinanceRepository {
     if (!["active", "archive", "all"].includes(scope)) {
       throw new TypeError("Invalid insight finding scope");
     }
-    const result = await this.#pool.query(
+    const result = await this.#client().query(
       `
         SELECT *
         FROM insight_findings
@@ -9934,7 +9984,7 @@ export class PgFinanceRepository {
     workspaceId = DEFAULT_WORKSPACE_ID,
     findingId,
   ) {
-    const result = await this.#pool.query(
+    const result = await this.#client().query(
       `
         SELECT *
         FROM insight_findings
@@ -9949,7 +9999,7 @@ export class PgFinanceRepository {
   async getInsightStorageSummary(
     workspaceId = DEFAULT_WORKSPACE_ID,
   ) {
-    const result = await this.#pool.query(
+    const result = await this.#client().query(
       `
         SELECT
           count(*) FILTER (
@@ -9979,7 +10029,7 @@ export class PgFinanceRepository {
   async getInsightSettings(
     workspaceId = DEFAULT_WORKSPACE_ID,
   ) {
-    const result = await this.#pool.query(
+    const result = await this.#client().query(
       `
         SELECT enabled, updated_by, updated_at
         FROM insight_settings
@@ -10000,7 +10050,7 @@ export class PgFinanceRepository {
     workspaceId = DEFAULT_WORKSPACE_ID,
     { enabled, updatedBy = null },
   ) {
-    const result = await this.#pool.query(
+    const result = await this.#client().query(
       `
         INSERT INTO insight_settings (
           workspace_id,
@@ -10023,7 +10073,7 @@ export class PgFinanceRepository {
   async getInsightLlmSettings(
     workspaceId = DEFAULT_WORKSPACE_ID,
   ) {
-    const result = await this.#pool.query(
+    const result = await this.#client().query(
       `
         SELECT *
         FROM insight_llm_settings
@@ -10050,7 +10100,7 @@ export class PgFinanceRepository {
       updatedBy = null,
     },
   ) {
-    return withTransaction(this.#pool, async (client) => {
+    return this.#withTransaction(async (client) => {
       const currentResult = await client.query(
         `
           SELECT *
@@ -10151,7 +10201,7 @@ export class PgFinanceRepository {
   async listInsightLlmCallStatuses(
     workspaceId = DEFAULT_WORKSPACE_ID,
   ) {
-    const result = await this.#pool.query(
+    const result = await this.#client().query(
       `
         SELECT *
         FROM insight_llm_call_status
@@ -10179,7 +10229,7 @@ export class PgFinanceRepository {
     workspaceId = DEFAULT_WORKSPACE_ID,
     family,
   ) {
-    const result = await this.#pool.query(
+    const result = await this.#client().query(
       `
         SELECT *
         FROM insight_llm_call_status
@@ -10196,7 +10246,7 @@ export class PgFinanceRepository {
     workspaceId = DEFAULT_WORKSPACE_ID,
     telemetry,
   ) {
-    const result = await this.#pool.query(
+    const result = await this.#client().query(
       `
         INSERT INTO insight_llm_call_status (
           workspace_id,
@@ -10268,7 +10318,7 @@ export class PgFinanceRepository {
   async clearInsightOutput(
     workspaceId = DEFAULT_WORKSPACE_ID,
   ) {
-    return withTransaction(this.#pool, async (client) => {
+    return this.#withTransaction(async (client) => {
       const searchDocuments = await client.query(
         `
           DELETE FROM search_documents
@@ -10302,7 +10352,7 @@ export class PgFinanceRepository {
     workspaceId = DEFAULT_WORKSPACE_ID,
     family = null,
   ) {
-    const result = await this.#pool.query(
+    const result = await this.#client().query(
       `
         SELECT family, rule_key, enabled, settings
         FROM insight_rules
@@ -10330,7 +10380,7 @@ export class PgFinanceRepository {
       userId = null,
     },
   ) {
-    return withTransaction(this.#pool, async (client) => {
+    return this.#withTransaction(async (client) => {
       const exists = await client.query(
         `
           SELECT id
@@ -10442,7 +10492,7 @@ export class PgFinanceRepository {
     workspaceId = DEFAULT_WORKSPACE_ID,
     { family, ruleKey, settings, enabled },
   ) {
-    const result = await this.#pool.query(
+    const result = await this.#client().query(
       `
         INSERT INTO insight_rules (
           id, workspace_id, family, rule_key, enabled, settings
@@ -10474,7 +10524,7 @@ export class PgFinanceRepository {
     workspaceId = DEFAULT_WORKSPACE_ID,
     { ruleId, settings, enabled },
   ) {
-    const result = await this.#pool.query(
+    const result = await this.#client().query(
       `
         UPDATE insight_rules
         SET settings = COALESCE($3::jsonb, settings),
@@ -10525,7 +10575,7 @@ export class PgFinanceRepository {
       throw new TypeError("Unsupported insight feedback reason");
     }
 
-    return withTransaction(this.#pool, async (client) => {
+    return this.#withTransaction(async (client) => {
       const existing = await client.query(
         `
           SELECT *
@@ -10697,7 +10747,7 @@ export class PgFinanceRepository {
       );
     }
 
-    return withTransaction(this.#pool, async (client) => {
+    return this.#withTransaction(async (client) => {
       const existing = await client.query(
         `
           SELECT *
@@ -10898,7 +10948,7 @@ export class PgFinanceRepository {
       boundedLimit,
     ];
     const [feedback, archived] = await Promise.all([
-      this.#pool.query(
+      this.#client().query(
         `
           WITH latest_restore AS (
             SELECT finding_key, MAX(created_at) AS restored_at
@@ -10947,7 +10997,7 @@ export class PgFinanceRepository {
         `,
         params,
       ),
-      this.#pool.query(
+      this.#client().query(
         `
           WITH latest_restore AS (
             SELECT finding_key, MAX(created_at) AS restored_at
@@ -10992,7 +11042,7 @@ export class PgFinanceRepository {
     streamIds,
     duplicateState,
   ) {
-    const result = await this.#pool.query(
+    const result = await this.#client().query(
       `
         UPDATE recurring_streams
         SET duplicate_state = $3, updated_at = now()
@@ -11019,7 +11069,7 @@ export class PgFinanceRepository {
       findingIds = presentation?.findingIds,
     },
   ) {
-    await this.#pool.query(
+    await this.#client().query(
       `
         INSERT INTO insight_narratives (
           id, workspace_id, family, findings_hash,
@@ -11062,7 +11112,7 @@ export class PgFinanceRepository {
     workspaceId = DEFAULT_WORKSPACE_ID,
     family,
   ) {
-    const result = await this.#pool.query(
+    const result = await this.#client().query(
       `
         SELECT *
         FROM insight_narratives
@@ -11088,7 +11138,7 @@ export class PgFinanceRepository {
   }
 
   async getDataFreshness(workspaceId = DEFAULT_WORKSPACE_ID) {
-    const result = await this.#pool.query(
+    const result = await this.#client().query(
       `
         SELECT
           min(
@@ -11228,7 +11278,7 @@ export class PgFinanceRepository {
   ) {
     const normalized = normalizeSearchText(query);
     if (!normalized) return [];
-    const result = await this.#pool.query(
+    const result = await this.#client().query(
       `
         WITH search_settings AS MATERIALIZED (
           SELECT set_config(
@@ -11321,7 +11371,7 @@ export class PgFinanceRepository {
   }
 
   async rebuildSearchDocuments(workspaceId = DEFAULT_WORKSPACE_ID) {
-    await withTransaction(this.#pool, async (client) => {
+    await this.#withTransaction(async (client) => {
       await client.query(
         "DELETE FROM search_documents WHERE workspace_id = $1",
         [workspaceId],
@@ -11515,7 +11565,7 @@ export class PgFinanceRepository {
       syncType,
     },
   ) {
-    await this.#pool.query(
+    await this.#client().query(
       `
         INSERT INTO sync_runs (
           id, workspace_id, connection_id, sync_type, status
@@ -11528,7 +11578,7 @@ export class PgFinanceRepository {
   }
 
   async finishSyncRun(id, { status, stats = {}, errorCode = null }) {
-    await this.#pool.query(
+    await this.#client().query(
       `
         UPDATE sync_runs
         SET status = $2,

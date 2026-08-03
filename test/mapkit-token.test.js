@@ -204,6 +204,7 @@ test("MapKit endpoint contains signer failures and leaves app readiness alone", 
   await request(app).get("/health/ready").expect(200, {
     status: "ready",
     database: "ready",
+    cache: "disabled",
   });
   const response = await request(app)
     .get("/api/mapkit-token")
@@ -214,4 +215,27 @@ test("MapKit endpoint contains signer failures and leaves app readiness alone", 
     message: "The map preview is unavailable.",
   });
   assert.doesNotMatch(JSON.stringify(response.body), /APPLE_|private|sign/i);
+});
+
+test("Redis cache state is visible but never gates readiness", async () => {
+  const config = loadConfig({
+    NODE_ENV: "test",
+    AUTH_MODE: "mock",
+    DEMO_MODE: "true",
+    PUBLIC_BASE_URL: "http://money.test",
+  });
+  for (const cache of ["disabled", "warming", "ready", "degraded"]) {
+    const app = createApp({
+      config,
+      readModelService: {
+        status() {
+          return cache;
+        },
+      },
+    });
+    const response = await request(app).get("/health/ready").expect(200);
+    assert.equal(response.body.status, "ready");
+    assert.equal(response.body.database, "ready");
+    assert.equal(response.body.cache, cache);
+  }
 });

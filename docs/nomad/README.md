@@ -57,6 +57,7 @@ Required static values:
 | `database_url` | The `money` PostgreSQL role connecting to the `money` database |
 | `database_ssl` | Set to `true` in production so every database connection requires TLS |
 | `database_ssl_reject_unauthorized` | Keep `true` for trusted certificates; use `false` only for a self-signed database certificate |
+| `redis_url` | Shared Redis endpoint for bounded financial read models; accepts `redis://` or `rediss://` |
 | `ghcr_token` | GitHub personal access token (classic) scoped to `read:packages` |
 | `plaid_client_id`, `plaid_secret` | Plaid environment credentials |
 | `plaid_webhook_url` | Public signed-webhook endpoint |
@@ -87,6 +88,32 @@ short-lived JWT from `/api/mapkit-token`; every JWT is limited to the
 never rendered into HTML or sent to the browser. For local testing, set
 `PUBLIC_BASE_URL` to the exact local origin you open in the browser. Missing or
 invalid credentials leave the address visible and omit only the map.
+
+## Read-model cache rollout
+
+Dashboard, Plan, and the canonical first Transactions page use bounded JSON
+read models in Redis. PostgreSQL remains authoritative: every entry is checked
+against a workspace revision stored in PostgreSQL, expires after 12 hours, is
+limited to 512 KiB, and comes from a fixed allowlist capped at 24 keys per
+workspace. Redis failures never make the application or readiness check fail.
+
+`READ_MODEL_CACHE_MODE` in [money.nomad.hcl](money.nomad.hcl) controls rollout.
+The checked-in job uses `serve`, so the configured `redis_url` is used for
+reads and proactive warming immediately after deployment.
+
+1. Use `warm` when validating writes without serving cached models. Confirm
+   `/health/ready` reports
+   `cache: "warming"`, warm jobs complete, entry sizes stay bounded, and logs
+   contain no read-model values or Redis keys.
+2. Use `serve` for normal operation. Readiness should report `cache: "ready"`; a Redis
+   outage may report `degraded` while HTTP continues through PostgreSQL.
+
+The worker force-refreshes canonical models after writes and Plaid/Apple Card
+ingestion, at startup, every six hours, after the nightly pipeline, and at UTC
+or workspace-local date rollover. Rollback is one edit back to `off`; existing
+keys expire without a delete operation.
+
+Both `redis://` and `rediss://` endpoints are supported in production.
 
 For GHCR, create a **personal access token (classic)** with only
 `read:packages`, then put it in `ghcr_token`. The job uses the fixed GitHub
@@ -204,6 +231,8 @@ Then perform the authenticated checks:
 
 Readiness must fail when production configuration or PostgreSQL is unavailable.
 Do not weaken it to make a broken rollout look green.
+Redis is deliberately non-gating; inspect the separate `cache` field for
+`disabled`, `warming`, `ready`, or `degraded`.
 
 ## Rotation
 

@@ -46,9 +46,14 @@ function fixture() {
     cardBalanceMinor: 0,
     budgetTransactionReads: [],
     budgetSplitReads: [],
+    budgetCategoryReads: 0,
+    budgetVersionReads: 0,
+    freshnessReads: 0,
+    timezoneReads: 0,
   };
   const repository = {
     async getWorkspaceTimezone() {
+      calls.timezoneReads += 1;
       return "America/Los_Angeles";
     },
     async listGoals() {
@@ -159,6 +164,7 @@ function fixture() {
       );
     },
     async listBudgetCategoryVersions() {
+      calls.budgetVersionReads += 1;
       return [...budgetVersions.entries()].map(
         ([category, version]) => ({ category, version }),
       );
@@ -370,6 +376,7 @@ function fixture() {
   ]);
   const financeRepository = {
     async listSpendingCategories() {
+      calls.budgetCategoryReads += 1;
       return structuredClone(budgetCategories);
     },
     async resolveSpendingCategory(_workspaceId, value) {
@@ -411,6 +418,7 @@ function fixture() {
       return structuredClone(recurringStreams);
     },
     async getDataFreshness() {
+      calls.freshnessReads += 1;
       return {
         data_as_of: "2026-07-27T12:00:00.000Z",
         partial: false,
@@ -527,7 +535,7 @@ test("Safe to Spend loads upcoming bills using the workspace date", async () => 
 });
 
 test("planning overview derives paid, overdue, and upcoming obligation bills with matched payments", async () => {
-  const { service, recurringStreams } = fixture();
+  const { service, recurringStreams, calls } = fixture();
   recurringStreams.push(
     {
       id: "auto-loan",
@@ -704,6 +712,10 @@ test("planning overview derives paid, overdue, and upcoming obligation bills wit
       },
     },
   ]);
+  assert.equal(calls.timezoneReads, 1);
+  assert.equal(calls.freshnessReads, 1);
+  assert.equal(calls.budgetCategoryReads, 1);
+  assert.equal(calls.budgetVersionReads, 1);
 });
 
 test("brokerage allocations cannot consume value already earmarked to other goals", async () => {
