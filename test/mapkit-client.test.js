@@ -200,6 +200,7 @@ test("CSP allows only the MapKit script and service origins needed by the client
       .some((source) => source.includes("apple-mapkit")),
     false,
   );
+  assert.deepEqual(directives.workerSrc, ["'self'", "blob:"]);
 });
 
 test("CSP allows the remote Calibre stylesheet and font files", () => {

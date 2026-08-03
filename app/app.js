@@ -73,6 +73,7 @@ export function contentSecurityPolicyDirectives(config) {
       "https://cdn.apple-mapkit.com",
     ],
     styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.yaboiii.com"],
+    workerSrc: ["'self'", "blob:"],
     upgradeInsecureRequests: config.production ? [] : null,
   };
 }

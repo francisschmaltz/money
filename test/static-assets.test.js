@@ -36,7 +36,7 @@ test("Calibre is limited to display typography", async () => {
 
   assert.match(
     head,
-    /<link rel="stylesheet" href="https:\/\/fonts\.yaboiii\.com\/wss\/fonts\?v=2" type="text\/css" as="style">/,
+    /<link rel="stylesheet" href="https:\/\/fonts\.yaboiii\.com\/wss\/fonts\?v=3" type="text\/css" as="style">/,
   );
   assert.doesNotMatch(styles, /CalibreWeb-R-(?:Regular|Medium|Semibold)\.woff/);
   assert.match(styles, /--font-display:\s*"Calibre", var\(--font-system\);/);
