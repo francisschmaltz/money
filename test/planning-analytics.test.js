@@ -104,7 +104,7 @@ test("Safe to Spend subtracts bills expected in the next 30 days but not subscri
   assert.equal(snapshot.safe_to_spend.amount_minor, 500_000);
   assert.match(
     snapshot.formula,
-    /next monthly bills plus other bills due within 30 days/i,
+    /bills due within 30 days/i,
   );
 });
 
@@ -208,10 +208,10 @@ test("expected bills include repeated and overdue occurrences while exposing unu
   assert.equal(projection.expected_bills.amount_minor, 1_400);
   assert.equal(projection.expected_bill_occurrence_count, 9);
   assert.equal(projection.expected_bills_through_on, "2026-08-27");
-  assert.equal(projection.excluded_expected_bill_count, 3);
+  assert.equal(projection.excluded_expected_bill_count, 2);
 });
 
-test("monthly bills always reserve their next estimate while longer cadences stay inside 30 days", () => {
+test("all bill cadences stay inside the rolling 30-day window", () => {
   const projection = projectExpectedBills({
     asOf: "2026-07-01",
     recurringStreams: [
@@ -258,12 +258,12 @@ test("monthly bills always reserve their next estimate while longer cadences sta
     ],
   });
 
-  assert.equal(projection.expected_bills.amount_minor, 1_000);
-  assert.equal(projection.expected_bill_occurrence_count, 3);
-  assert.equal(projection.expected_bills_through_on, "2026-08-01");
+  assert.equal(projection.expected_bills.amount_minor, 500);
+  assert.equal(projection.expected_bill_occurrence_count, 2);
+  assert.equal(projection.expected_bills_through_on, "2026-07-31");
 });
 
-test("an observed monthly bill keeps its next occurrence reserved across a 31-day gap", () => {
+test("an observed monthly bill releases until its next occurrence enters the 30-day window", () => {
   const bill = {
     stream_type: "bill",
     status: "active",
@@ -285,8 +285,8 @@ test("an observed monthly bill keeps its next occurrence reserved across a 31-da
   });
 
   assert.equal(beforeDetection.expected_bills.amount_minor, 500_000);
-  assert.equal(afterDetection.expected_bills.amount_minor, 500_000);
-  assert.equal(afterDetection.expected_bill_occurrence_count, 1);
+  assert.equal(afterDetection.expected_bills.amount_minor, 0);
+  assert.equal(afterDetection.expected_bill_occurrence_count, 0);
 });
 
 test("bill reservations include spending and obligations but ignore transfer streams", () => {

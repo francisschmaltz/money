@@ -60,10 +60,9 @@ reverse_goal_spend
 ```
 
 `get_safe_to_spend` returns liquid USD cash after positive current card
-balances, the next occurrence of every active USD monthly bill plus other
-active USD bills due within 30 days, and cash-backed goal earmarks. Its card
-deliberately contains only the final amount, status, formula, factor names and
-counts, alerts, and bounded IDs for goals with positive cash earmarks. Call
+balances, active USD bills due within 30 days, and cash-backed goal earmarks.
+Its card deliberately contains only the final amount, status, formula, factor
+names and counts, alerts, and bounded IDs for goals with positive cash earmarks. Call
 `get_finance_goal` with one of those IDs for dollar details. The bill projection
 includes only recurring streams classified as bills; subscriptions are
 deliberately excluded. Preserve the calculation window and

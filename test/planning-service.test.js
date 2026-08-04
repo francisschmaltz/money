@@ -529,7 +529,7 @@ test("Safe to Spend loads upcoming bills using the workspace date", async () => 
   assert.equal(result.data.safe_to_spend.amount_minor, 500_000);
   assert.match(
     result.summary,
-    /next monthly bills plus other bills due within 30 days/i,
+    /bills due within 30 days/i,
   );
   assert.match(result.warnings[0], /1 active bill estimate was not included/i);
 });

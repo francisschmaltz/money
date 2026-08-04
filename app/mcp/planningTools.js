@@ -44,7 +44,7 @@ const DEFINITIONS = Object.freeze({
   get_safe_to_spend: {
     title: "Get Safe to Spend",
     description:
-      "Get only the current Safe to Spend amount, calculation factors, the next monthly bills plus other bills due within 30 days, alerts, and IDs of cash-backed goals. Subscriptions and transfers are excluded; bill dates and amounts are estimates from recurring history. Use get_finance_goal for a contributing goal's details.",
+      "Get only the current Safe to Spend amount, calculation factors, bills due within 30 days, alerts, and IDs of cash-backed goals. Subscriptions and transfers are excluded; bill dates and amounts are estimates from recurring history. Use get_finance_goal for a contributing goal's details.",
   },
   list_finance_goals: {
     title: "List finance goals",

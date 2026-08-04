@@ -324,7 +324,7 @@ export function createDemoPlanningService({
         subtitle: "2 active goals",
         source: { label: "Money", url: "/plan" },
         summary:
-          "Safe to Spend reflects liquid cash after card balances, the next monthly bills plus other bills due within 30 days, and cash-backed goals.",
+          "Safe to Spend reflects liquid cash after card balances, bills due within 30 days, and cash-backed goals.",
       };
     },
 

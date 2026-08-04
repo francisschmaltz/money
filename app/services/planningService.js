@@ -183,7 +183,7 @@ export class PlanningService {
         state.snapshot.active_goal_count === 1 ? "" : "s"
       }`,
       path: "/plan",
-      summary: `${formatMoney(state.snapshot.safe_to_spend)} is safe to spend after current card balances, the next monthly bills plus other bills due within 30 days, and cash-backed goals.`,
+      summary: `${formatMoney(state.snapshot.safe_to_spend)} is safe to spend after current card balances, bills due within 30 days, and cash-backed goals.`,
       warnings: state.snapshot.alerts
         .filter((alert) => alert.code === "expected_bills_incomplete")
         .map((alert) => alert.message),

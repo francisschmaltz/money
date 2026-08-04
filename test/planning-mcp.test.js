@@ -59,7 +59,7 @@ test("planning tool copy explains effective transfer eligibility and budget nett
 
   assert.match(
     safeToSpendDescription,
-    /next monthly bills plus other bills due within 30 days/i,
+    /bills due within 30 days/i,
   );
   assert.match(safeToSpendDescription, /Subscriptions.*excluded/i);
   assert.match(safeToSpendDescription, /estimates from recurring history/i);

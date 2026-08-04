@@ -209,7 +209,7 @@ credential discovers those same tools plus 11 audited planning-write MCP tools.
 | `read` | Finance | `get_net_worth_history` | Historical asset, liability, and net-worth snapshots. |
 | `read` | Finance | `get_portfolio_summary` | Holdings, allocation, value history, cash flows, and supported performance evidence. |
 | `read` | Finance | `get_credit_score_summary` | Manually tracked scores, freshness, household average, and history; not an underwriting score. |
-| `read` | Planning | `get_safe_to_spend` | Current Safe to Spend, calculation factors including the next monthly bills plus other active bills due within 30 days, alerts, and contributing goal IDs. |
+| `read` | Planning | `get_safe_to_spend` | Current Safe to Spend, calculation factors including active bills due within 30 days, alerts, and contributing goal IDs. |
 | `read` | Planning | `list_finance_goals` | Paginated compact active or finished goal records with IDs and status. |
 | `read` | Planning | `get_finance_goal` | Complete funding, spending, schedule, backing, version, and history details for one goal ID. |
 | `read` | Planning | `get_budget_status` | Hierarchical budgets, taxonomy-wide category actuals, goal-attributed offsets, income, and leftover for one Plan month. |
