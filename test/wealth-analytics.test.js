@@ -178,6 +178,38 @@ test("overview marks unknown USD balances partial and explains currency exclusio
   );
 });
 
+test("account coverage warnings expose a partial sync", async () => {
+  const warnings = [
+    {
+      product: "investment_holdings",
+      code: "EMPTY_HOLDINGS_WITH_POSITIVE_BALANCE",
+    },
+  ];
+  const investment = account({
+    id: "retirement",
+    type: "investment",
+    subtype: "401k",
+    balance: 14_127_923,
+  });
+  investment.connection_status = "active";
+  investment.connection_coverage_warnings = warnings;
+  const repository = {
+    async listAccounts() {
+      return [investment];
+    },
+    async getDataFreshness() {
+      return FRESHNESS;
+    },
+  };
+  const service = createFinanceService({ repository });
+
+  const listed = await service.listAccounts();
+  const card = listed.data.groups[0].accounts[0];
+
+  assert.equal(card.freshness.status, "partial");
+  assert.deepEqual(card.freshness.coverage_warnings, warnings);
+});
+
 test("balance-group overrides win over inferred account subtype", () => {
   assert.equal(
     inferBalanceGroup(

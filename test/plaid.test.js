@@ -624,6 +624,161 @@ test("investment holdings persist before a later history failure", async () => {
   );
 });
 
+test("investment response accounts are stored before their holdings", async () => {
+  const accountBatches = [];
+  const replacements = [];
+  const deactivations = [];
+  const repository = investmentSyncRepository({
+    async upsertAccounts(_itemId, accounts) {
+      accountBatches.push(
+        accounts.map((account) => account.provider_account_id),
+      );
+    },
+    async deactivateMissingAccounts(_itemId, providerAccountIds) {
+      deactivations.push(providerAccountIds);
+    },
+    async replaceInvestments(_itemId, values) {
+      replacements.push(values);
+    },
+  });
+  const provider = investmentSyncProvider({
+    accounts: [
+      plaidInvestmentAccount({
+        accountId: "fidelity-plan",
+        name: "Cisco 401(k)",
+        subtype: "401k",
+        balance: 141_279.23,
+      }),
+    ],
+    holdingsResult: {
+      accounts: [
+        plaidInvestmentAccount({
+          accountId: "fidelity-plan",
+          name: "Cisco 401(k) pre-tax",
+          subtype: "401k",
+          balance: 100_000,
+        }),
+        plaidInvestmentAccount({
+          accountId: "fidelity-roth",
+          name: "Cisco Roth 401(k)",
+          subtype: "roth 401k",
+          balance: 41_279.23,
+        }),
+      ],
+      holdings: [
+        plaidHolding({
+          accountId: "fidelity-plan",
+          securityId: "target-2045",
+          value: 100_000,
+        }),
+        plaidHolding({
+          accountId: "fidelity-roth",
+          securityId: "target-2050",
+          value: 41_279.23,
+        }),
+      ],
+      securities: [
+        plaidSecurity("target-2045", "Target 2045"),
+        plaidSecurity("target-2050", "Target 2050"),
+      ],
+    },
+    transactionAccounts: [
+      plaidInvestmentAccount({
+        accountId: "fidelity-plan",
+        name: "Cisco 401(k) pre-tax",
+        subtype: "401k",
+        balance: 100_000,
+      }),
+      plaidInvestmentAccount({
+        accountId: "fidelity-roth",
+        name: "Cisco Roth 401(k)",
+        subtype: "roth 401k",
+        balance: 41_279.23,
+      }),
+    ],
+  });
+  const service = new PlaidSyncService({
+    provider,
+    repository,
+    secretRepository: { async get() { return "access-token"; } },
+    now: () => new Date("2026-08-04T18:00:00Z"),
+  });
+
+  const stats = await service.syncItem("local-item");
+
+  assert.deepEqual(accountBatches, [
+    ["fidelity-plan"],
+    ["fidelity-plan", "fidelity-roth"],
+    ["fidelity-plan", "fidelity-roth"],
+  ]);
+  assert.deepEqual(deactivations, [
+    ["fidelity-plan", "fidelity-roth"],
+  ]);
+  assert.deepEqual(
+    replacements[0].holdings.map(
+      (holding) => holding.provider_account_id,
+    ),
+    ["fidelity-plan", "fidelity-roth"],
+  );
+  assert.equal(stats.accounts, 2);
+  assert.equal(stats.holdings, 2);
+});
+
+test("a funded investment account with an empty holdings response preserves positions and warns", async () => {
+  const knownHoldings = [{ id: "known-position" }];
+  const states = [];
+  let finished;
+  const repository = investmentSyncRepository({
+    async replaceInvestments(_itemId, values) {
+      if (Object.hasOwn(values, "holdings")) {
+        knownHoldings.splice(0, knownHoldings.length, ...values.holdings);
+      }
+    },
+    async updatePlaidItemState(_itemId, state) {
+      states.push(state);
+    },
+    async finishSyncRun(_runId, result) {
+      finished = result;
+    },
+  });
+  const account = plaidInvestmentAccount({
+    accountId: "fidelity-401k",
+    name: "Cisco 401(k)",
+    subtype: "401k",
+    balance: 141_279.23,
+  });
+  const provider = investmentSyncProvider({
+    accounts: [account],
+    holdingsResult: {
+      accounts: [account],
+      holdings: [],
+      securities: [],
+    },
+    transactionAccounts: [account],
+  });
+  const service = new PlaidSyncService({
+    provider,
+    repository,
+    secretRepository: { async get() { return "access-token"; } },
+    now: () => new Date("2026-08-04T18:00:00Z"),
+  });
+
+  const stats = await service.syncItem("local-item");
+
+  assert.deepEqual(knownHoldings, [{ id: "known-position" }]);
+  assert.deepEqual(stats.optional_product_warnings, [
+    {
+      product: "investment_holdings",
+      code: "EMPTY_HOLDINGS_WITH_POSITIVE_BALANCE",
+    },
+  ]);
+  assert.deepEqual(finished.stats, stats);
+  assert.deepEqual(
+    states.find((state) => state.status === "active").coverageWarnings,
+    stats.optional_product_warnings,
+  );
+});
+
 test("sync fences read models before its first write and publishes after success", async () => {
   const { service, events } = readModelFenceSyncHarness();
 
@@ -900,6 +1055,99 @@ async function sourceFiles(directory) {
     else if (entry.name.endsWith(".js")) files.push(target);
   }
   return files;
+}
+
+function investmentSyncRepository(overrides = {}) {
+  return {
+    async getPlaidItem() {
+      return {
+        id: "local-item",
+        workspace_id: "shared",
+        institution_name: "Fidelity",
+        transactions_cursor: null,
+        status: "active",
+      };
+    },
+    async startSyncRun() {
+      return "run";
+    },
+    async updatePlaidItemState() {},
+    async upsertAccounts() {},
+    async deactivateMissingAccounts() {},
+    async applyTransactionSync() {},
+    async replaceInvestments() {},
+    async takeDailySnapshots() {},
+    async rebuildSearchDocuments() {},
+    async finishSyncRun() {},
+    ...overrides,
+  };
+}
+
+function investmentSyncProvider({
+  accounts,
+  holdingsResult,
+  transactionAccounts = [],
+}) {
+  return {
+    async getAccounts() {
+      return { accounts };
+    },
+    async syncTransactions() {
+      return {
+        added: [],
+        modified: [],
+        removed: [],
+        nextCursor: "cursor",
+      };
+    },
+    async getInvestmentHoldings() {
+      return holdingsResult;
+    },
+    async getInvestmentTransactions() {
+      return {
+        accounts: transactionAccounts,
+        securities: [],
+        investmentTransactions: [],
+      };
+    },
+  };
+}
+
+function plaidInvestmentAccount({
+  accountId,
+  name,
+  subtype,
+  balance,
+}) {
+  return {
+    account_id: accountId,
+    name,
+    type: "investment",
+    subtype,
+    balances: {
+      current: balance,
+      iso_currency_code: "USD",
+    },
+  };
+}
+
+function plaidHolding({ accountId, securityId, value }) {
+  return {
+    account_id: accountId,
+    security_id: securityId,
+    quantity: 100,
+    institution_value: value,
+    iso_currency_code: "USD",
+  };
+}
+
+function plaidSecurity(securityId, name) {
+  return {
+    security_id: securityId,
+    name,
+    type: "mutual fund",
+    iso_currency_code: "USD",
+  };
 }
 
 function liabilitySyncHarness({ account, getLiabilities }) {

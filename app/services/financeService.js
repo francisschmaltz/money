@@ -3303,6 +3303,44 @@ export class FinanceService {
       );
     }
     const query = request.query ?? {};
+    if (view === "portfolio") {
+      const portfolio = await this.getPortfolioSummary({
+        period: query.period ?? "1m",
+        scope: query.scope ?? "all",
+        holdingsLimit: 100,
+      });
+      const webHoldings = consolidatePortfolioHoldingRows(
+        [
+          ...portfolio.data.holdings.map(webHolding),
+          ...portfolioPendingBalanceRows(
+            portfolio.data.allocation_pending,
+          ),
+        ],
+      );
+      return {
+        freshness: freshnessLabel({
+          data_as_of: portfolio.data_as_of,
+        }),
+        overview: {
+          portfolio: portfolio.data.total_value,
+        },
+        holdings: webHoldings,
+        allocation: webHoldings
+          .filter((holding) => holding.value.amount_minor > 0)
+          .map((holding) => ({
+            label: holding.symbol,
+            value: holding.allocation,
+          })),
+        portfolioSeries: portfolio.data.series.map(
+          (point) => point.value.amount_minor,
+        ),
+        portfolioData: portfolio.data,
+        selectedHolding: selectPortfolioHolding(
+          webHoldings,
+          query.holding,
+        ),
+      };
+    }
     const freshness = await this.#dataFreshness();
     const base = {
       freshness: freshnessLabel(freshness),
@@ -3709,43 +3747,6 @@ export class FinanceService {
         creditScorePresets: CREDIT_SCORE_PRESETS,
       };
     }
-    if (view === "portfolio") {
-      const [overview, portfolio] = await Promise.all([
-        this.getFinanceOverview(),
-        this.getPortfolioSummary({
-          period: query.period ?? "1m",
-          scope: query.scope ?? "all",
-          holdingsLimit: 100,
-        }),
-      ]);
-      const webHoldings = consolidatePortfolioHoldingRows(
-        [
-          ...portfolio.data.holdings.map(webHolding),
-          ...portfolioPendingBalanceRows(
-            portfolio.data.allocation_pending,
-          ),
-        ],
-      );
-      return {
-        ...base,
-        overview: webOverview(overview.data),
-        holdings: webHoldings,
-        allocation: webHoldings
-          .filter((holding) => holding.value.amount_minor > 0)
-          .map((holding) => ({
-            label: holding.symbol,
-            value: holding.allocation,
-          })),
-        portfolioSeries: portfolio.data.series.map(
-          (point) => point.value.amount_minor,
-        ),
-        portfolioData: portfolio.data,
-        selectedHolding: selectPortfolioHolding(
-          webHoldings,
-          query.holding,
-        ),
-      };
-    }
     if (view === "accounts") {
       const [overview, accounts] = await Promise.all([
         this.getFinanceOverview(),
@@ -3958,6 +3959,11 @@ export class FinanceService {
 
 function accountCard(account) {
   const balanceGroup = inferBalanceGroup(account);
+  const coverageWarnings = Array.isArray(
+    account.connection_coverage_warnings,
+  )
+    ? account.connection_coverage_warnings
+    : [];
   const credit =
     balanceGroup === "credit_card"
       ? creditAccountCardFields(account)
@@ -3997,10 +4003,13 @@ function accountCard(account) {
                 account.connection_status,
               )
             ? "error"
-            : account.last_synced_at
-              ? "fresh"
-              : "stale",
+            : coverageWarnings.length
+              ? "partial"
+              : account.last_synced_at
+                ? "fresh"
+                : "stale",
       error_code: account.connection_error_code ?? null,
+      coverage_warnings: coverageWarnings,
     },
   };
 }
@@ -5812,13 +5821,14 @@ function webAccount(account) {
       account.ingestion_method === "csv"
         ? null
         : account.freshness.synced_at ?? null,
+    syncStatus: account.freshness.status,
     freshness:
       account.ingestion_method === "csv"
         ? account.freshness.posted_through_on
           ? `Posted through ${account.freshness.posted_through_on}`
           : "No posted transactions imported"
         : account.freshness.synced_at
-          ? `Synced ${new Date(account.freshness.synced_at).toLocaleString()}`
+          ? `${account.freshness.status === "partial" ? "Partial sync" : "Synced"} ${new Date(account.freshness.synced_at).toLocaleString()}`
           : "Not synced",
   };
 }

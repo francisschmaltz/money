@@ -53,7 +53,7 @@
       <form class="cleanup-rule-form" data-cleanup-rule-form>
         <div class="cleanup-rule-dialog__heading">
           <div>
-            <p class="eyebrow">Automatic cleanup</p>
+            <p class="eyebrow">Automatic matching</p>
             <h3 id="cleanup-rule-dialog-title" data-cleanup-rule-dialog-title>New rule</h3>
           </div>
           <button class="icon-button" type="button" data-cleanup-rule-cancel aria-label="Close rule editor">
@@ -82,20 +82,21 @@
             <input name="matcher_value" type="text" maxlength="160" autocomplete="off" data-cleanup-rule-matcher-value required>
           </label>
           <small>Capitalization, punctuation, and extra spaces are normalized. Contains matches this text anywhere in the selected field; exact matches take priority.</small>
-          <label class="cleanup-edit-field">
-            <span class="cleanup-edit-field__toggle">
+          <div class="cleanup-rule-form__amount">
+            <label class="cleanup-rule-form__amount-toggle">
               <input type="checkbox" data-cleanup-rule-amount-enabled>
-              Match amount
+              <span>Match amount</span>
+            </label>
+            <select name="amount_operator" aria-label="Amount comparison" data-cleanup-rule-amount-operator disabled>
+              <option value="exact">Exactly</option>
+              <option value="less_than">Less than</option>
+              <option value="more_than">More than</option>
+            </select>
+            <span class="cleanup-rule-form__amount-value">
+              <span aria-hidden="true">$</span>
+              <input name="amount" aria-label="Amount" type="number" min="0.01" step="0.01" inputmode="decimal" placeholder="5,000.00" data-cleanup-rule-amount disabled>
             </span>
-            <span class="cleanup-rule-form__amount">
-              <select name="amount_operator" data-cleanup-rule-amount-operator disabled>
-                <option value="exact">Exactly</option>
-                <option value="less_than">Less than</option>
-                <option value="more_than">More than</option>
-              </select>
-              <input name="amount" type="number" min="0.01" step="0.01" inputmode="decimal" placeholder="5000.00" data-cleanup-rule-amount disabled>
-            </span>
-          </label>
+          </div>
           <small>Uses the absolute transaction amount, so the same condition works for deposits and withdrawals.</small>
         </div>
 

@@ -366,6 +366,86 @@ test("portfolio presentation consolidates the same security across accounts", ()
   assert.equal(selectPortfolioHolding(rows, "SCHK"), rows[0]);
 });
 
+test("portfolio page skips unrelated overview reads and starts its reads together", async () => {
+  const calls = [];
+  let callsBeforeFreshnessResolved = [];
+  const unexpected = (name) => async () => {
+    assert.fail(`${name} must not run for the portfolio page`);
+  };
+  const repository = {
+    async getDataFreshness() {
+      calls.push("getDataFreshness");
+      await new Promise((resolve) => {
+        setImmediate(() => {
+          callsBeforeFreshnessResolved = [...calls];
+          resolve();
+        });
+      });
+      return {
+        data_as_of: NOW.toISOString(),
+        partial: false,
+        warnings: [],
+      };
+    },
+    async getHoldings() {
+      calls.push("getHoldings");
+      return [cashHolding()];
+    },
+    async getHoldingSnapshots() {
+      calls.push("getHoldingSnapshots");
+      return [];
+    },
+    async getInvestmentTransactions() {
+      calls.push("getInvestmentTransactions");
+      return [];
+    },
+    async listAccounts() {
+      calls.push("listAccounts");
+      return [
+        {
+          id: "account-etrade",
+          name: "E*TRADE Brokerage",
+          type: "investment",
+          subtype: "brokerage",
+          is_liability: false,
+          current_balance_minor: 123_456,
+          currency_code: "USD",
+        },
+      ];
+    },
+    getTransactionsForPeriod: unexpected("getTransactionsForPeriod"),
+    listTransactionSplits: unexpected("listTransactionSplits"),
+    listRecurringStreams: unexpected("listRecurringStreams"),
+    listManualAssets: unexpected("listManualAssets"),
+    getManualAssetValuations: unexpected("getManualAssetValuations"),
+  };
+  const service = createFinanceService({
+    repository,
+    now: () => NOW,
+  });
+
+  const page = await service.getPageData("portfolio", {
+    query: { scope: "trading" },
+  });
+  const expectedCalls = [
+    "getDataFreshness",
+    "getHoldingSnapshots",
+    "getHoldings",
+    "getInvestmentTransactions",
+    "listAccounts",
+  ];
+
+  assert.deepEqual([...calls].sort(), expectedCalls);
+  assert.deepEqual(
+    [...callsBeforeFreshnessResolved].sort(),
+    expectedCalls,
+  );
+  assert.deepEqual(page.overview, {
+    portfolio: usd(123_456),
+  });
+  assert.deepEqual(page.portfolioData.total_value, usd(123_456));
+});
+
 test("portfolio page model presents E*TRADE currency as a cash balance", async () => {
   const service = createFinanceService({
     repository: {
@@ -379,7 +459,6 @@ test("portfolio page model presents E*TRADE currency as a cash balance", async (
     },
     now: () => NOW,
   });
-  service.getFinanceOverview = async () => ({ data: {} });
   service.getPortfolioSummary = async () => ({
     data: {
       scope: "trading",

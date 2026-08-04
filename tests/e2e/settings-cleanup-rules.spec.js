@@ -51,6 +51,26 @@ test("automatic cleanup can match contained normalized text", async ({
   await dialog.getByRole("textbox", { name: "Match text" }).fill(
     "Motorsports",
   );
+  const amountToggle = dialog.getByRole("checkbox", {
+    name: "Match amount",
+  });
+  const amountBounds = await amountToggle.boundingBox();
+  expect(amountBounds).not.toBeNull();
+  expect(amountBounds.width).toBeLessThanOrEqual(20);
+  expect(amountBounds.height).toBeLessThanOrEqual(20);
+
+  const amountOperator = dialog.getByRole("combobox", {
+    name: "Amount comparison",
+  });
+  const amount = dialog.getByRole("spinbutton", { name: "Amount" });
+  await expect(amountOperator).toBeDisabled();
+  await expect(amount).toBeDisabled();
+  await amountToggle.check();
+  await expect(amountOperator).toBeEnabled();
+  await expect(amount).toBeEnabled();
+  await amountOperator.selectOption("less_than");
+  await amount.fill("5000");
+
   await dialog.getByRole("checkbox", { name: "Set category" }).check();
   await dialog.locator("[data-cleanup-rule-category]").selectOption(
     "Groceries",
@@ -62,6 +82,10 @@ test("automatic cleanup can match contained normalized text", async ({
       field: "normalized_name",
       mode: "contains",
       value: "Motorsports",
+      amount: {
+        operator: "less_than",
+        amount_minor: 500_000,
+      },
     },
     changes: {
       category_primary: "Groceries",

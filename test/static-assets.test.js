@@ -21,11 +21,31 @@ test("first-party asset revisions change with the current deployment", async () 
     path.resolve("app/views/partials/head.ejs"),
     "utf8",
   );
-  assert.match(head, /\/css\/money\.css\?v=37/);
+  assert.match(head, /\/css\/money\.css\?v=38/);
   assert.match(head, /\/js\/theme\.js\?v=1/);
   assert.match(head, /\/js\/charts\.js\?v=7/);
   assert.match(head, /\/js\/money\.js\?v=34/);
   assert.match(head, /\/js\/transactions\.js\?v=4/);
+});
+
+test("Format Rules keeps amount and cleanup controls compact", async () => {
+  const styles = await readFile(
+    path.resolve("app/public/css/money.css"),
+    "utf8",
+  );
+
+  assert.match(
+    styles,
+    /\.cleanup-rule-form__amount\s*\{[\s\S]*?grid-template-columns:\s*auto minmax\(120px, 0\.55fr\) minmax\(150px, 0\.7fr\);/,
+  );
+  assert.match(
+    styles,
+    /\.cleanup-rule-form__amount-toggle input\[type="checkbox"\]\s*\{[\s\S]*?width:\s*17px;[\s\S]*?min-height:\s*0;/,
+  );
+  assert.match(
+    styles,
+    /\.cleanup-rule-form fieldset > \.cleanup-edit-field\s*\{[\s\S]*?grid-template-columns:\s*minmax\(130px, 0\.34fr\) minmax\(0, 1fr\);/,
+  );
 });
 
 test("Calibre is limited to display typography", async () => {

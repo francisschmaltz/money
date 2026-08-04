@@ -1854,7 +1854,7 @@ function assertPageModel(view, model) {
     throw new Error(`Finance page data is incomplete for ${view}`);
   }
   if (
-    ["dashboard", "accounts", "portfolio"].includes(view) &&
+    ["dashboard", "accounts"].includes(view) &&
     [
       "cashBalance",
       "shortTermWorth",
@@ -1864,6 +1864,9 @@ function assertPageModel(view, model) {
     ].some((key) => !Object.hasOwn(model.overview, key))
   ) {
     throw new Error(`Finance wealth totals are incomplete for ${view}`);
+  }
+  if (view === "portfolio" && !model.overview?.portfolio) {
+    throw new Error("Finance portfolio total is incomplete for portfolio");
   }
 }
 

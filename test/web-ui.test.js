@@ -879,6 +879,27 @@ test("accounts expose exact sync instants for local browser formatting", async (
       `<time\\s+datetime="${syncedAt}"\\s+data-local-date-time="${syncedAt}"\\s+data-local-date-time-prefix="Last successful sync "`,
     ),
   );
+
+  const partialHtml = await render("accounts", {
+    pageTitle: "Accounts",
+    activePath: "/accounts",
+    accounts: [
+      {
+        ...demo.accounts[0],
+        institution: "Fidelity",
+        syncedAt,
+        syncStatus: "partial",
+        freshness: "Partial sync 7/28/2026, 1:08:58 AM",
+      },
+    ],
+  });
+  assert.match(
+    partialHtml,
+    new RegExp(
+      `<time\\s+datetime="${syncedAt}"\\s+data-local-date-time="${syncedAt}"\\s+data-local-date-time-prefix="Partial sync · "`,
+    ),
+  );
+  assert.match(partialHtml, /Partial sync 7\/28\/2026/);
 });
 
 test("backend account controls stay admin-only while local aliases stay available", async () => {
@@ -1459,6 +1480,11 @@ test("Format Rules exposes exact and contains automatic cleanup rules", async ()
   assert.match(html, /One-time cleanup/);
   assert.match(html, /data-cleanup-rerun/);
   assert.match(html, /data-cleanup-rule-amount-enabled/);
+  assert.match(html, /Automatic matching/);
+  assert.match(html, /class="cleanup-rule-form__amount-toggle"/);
+  assert.match(html, /class="cleanup-rule-form__amount-value"/);
+  assert.match(html, /aria-label="Amount comparison"/);
+  assert.match(html, /aria-label="Amount"/);
   assert.match(html, /Changes to apply <small>\(optional\)<\/small>/);
 
   const matcherSelect = html.match(

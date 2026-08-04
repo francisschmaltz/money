@@ -293,6 +293,16 @@ function normalizeNonnegativeMinor(value) {
   return normalized;
 }
 
+function investmentPersistenceMismatch(entity, received, inserted) {
+  const kind = entity === "holdings" ? "HOLDINGS" : "TRANSACTIONS";
+  const error = new Error(
+    `Only ${inserted} of ${received} investment ${entity} matched stored accounts and securities`,
+  );
+  error.name = "InvestmentPersistenceError";
+  error.code = `INVESTMENT_${kind}_PERSISTENCE_MISMATCH`;
+  return error;
+}
+
 function inferBalanceGroup(account) {
   const type = normalizeSearchText(account.type).replaceAll(" ", "_");
   const subtype = normalizeSearchText(account.subtype).replaceAll(" ", "_");
@@ -3808,7 +3818,7 @@ export class PgFinanceRepository {
         );
       }
       if (holdings?.length) {
-        await client.query(
+        const inserted = await client.query(
           `
             INSERT INTO holdings (
               id, workspace_id, account_id, security_id, quantity,
@@ -3838,10 +3848,17 @@ export class PgFinanceRepository {
           `,
           [JSON.stringify(holdings), asOf, itemId],
         );
+        if (inserted.rowCount !== holdings.length) {
+          throw investmentPersistenceMismatch(
+            "holdings",
+            holdings.length,
+            inserted.rowCount,
+          );
+        }
       }
 
       if (transactions.length) {
-        await client.query(
+        const inserted = await client.query(
           `
             INSERT INTO investment_transactions (
               id, workspace_id, account_id, security_id,
@@ -3886,6 +3903,13 @@ export class PgFinanceRepository {
           `,
           [JSON.stringify(transactions), itemId],
         );
+        if (inserted.rowCount !== transactions.length) {
+          throw investmentPersistenceMismatch(
+            "transactions",
+            transactions.length,
+            inserted.rowCount,
+          );
+        }
       }
     });
   }
@@ -4001,7 +4025,8 @@ export class PgFinanceRepository {
           i.imported_through_on,
           i.balance_as_of,
           i.status AS connection_status,
-          i.error_code AS connection_error_code
+          i.error_code AS connection_error_code,
+          p.coverage_warnings AS connection_coverage_warnings
         FROM accounts a
         JOIN finance_connections i ON i.id = a.connection_id
         LEFT JOIN plaid_connection_details p ON p.connection_id = i.id
@@ -11928,6 +11953,8 @@ function mapAccount(row) {
     ingestion_method: row.ingestion_method ?? "plaid",
     connection_status: row.connection_status ?? null,
     connection_error_code: row.connection_error_code ?? null,
+    connection_coverage_warnings:
+      row.connection_coverage_warnings ?? [],
     imported_through_on:
       row.imported_through_on == null
         ? null

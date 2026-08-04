@@ -44,7 +44,7 @@ test("head validates server appearance and paints it before themed assets", asyn
     system.indexOf('/js/theme.js?v=1') <
       system.indexOf('/vendor/chart/chart.umd.js'),
   );
-  assert.match(system, /\/css\/money\.css\?v=37/);
+  assert.match(system, /\/css\/money\.css\?v=38/);
   assert.match(system, /\/js\/charts\.js\?v=7/);
   assert.match(system, /\/js\/money\.js\?v=34/);
   const transactions = await renderPartial("head", {

@@ -75,7 +75,7 @@
                 <time
                   datetime="<%= institutionAccount.syncedAt %>"
                   data-local-date-time="<%= institutionAccount.syncedAt %>"
-                  data-local-date-time-prefix="Last successful sync "
+                  data-local-date-time-prefix="<%= institutionAccount.syncStatus === 'partial' ? 'Partial sync · ' : 'Last successful sync ' %>"
                 ><%= institutionAccount.freshness %></time>
               <% } else { %>
                 <%= institutionAccount.freshness %>

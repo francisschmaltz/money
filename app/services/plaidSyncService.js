@@ -199,20 +199,56 @@ export class PlaidSyncService {
       liabilities: 0,
       optional_product_warnings: [],
     };
+    const activeProviderAccountIds = new Set();
+    const accountsByProviderId = new Map();
+    const persistProviderAccounts = async (providerAccounts = []) => {
+      const accounts = providerAccounts.map((account) =>
+        normalizePlaidAccount(account, item.institution_name),
+      );
+      if (accounts.length) {
+        await this.#repository.upsertAccounts(itemId, accounts);
+      }
+      for (const account of accounts) {
+        activeProviderAccountIds.add(account.provider_account_id);
+        accountsByProviderId.set(account.provider_account_id, account);
+      }
+      stats.accounts = accountsByProviderId.size;
+      return accounts;
+    };
+    const persistHoldings = async (holdingsResult) => {
+      await persistProviderAccounts(holdingsResult.accounts ?? []);
+      const holdings = (holdingsResult.holdings ?? []).map(
+        normalizePlaidHolding,
+      );
+      const fundedInvestmentAccount = [...accountsByProviderId.values()].some(
+        (account) =>
+          account.type === "investment" &&
+          Number.isSafeInteger(account.current_balance_minor) &&
+          account.current_balance_minor > 0,
+      );
+      if (!holdings.length && fundedInvestmentAccount) {
+        stats.optional_product_warnings.push({
+          product: "investment_holdings",
+          code: "EMPTY_HOLDINGS_WITH_POSITIVE_BALANCE",
+        });
+      } else {
+        await this.#repository.replaceInvestments(itemId, {
+          securities: (holdingsResult.securities ?? []).map(
+            normalizePlaidSecurity,
+          ),
+          holdings,
+          asOf: this.#now(),
+        });
+      }
+      stats.holdings = holdings.length;
+    };
     let finalBoundaryCommitted = false;
 
     try {
       const accountResponse = await this.#provider.getAccounts(accessToken);
-      const normalizedAccounts = (accountResponse.accounts ?? []).map(
-        (account) =>
-          normalizePlaidAccount(account, item.institution_name),
+      const normalizedAccounts = await persistProviderAccounts(
+        accountResponse.accounts ?? [],
       );
-      await this.#repository.upsertAccounts(itemId, normalizedAccounts);
-      await this.#repository.deactivateMissingAccounts(
-        itemId,
-        normalizedAccounts.map((account) => account.provider_account_id),
-      );
-      stats.accounts = normalizedAccounts.length;
 
       const transactionSync = await this.#provider.syncTransactions(
         accessToken,
@@ -252,17 +288,7 @@ export class PlaidSyncService {
             stats,
           );
           if (holdingsResult) {
-            const holdings = (holdingsResult.holdings ?? []).map(
-              normalizePlaidHolding,
-            );
-            await this.#repository.replaceInvestments(itemId, {
-              securities: (holdingsResult.securities ?? []).map(
-                normalizePlaidSecurity,
-              ),
-              holdings,
-              asOf: this.#now(),
-            });
-            stats.holdings = holdings.length;
+            await persistHoldings(holdingsResult);
           }
 
           const transactionsResult = await this.#optionalProduct(
@@ -275,6 +301,9 @@ export class PlaidSyncService {
             stats,
           );
           if (transactionsResult) {
+            await persistProviderAccounts(
+              transactionsResult.accounts ?? [],
+            );
             const transactions = (
               transactionsResult.investmentTransactions ?? []
             ).map(normalizePlaidInvestmentTransaction);
@@ -298,27 +327,27 @@ export class PlaidSyncService {
             stats,
           );
           if (investmentResult) {
-            const securities = investmentResult.securities.map(
-              normalizePlaidSecurity,
-            );
-            const holdings = investmentResult.holdings.map(
-              normalizePlaidHolding,
-            );
+            await persistHoldings(investmentResult);
             const transactions =
               investmentResult.investmentTransactions.map(
                 normalizePlaidInvestmentTransaction,
               );
             await this.#repository.replaceInvestments(itemId, {
-              securities,
-              holdings,
+              securities: (investmentResult.securities ?? []).map(
+                normalizePlaidSecurity,
+              ),
               transactions,
               asOf: this.#now(),
             });
-            stats.holdings = holdings.length;
             stats.investment_transactions = transactions.length;
           }
         }
       }
+
+      await this.#repository.deactivateMissingAccounts(
+        itemId,
+        [...activeProviderAccountIds],
+      );
 
       if (normalizedAccounts.some(supportsPlaidLiabilities)) {
         const liabilityResult = await this.#optionalProduct(
@@ -372,7 +401,12 @@ export class PlaidSyncService {
       const code =
         error instanceof PlaidApiError
           ? error.code ?? "PLAID_ERROR"
-          : "SYNC_ERROR";
+          : [
+                "INVESTMENT_HOLDINGS_PERSISTENCE_MISMATCH",
+                "INVESTMENT_TRANSACTIONS_PERSISTENCE_MISMATCH",
+              ].includes(error?.code)
+            ? error.code
+            : "SYNC_ERROR";
       if (!finalBoundaryCommitted) {
         await this.#transaction(async (client) => {
           await this.#repository.updatePlaidItemState(itemId, {

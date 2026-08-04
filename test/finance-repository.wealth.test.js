@@ -106,6 +106,34 @@ test("balance groups infer deterministically and explicit overrides win", () => 
   }
 });
 
+test("account reads carry connection coverage warnings", async () => {
+  const warnings = [
+    {
+      product: "investment_holdings",
+      code: "EMPTY_HOLDINGS_WITH_POSITIVE_BALANCE",
+    },
+  ];
+  const db = fakePool(async (sql) => {
+    if (!sql.includes("FROM accounts a")) return { rows: [] };
+    assert.match(
+      sql,
+      /p\.coverage_warnings AS connection_coverage_warnings/,
+    );
+    return {
+      rows: [
+        accountRow({
+          connection_coverage_warnings: warnings,
+        }),
+      ],
+    };
+  });
+  const repository = new PgFinanceRepository(db.pool);
+
+  const accounts = await repository.listAccounts("shared");
+
+  assert.deepEqual(accounts[0].connection_coverage_warnings, warnings);
+});
+
 test("account group updates are workspace scoped, clearable, and refresh search", async () => {
   const db = fakePool(async (sql, params) => {
     if (sql.includes("UPDATE accounts a")) {
@@ -500,6 +528,83 @@ test("investment history updates never erase already persisted holdings", async 
       call.sql.includes("INSERT INTO investment_transactions"),
     ),
   );
+});
+
+test("investment replacement rolls back when provider rows miss local joins", async () => {
+  const scenarios = [
+    {
+      insert: "INSERT INTO holdings",
+      code: "INVESTMENT_HOLDINGS_PERSISTENCE_MISMATCH",
+      values: {
+        holdings: [
+          {
+            id: "holding-1",
+            provider_account_id: "provider-account",
+            provider_security_id: "provider-security-1",
+            quantity: 1,
+            institution_value_minor: 10_000,
+            currency_code: "USD",
+          },
+          {
+            id: "holding-2",
+            provider_account_id: "missing-subaccount",
+            provider_security_id: "provider-security-2",
+            quantity: 1,
+            institution_value_minor: 20_000,
+            currency_code: "USD",
+          },
+        ],
+      },
+    },
+    {
+      insert: "INSERT INTO investment_transactions",
+      code: "INVESTMENT_TRANSACTIONS_PERSISTENCE_MISMATCH",
+      values: {
+        transactions: [
+          {
+            id: "investment-transaction-1",
+            provider_account_id: "provider-account",
+            provider_security_id: null,
+            provider_investment_transaction_id: "provider-transaction-1",
+            transaction_type: "cash",
+            amount_minor: 10_000,
+            fees_minor: 0,
+            currency_code: "USD",
+            posted_on: "2026-08-03",
+          },
+          {
+            id: "investment-transaction-2",
+            provider_account_id: "missing-subaccount",
+            provider_security_id: null,
+            provider_investment_transaction_id: "provider-transaction-2",
+            transaction_type: "cash",
+            amount_minor: 20_000,
+            fees_minor: 0,
+            currency_code: "USD",
+            posted_on: "2026-08-04",
+          },
+        ],
+      },
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    const db = fakePool(async (sql) => ({
+      rows: [],
+      rowCount: sql.includes(scenario.insert) ? 1 : 0,
+    }));
+    const repository = new PgFinanceRepository(db.pool);
+
+    await assert.rejects(
+      repository.replaceInvestments("connection-1", scenario.values),
+      (error) => error.code === scenario.code,
+    );
+    assert.ok(db.calls.some((call) => call.sql === "ROLLBACK"));
+    assert.equal(
+      db.calls.some((call) => call.sql === "COMMIT"),
+      false,
+    );
+  }
 });
 
 test("refunds inherit the original effective category and expose lineage", async () => {
