@@ -99,7 +99,7 @@ export class PlaidSyncService {
       return this.syncItem(itemId);
     }
     await this.#repository.updatePlaidItemState(itemId, {
-      status: "active",
+      status: "syncing",
       errorCode: null,
     });
     const response = { queued: true, item_id: itemId, job_id: null };
@@ -143,6 +143,10 @@ export class PlaidSyncService {
     });
 
     if (this.#jobQueue) {
+      await this.#repository.updatePlaidItemState(item.id, {
+        status: "syncing",
+        errorCode: null,
+      });
       await this.#enqueueJob(
         "plaid.sync_item",
         { itemId: item.id },
@@ -203,9 +207,7 @@ export class PlaidSyncService {
         (account) =>
           normalizePlaidAccount(account, item.institution_name),
       );
-      await this.#repository.upsertAccounts(itemId, normalizedAccounts, {
-        syncedAt: this.#now(),
-      });
+      await this.#repository.upsertAccounts(itemId, normalizedAccounts);
       await this.#repository.deactivateMissingAccounts(
         itemId,
         normalizedAccounts.map((account) => account.provider_account_id),
@@ -226,7 +228,6 @@ export class PlaidSyncService {
           (transaction) => transaction.transaction_id,
         ),
         cursor: transactionSync.nextCursor,
-        syncedAt: this.#now(),
       });
       stats.transactions_added = added.length;
       stats.transactions_modified = modified.length;
@@ -237,34 +238,85 @@ export class PlaidSyncService {
           (account) => account.type === "investment",
         )
       ) {
-        const investmentResult = await this.#optionalProduct(
-          "investments",
-          () =>
-            this.#provider.getInvestments(accessToken, {
-              startDate: shiftDate(this.#now(), -730),
-              endDate: dateOnly(this.#now()),
-            }),
-          stats,
-        );
-        if (investmentResult) {
-          const securities = investmentResult.securities.map(
-            normalizePlaidSecurity,
+        const investmentOptions = {
+          startDate: shiftDate(this.#now(), -730),
+          endDate: dateOnly(this.#now()),
+        };
+        if (
+          typeof this.#provider.getInvestmentHoldings === "function" &&
+          typeof this.#provider.getInvestmentTransactions === "function"
+        ) {
+          const holdingsResult = await this.#optionalProduct(
+            "investment_holdings",
+            () => this.#provider.getInvestmentHoldings(accessToken),
+            stats,
           );
-          const holdings = investmentResult.holdings.map(
-            normalizePlaidHolding,
-          );
-          const transactions =
-            investmentResult.investmentTransactions.map(
-              normalizePlaidInvestmentTransaction,
+          if (holdingsResult) {
+            const holdings = (holdingsResult.holdings ?? []).map(
+              normalizePlaidHolding,
             );
-          await this.#repository.replaceInvestments(itemId, {
-            securities,
-            holdings,
-            transactions,
-            asOf: this.#now(),
-          });
-          stats.holdings = holdings.length;
-          stats.investment_transactions = transactions.length;
+            await this.#repository.replaceInvestments(itemId, {
+              securities: (holdingsResult.securities ?? []).map(
+                normalizePlaidSecurity,
+              ),
+              holdings,
+              asOf: this.#now(),
+            });
+            stats.holdings = holdings.length;
+          }
+
+          const transactionsResult = await this.#optionalProduct(
+            "investment_transactions",
+            () =>
+              this.#provider.getInvestmentTransactions(
+                accessToken,
+                investmentOptions,
+              ),
+            stats,
+          );
+          if (transactionsResult) {
+            const transactions = (
+              transactionsResult.investmentTransactions ?? []
+            ).map(normalizePlaidInvestmentTransaction);
+            await this.#repository.replaceInvestments(itemId, {
+              securities: (transactionsResult.securities ?? []).map(
+                normalizePlaidSecurity,
+              ),
+              transactions,
+              asOf: this.#now(),
+            });
+            stats.investment_transactions = transactions.length;
+          }
+        } else {
+          const investmentResult = await this.#optionalProduct(
+            "investments",
+            () =>
+              this.#provider.getInvestments(
+                accessToken,
+                investmentOptions,
+              ),
+            stats,
+          );
+          if (investmentResult) {
+            const securities = investmentResult.securities.map(
+              normalizePlaidSecurity,
+            );
+            const holdings = investmentResult.holdings.map(
+              normalizePlaidHolding,
+            );
+            const transactions =
+              investmentResult.investmentTransactions.map(
+                normalizePlaidInvestmentTransaction,
+              );
+            await this.#repository.replaceInvestments(itemId, {
+              securities,
+              holdings,
+              transactions,
+              asOf: this.#now(),
+            });
+            stats.holdings = holdings.length;
+            stats.investment_transactions = transactions.length;
+          }
         }
       }
 

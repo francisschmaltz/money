@@ -241,7 +241,9 @@ export function demoAccountForWeb(account) {
       account.balance_group_override ?? null,
     icon: presentation.icon,
     tone: presentation.tone,
-    freshness: presentation.freshness,
+    freshness: account.freshness?.synced_at
+      ? presentation.freshness
+      : "Waiting for a successful sync",
     syncedAt: account.freshness?.synced_at ?? null,
   };
 }

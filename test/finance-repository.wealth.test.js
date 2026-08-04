@@ -467,6 +467,41 @@ test("investment replacement and daily snapshots preserve Plaid vesting facts", 
   );
 });
 
+test("investment history updates never erase already persisted holdings", async () => {
+  const db = fakePool(async () => ({ rows: [], rowCount: 1 }));
+  const repository = new PgFinanceRepository(db.pool);
+
+  await repository.replaceInvestments("connection-1", {
+    transactions: [
+      {
+        id: "investment-transaction-1",
+        provider_account_id: "provider-account",
+        provider_security_id: null,
+        provider_investment_transaction_id: "provider-transaction-1",
+        transaction_type: "cash",
+        subtype: "deposit",
+        amount_minor: 100_000,
+        fees_minor: 0,
+        quantity: null,
+        price_minor: null,
+        currency_code: "USD",
+        posted_on: "2026-08-03",
+        name: "Deposit",
+      },
+    ],
+  });
+
+  assert.equal(
+    db.calls.some((call) => call.sql.startsWith("DELETE FROM holdings")),
+    false,
+  );
+  assert.ok(
+    db.calls.some((call) =>
+      call.sql.includes("INSERT INTO investment_transactions"),
+    ),
+  );
+});
+
 test("refunds inherit the original effective category and expose lineage", async () => {
   const db = fakePool(async (sql) => {
     if (!sql.includes("FROM transactions t")) return { rows: [] };
@@ -541,6 +576,53 @@ test("Plaid modifications cannot erase a locally linked original transaction", a
     upsertSql,
     /original_transaction_id = COALESCE\( EXCLUDED\.original_transaction_id, transactions\.original_transaction_id \)/,
   );
+});
+
+test("transaction cursor progress does not claim a completed account sync", async () => {
+  const db = fakePool(async () => ({ rows: [], rowCount: 0 }));
+  const repository = new PgFinanceRepository(db.pool);
+
+  await repository.applyTransactionSync({
+    itemId: "item-1",
+    cursor: "cursor-1",
+  });
+
+  const connectionUpdate = db.calls.find((call) =>
+    call.sql.startsWith("UPDATE finance_connections"),
+  );
+  assert.deepEqual(connectionUpdate.params, [
+    "item-1",
+    null,
+    null,
+    null,
+  ]);
+  assert.equal(
+    db.calls.some((call) =>
+      call.sql.startsWith("UPDATE accounts SET last_synced_at"),
+    ),
+    false,
+  );
+  const cursorUpdate = db.calls.find((call) =>
+    call.sql.startsWith("UPDATE plaid_connection_details"),
+  );
+  assert.deepEqual(cursorUpdate.params, ["item-1", "cursor-1", null]);
+});
+
+test("a completed Item sync timestamps its active accounts", async () => {
+  const db = fakePool(async () => ({ rows: [], rowCount: 0 }));
+  const repository = new PgFinanceRepository(db.pool);
+  const syncedAt = new Date("2026-08-03T18:47:16Z");
+
+  await repository.updatePlaidItemState("item-1", {
+    status: "active",
+    errorCode: null,
+    lastSyncedAt: syncedAt,
+  });
+
+  const accountUpdate = db.calls.find((call) =>
+    call.sql.startsWith("UPDATE accounts SET last_synced_at"),
+  );
+  assert.deepEqual(accountUpdate.params, ["item-1", syncedAt]);
 });
 
 test("wealth migrations define each money currency column once", async () => {

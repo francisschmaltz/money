@@ -40,6 +40,7 @@ import {
 } from "./investmentSecurities.js";
 import {
   consolidatePortfolioHoldingRows,
+  portfolioPendingBalanceRows,
   selectPortfolioHolding,
 } from "./portfolioPresentation.js";
 import {
@@ -1004,6 +1005,56 @@ export class FinanceService {
       balance_group: investmentGroup(holding),
     }));
     const holdings = enrichedHoldings.filter(scopedAccount);
+    const currentHoldingValueByAccount = new Map();
+    const vestingAwareAccounts = new Set();
+    for (const holding of enrichedHoldings) {
+      if (holding.currency_code !== this.#currency) continue;
+      const split = splitHoldingEquity(holding);
+      currentHoldingValueByAccount.set(
+        holding.account_id,
+        (currentHoldingValueByAccount.get(holding.account_id) ?? 0) +
+          split.current_value_minor,
+      );
+      if (split.observed) vestingAwareAccounts.add(holding.account_id);
+    }
+    const pendingBalances = accounts.flatMap((account) => {
+      const accountEntity = {
+        ...account,
+        account_id: account.id,
+        balance_group: accountGroups.get(account.id),
+      };
+      if (!scopedAccount(accountEntity)) return [];
+      if (
+        account.currency_code !== this.#currency ||
+        !Number.isSafeInteger(account.current_balance_minor) ||
+        account.current_balance_minor <= 0
+      ) {
+        return [];
+      }
+      const subtype = String(account.subtype ?? "")
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "_");
+      if (
+        vestingAwareAccounts.has(account.id) ||
+        subtype.includes("stock_plan")
+      ) {
+        return [];
+      }
+      const holdingValue = currentHoldingValueByAccount.get(account.id) ?? 0;
+      const valueMinor = account.current_balance_minor - holdingValue;
+      return valueMinor > 0
+        ? [
+            {
+              account_id: account.id,
+              account_name: account.name,
+              balance_group: accountGroups.get(account.id),
+              value_minor: valueMinor,
+              currency_code: account.currency_code,
+            },
+          ]
+        : [];
+    });
     const snapshots = allSnapshots.filter(scopedAccount);
     const investmentTransactions = allTransactions.filter(scopedAccount);
     const retirementValue = enrichedHoldings
@@ -1016,7 +1067,10 @@ export class FinanceService {
         (sum, holding) =>
           sum + splitHoldingEquity(holding).current_value_minor,
         0,
-      );
+      ) +
+      pendingBalances
+        .filter((balance) => balance.balance_group === "retirement")
+        .reduce((sum, balance) => sum + balance.value_minor, 0);
     const taxableValue = enrichedHoldings
       .filter(
         (holding) =>
@@ -1027,11 +1081,17 @@ export class FinanceService {
         (sum, holding) =>
           sum + splitHoldingEquity(holding).current_value_minor,
         0,
-      );
+      ) +
+      pendingBalances
+        .filter(
+          (balance) => balance.balance_group === "taxable_investment",
+        )
+        .reduce((sum, balance) => sum + balance.value_minor, 0);
     const data = buildPortfolioSummary({
       holdings,
       snapshots,
       investmentTransactions,
+      pendingBalances,
       currency: this.#currency,
       now: this.#now(),
       investmentHistoryComplete: !freshness.partial,
@@ -1063,10 +1123,10 @@ export class FinanceService {
       title: "Portfolio",
       subtitle:
         retirementScope === "include"
-          ? `${holdings.length} holdings`
-          : `${holdings.length} ${portfolioScopeLabel(retirementScope)} holdings`,
+          ? portfolioItemCount(holdings.length, pendingBalances.length)
+          : `${portfolioScopeLabel(retirementScope)} portfolio · ${portfolioItemCount(holdings.length, pendingBalances.length)}`,
       path: `/portfolio?scope=${pageScope}`,
-      summary: `${portfolioScopeLabel(retirementScope, true)} portfolio value is ${formatMoney(data.total_value)} across ${holdings.length} holdings.${data.estimated_return_basis_points == null ? " Estimated return is unavailable because snapshot or cash-flow history is incomplete." : ` Estimated return is ${formatBasisPoints(data.estimated_return_basis_points)}.`} ${freshnessSentence(freshness)}`,
+      summary: `${portfolioScopeLabel(retirementScope, true)} portfolio value is ${formatMoney(data.total_value)} across ${portfolioItemCount(holdings.length, pendingBalances.length)}.${data.estimated_return_basis_points == null ? " Estimated return is unavailable because snapshot or cash-flow history is incomplete." : ` Estimated return is ${formatBasisPoints(data.estimated_return_basis_points)}.`} ${freshnessSentence(freshness)}`,
     });
   }
 
@@ -3659,7 +3719,12 @@ export class FinanceService {
         }),
       ]);
       const webHoldings = consolidatePortfolioHoldingRows(
-        portfolio.data.holdings.map(webHolding),
+        [
+          ...portfolio.data.holdings.map(webHolding),
+          ...portfolioPendingBalanceRows(
+            portfolio.data.allocation_pending,
+          ),
+        ],
       );
       return {
         ...base,
@@ -3925,7 +3990,17 @@ function accountCard(account) {
     freshness: {
       synced_at: account.last_synced_at,
       posted_through_on: account.imported_through_on ?? null,
-      status: account.last_synced_at ? "fresh" : "stale",
+      status:
+        account.connection_status === "syncing"
+          ? "syncing"
+          : ["error", "reauth_required"].includes(
+                account.connection_status,
+              )
+            ? "error"
+            : account.last_synced_at
+              ? "fresh"
+              : "stale",
+      error_code: account.connection_error_code ?? null,
     },
   };
 }
@@ -4684,6 +4759,12 @@ function portfolioScopeLabel(scope, sentenceCase = false) {
   return label === "all"
     ? "Total"
     : label[0].toUpperCase() + label.slice(1);
+}
+
+function portfolioItemCount(holdingCount, pendingBalanceCount) {
+  const holdings = `${holdingCount} holding${holdingCount === 1 ? "" : "s"}`;
+  if (pendingBalanceCount === 0) return holdings;
+  return `${holdings} and ${pendingBalanceCount} balance${pendingBalanceCount === 1 ? "" : "s"} pending allocation`;
 }
 
 function recurringStatusMatches(streamStatus, requested) {

@@ -202,7 +202,7 @@
           <section class="selected-detail entity-detail-dialog__summary">
             <b class="ticker"><%= selectedHolding.badge || selectedHolding.symbol.slice(0, 4) %></b>
             <div>
-              <p class="card-kicker"><%= selectedHolding.isCash ? "Cash balance" : selectedHolding.isAggregated ? "Combined holding" : "Holding details" %></p>
+              <p class="card-kicker"><%= selectedHolding.isAllocationPending ? "Allocation pending" : selectedHolding.isCash ? "Cash balance" : selectedHolding.isAggregated ? "Combined holding" : "Holding details" %></p>
               <h2 id="selected-holding-heading"><%= selectedHolding.symbol %></h2>
               <p><%= selectedHolding.name %></p>
             </div>
@@ -211,7 +211,15 @@
           </section>
 
           <div class="entity-detail-dialog__body">
-            <% if (selectedHolding.isCash && selectedHolding.positions?.length) { %>
+            <% if (selectedHolding.isAllocationPending) { %>
+              <dl class="entity-detail-grid">
+                <div><dt>Account</dt><dd><%= selectedHolding.account || "—" %></dd></div>
+                <div><dt>Status</dt><dd>Holding details pending</dd></div>
+                <div><dt>Allocation</dt><dd><%= selectedHolding.allocation %>% of <%= portfolioScopeLabels[selectedScope].toLowerCase() %></dd></div>
+                <div><dt>Account value</dt><dd><%= formatMoney(selectedHolding.value) %></dd></div>
+              </dl>
+              <p class="entity-detail-dialog__note"><i class="ph ph-info" aria-hidden="true"></i> The account balance is included so Portfolio agrees with Accounts. Security positions and performance stay unavailable until the provider finishes syncing holdings.</p>
+            <% } else if (selectedHolding.isCash && selectedHolding.positions?.length) { %>
               <section class="holding-position-breakdown" aria-labelledby="holding-position-breakdown-heading">
                 <h3 id="holding-position-breakdown-heading">By investment account</h3>
                 <div class="holding-position-list" role="list">

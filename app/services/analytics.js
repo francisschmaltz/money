@@ -1101,6 +1101,7 @@ export function buildPortfolioSummary({
   holdings,
   snapshots,
   investmentTransactions = [],
+  pendingBalances = [],
   currency = "USD",
   now = new Date(),
   investmentHistoryComplete = false,
@@ -1118,10 +1119,21 @@ export function buildPortfolioSummary({
     holding,
     split: splitHoldingEquity(holding),
   }));
-  const total = holdingSplits.reduce(
+  const holdingsTotal = holdingSplits.reduce(
     (sum, entry) => sum + entry.split.current_value_minor,
     0,
   );
+  const includedPendingBalances = pendingBalances.filter(
+    (balance) =>
+      balance.currency_code === currency &&
+      Number.isSafeInteger(balance.value_minor) &&
+      balance.value_minor > 0,
+  );
+  const pendingTotal = includedPendingBalances.reduce(
+    (sum, balance) => sum + balance.value_minor,
+    0,
+  );
+  const total = holdingsTotal + pendingTotal;
   const holdingsResult = holdingSplits.map(({ holding, split }) => ({
     id: holding.id,
     security_id: holding.security_id,
@@ -1189,8 +1201,11 @@ export function buildPortfolioSummary({
     allocationGroups.set(
       key,
       (allocationGroups.get(key) ?? 0) +
-        split.current_value_minor,
+      split.current_value_minor,
     );
+  }
+  if (pendingTotal > 0) {
+    allocationGroups.set("allocation_pending", pendingTotal);
   }
   const allocation = [...allocationGroups.entries()]
     .map(([label, value]) => ({
@@ -1287,6 +1302,7 @@ export function buildPortfolioSummary({
     valueOnlyVesting || vestedQuantityChanged;
   const completeHistory =
     investmentHistoryComplete &&
+    pendingTotal === 0 &&
     Boolean(first) &&
     differenceInDays(first.timestamp, dateOnly(now)) >= 7 &&
     hasContinuousSnapshotCoverage(series) &&
@@ -1310,6 +1326,11 @@ export function buildPortfolioSummary({
         );
 
   const warnings = [];
+  if (pendingTotal > 0) {
+    warnings.push(
+      "Some investment balances are included while holding-level allocation finishes syncing.",
+    );
+  }
   if (!series.length) warnings.push("Portfolio history begins after the first local snapshot.");
   if (
     includedHoldings.some(
@@ -1346,6 +1367,29 @@ export function buildPortfolioSummary({
     currency,
     retirement_scope: retirementScope,
     total_value: money(total, currency),
+    allocation_pending:
+      pendingTotal > 0
+        ? {
+            total_value: money(pendingTotal, currency),
+            accounts: includedPendingBalances
+              .map((balance) => ({
+                account_id: balance.account_id,
+                account_name: balance.account_name ?? null,
+                balance_group: balance.balance_group ?? null,
+                value: money(balance.value_minor, currency),
+                allocation_basis_points:
+                  total === 0
+                    ? 0
+                    : Math.round(
+                        (balance.value_minor / total) * 10_000,
+                      ),
+              }))
+              .sort(
+                (left, right) =>
+                  right.value.amount_minor - left.value.amount_minor,
+              ),
+          }
+        : null,
     future_equity:
       futureTotal > 0
         ? {

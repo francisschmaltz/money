@@ -11,6 +11,7 @@ import { detectInvestmentInsights } from "../app/services/insightDetectors.js";
 import { normalizePlaidSecurity } from "../app/providers/plaidNormalizer.js";
 import {
   consolidatePortfolioHoldingRows,
+  portfolioPendingBalanceRows,
   selectPortfolioHolding,
 } from "../app/services/portfolioPresentation.js";
 
@@ -48,6 +49,48 @@ test("Plaid CUR currency tickers normalize as cash", () => {
 
   assert.equal(security.ticker_symbol, "CUR:USD");
   assert.equal(security.security_type, "cash");
+});
+
+test("allocation-pending balances remain distinct from security holdings", () => {
+  const rows = portfolioPendingBalanceRows({
+    total_value: usd(14_127_923),
+    accounts: [
+      {
+        account_id: "fidelity-401k",
+        account_name: "CISCO SYSTEMS, INC. 401(K) PLAN",
+        balance_group: "retirement",
+        value: usd(14_127_923),
+        allocation_basis_points: 9_645,
+      },
+    ],
+  });
+
+  assert.deepEqual(rows, [
+    {
+      id: "allocation-pending:fidelity-401k",
+      securityId: null,
+      accountId: "fidelity-401k",
+      account: "CISCO SYSTEMS, INC. 401(K) PLAN",
+      selectionKey: "allocation-pending:fidelity-401k",
+      symbol: "Allocation pending",
+      badge: "…",
+      name: "CISCO SYSTEMS, INC. 401(K) PLAN positions have not synced",
+      isCash: false,
+      isAllocationPending: true,
+      securityType: "allocation_pending",
+      balanceGroup: "retirement",
+      value: usd(14_127_923),
+      costBasis: null,
+      price: null,
+      priceAsOf: null,
+      allocation: 96.45,
+      shares: null,
+    },
+  ]);
+  assert.equal(
+    selectPortfolioHolding(rows, "allocation-pending:fidelity-401k"),
+    rows[0],
+  );
 });
 
 test("portfolio includes CUR:USD value without stock price requirements", () => {
@@ -492,6 +535,55 @@ test("portfolio HTML shows cash value without rendering CUR:USD as a stock", asy
   assert.doesNotMatch(html, /<dt>Holding ID<\/dt>/);
   assert.doesNotMatch(html, /<span>Selected period<\/span>/);
   assert.doesNotMatch(html, /CUR:USD/);
+});
+
+test("portfolio HTML labels an account balance whose allocation is pending", async () => {
+  const demo = buildDemoModel();
+  const [pending] = portfolioPendingBalanceRows({
+    accounts: [
+      {
+        account_id: "fidelity-401k",
+        account_name: "CISCO SYSTEMS, INC. 401(K) PLAN",
+        balance_group: "retirement",
+        value: usd(14_127_923),
+        allocation_basis_points: 9_645,
+      },
+    ],
+  });
+  const html = await ejs.renderFile(
+    path.resolve("app/views/portfolio.ejs"),
+    {
+      ...demo,
+      formatMoney,
+      activePath: "/portfolio",
+      currentPath: "/portfolio",
+      pageTitle: "Portfolio",
+      pageDescription: "Description",
+      query: { period: "1m", scope: "retirement" },
+      csrfToken: "csrf-test-value",
+      holdings: [pending],
+      allocation: [{ label: "Allocation pending", value: 96.45 }],
+      selectedHolding: pending,
+      portfolioData: {
+        scope: "retirement",
+        total_value: usd(14_647_449),
+        holdings: [],
+        series: [],
+        warnings: [
+          "Some investment balances are included while holding-level allocation finishes syncing.",
+        ],
+        period: { name: "1m" },
+      },
+    },
+  );
+
+  assert.match(html, />Allocation pending</);
+  assert.match(html, /CISCO SYSTEMS, INC\. 401\(K\) PLAN positions have not synced/);
+  assert.match(html, /\$141,279\.23/);
+  assert.match(html, /Holding details pending/);
+  assert.match(html, /Portfolio agrees with Accounts/);
+  assert.doesNotMatch(html, /<dt>Security type<\/dt>/);
+  assert.doesNotMatch(html, /<dt>Shares<\/dt>/);
 });
 
 test("portfolio HTML shows one combined security with its account positions", async () => {

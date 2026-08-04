@@ -300,6 +300,112 @@ test("portfolio supports all, non-retirement, and retirement-only scopes", async
   );
 });
 
+test("portfolio reconciles an investment account balance while holdings are pending", async () => {
+  const accounts = [
+    account({
+      id: "schwab-retirement",
+      type: "investment",
+      subtype: "ira",
+      balance: 519_526,
+    }),
+    account({
+      id: "fidelity-retirement",
+      type: "investment",
+      subtype: "401k",
+      balance: 14_127_923,
+    }),
+  ];
+  const repository = {
+    async listAccounts() {
+      return accounts;
+    },
+    async getHoldings() {
+      return [
+        holding(
+          "schwab-retirement-holding",
+          "schwab-retirement",
+          519_526,
+        ),
+      ];
+    },
+    async getHoldingSnapshots() {
+      return [];
+    },
+    async getInvestmentTransactions() {
+      return [];
+    },
+    async getDataFreshness() {
+      return FRESHNESS;
+    },
+  };
+  const service = createFinanceService({ repository });
+
+  const result = await service.getPortfolioSummary({
+    retirement_scope: "only",
+  });
+
+  assert.equal(result.data.total_value.amount_minor, 14_647_449);
+  assert.equal(result.data.retirement_value.amount_minor, 14_647_449);
+  assert.equal(result.data.holdings.length, 1);
+  assert.deepEqual(result.data.allocation_pending, {
+    total_value: {
+      amount_minor: 14_127_923,
+      currency: "USD",
+    },
+    accounts: [
+      {
+        account_id: "fidelity-retirement",
+        account_name: "fidelity-retirement",
+        balance_group: "retirement",
+        value: {
+          amount_minor: 14_127_923,
+          currency: "USD",
+        },
+        allocation_basis_points: 9_645,
+      },
+    ],
+  });
+  assert.equal(result.data.holdings[0].allocation_basis_points, 355);
+  assert.equal(result.data.allocation[0].label, "allocation_pending");
+  assert.match(result.data.warnings[0], /holding-level allocation/);
+  assert.match(result.summary, /1 balance pending allocation/);
+});
+
+test("portfolio never uses a stock-plan account balance as vested value", async () => {
+  const repository = {
+    async listAccounts() {
+      return [
+        account({
+          id: "stock-plan",
+          type: "investment",
+          subtype: "stock plan",
+          balance: 900_000,
+        }),
+      ];
+    },
+    async getHoldings() {
+      return [];
+    },
+    async getHoldingSnapshots() {
+      return [];
+    },
+    async getInvestmentTransactions() {
+      return [];
+    },
+    async getDataFreshness() {
+      return FRESHNESS;
+    },
+  };
+  const service = createFinanceService({ repository });
+
+  const result = await service.getPortfolioSummary({
+    retirement_scope: "exclude",
+  });
+
+  assert.equal(result.data.total_value.amount_minor, 0);
+  assert.equal(result.data.allocation_pending, null);
+});
+
 test("manual valuations carry forward through net-worth history", () => {
   const history = buildNetWorthHistory({
     snapshots: [

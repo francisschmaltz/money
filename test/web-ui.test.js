@@ -876,7 +876,7 @@ test("accounts expose exact sync instants for local browser formatting", async (
   assert.match(
     html,
     new RegExp(
-      `<time\\s+datetime="${syncedAt}"\\s+data-local-date-time="${syncedAt}"\\s+data-local-date-time-prefix="Synced "`,
+      `<time\\s+datetime="${syncedAt}"\\s+data-local-date-time="${syncedAt}"\\s+data-local-date-time-prefix="Last successful sync "`,
     ),
   );
 });

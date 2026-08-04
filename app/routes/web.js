@@ -22,6 +22,7 @@ import {
 } from "../services/financeService.js";
 import {
   consolidatePortfolioHoldingRows,
+  portfolioPendingBalanceRows,
   selectPortfolioHolding,
 } from "../services/portfolioPresentation.js";
 
@@ -1224,9 +1225,16 @@ async function demoPageModel(
             holdings_limit: 100,
           })
         : null;
-    const serviceHoldings = portfolioResult?.data?.holdings?.map(
-      demoHoldingForWeb,
-    );
+    const serviceHoldings = portfolioResult?.data
+      ? [
+          ...(portfolioResult.data.holdings ?? []).map(
+            demoHoldingForWeb,
+          ),
+          ...portfolioPendingBalanceRows(
+            portfolioResult.data.allocation_pending,
+          ),
+        ]
+      : null;
     const scopedHoldings =
       serviceHoldings ??
       (requestedScope === "all"

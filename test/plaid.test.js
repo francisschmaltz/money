@@ -127,6 +127,27 @@ test("transaction sync restarts from the original cursor after pagination mutati
   );
 });
 
+test("Plaid holdings can be fetched without waiting for investment history", async () => {
+  const paths = [];
+  const provider = new PlaidProvider({
+    clientId: "client-id",
+    secret: "secret",
+    fetchImpl: async (url) => {
+      paths.push(new URL(url).pathname);
+      return jsonResponse({
+        accounts: [],
+        holdings: [{ account_id: "retirement" }],
+        securities: [],
+      });
+    },
+  });
+
+  const result = await provider.getInvestmentHoldings("access-token");
+
+  assert.equal(result.holdings.length, 1);
+  assert.deepEqual(paths, ["/investments/holdings/get"]);
+});
+
 test("normalizer uses signed minor units and pending replacement IDs", () => {
   assert.equal(amountToMinor(12.345, "USD"), 1_235);
   assert.equal(amountToMinor(1_234, "JPY"), 1_234);
@@ -486,8 +507,121 @@ test("sync service keeps credentials at the secret boundary and preserves pendin
     "pending",
   );
   assert.equal(applied.cursor, "cursor-new");
+  assert.equal(Object.hasOwn(applied, "syncedAt"), false);
   assert.equal(JSON.stringify(stats).includes("runtime-access-token"), false);
   assert.ok(states.some((state) => state.status === "active"));
+});
+
+test("investment holdings persist before a later history failure", async () => {
+  const replacements = [];
+  const states = [];
+  const repository = {
+    async getPlaidItem() {
+      return {
+        id: "local-item",
+        workspace_id: "shared",
+        institution_name: "Fidelity",
+        transactions_cursor: null,
+        status: "active",
+      };
+    },
+    async startSyncRun() {
+      return "run";
+    },
+    async updatePlaidItemState(_id, state) {
+      states.push(state);
+    },
+    async upsertAccounts() {},
+    async deactivateMissingAccounts() {},
+    async applyTransactionSync() {},
+    async replaceInvestments(_itemId, values) {
+      replacements.push(values);
+    },
+    async takeDailySnapshots() {},
+    async rebuildSearchDocuments() {},
+    async finishSyncRun() {},
+  };
+  const provider = {
+    async getAccounts() {
+      return {
+        accounts: [
+          {
+            account_id: "fidelity-401k",
+            name: "401(k)",
+            type: "investment",
+            subtype: "401k",
+            balances: {
+              current: 141_279.23,
+              iso_currency_code: "USD",
+            },
+          },
+        ],
+      };
+    },
+    async syncTransactions() {
+      return {
+        added: [],
+        modified: [],
+        removed: [],
+        nextCursor: "cursor",
+      };
+    },
+    async getInvestmentHoldings() {
+      return {
+        holdings: [
+          {
+            account_id: "fidelity-401k",
+            security_id: "target-fund",
+            quantity: 100,
+            institution_value: 141_279.23,
+            iso_currency_code: "USD",
+          },
+        ],
+        securities: [
+          {
+            security_id: "target-fund",
+            name: "Target fund",
+            ticker_symbol: "TARGET",
+            type: "mutual fund",
+            iso_currency_code: "USD",
+          },
+        ],
+      };
+    },
+    async getInvestmentTransactions() {
+      throw new PlaidApiError("history unavailable", {
+        status: 503,
+        errorType: "API_ERROR",
+        errorCode: "INSTITUTION_NOT_RESPONDING",
+      });
+    },
+  };
+  const service = new PlaidSyncService({
+    provider,
+    repository,
+    secretRepository: {
+      async get() {
+        return "access-token";
+      },
+    },
+    now: () => new Date("2026-08-03T18:47:16Z"),
+  });
+
+  await assert.rejects(
+    service.syncItem("local-item"),
+    /history unavailable/,
+  );
+
+  assert.equal(replacements.length, 1);
+  assert.equal(replacements[0].holdings.length, 1);
+  assert.equal(replacements[0].holdings[0].institution_value_minor, 14_127_923);
+  assert.equal(replacements[0].transactions, undefined);
+  assert.equal(states.some((state) => state.status === "active"), false);
+  assert.equal(states.at(-1).status, "error");
+  assert.equal(
+    states.at(-1).errorCode,
+    "INSTITUTION_NOT_RESPONDING",
+  );
 });
 
 test("sync fences read models before its first write and publishes after success", async () => {

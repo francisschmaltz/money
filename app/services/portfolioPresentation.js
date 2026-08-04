@@ -337,6 +337,29 @@ export function consolidatePortfolioHoldingRows(holdings = []) {
     .map(({ holding }) => holding);
 }
 
+export function portfolioPendingBalanceRows(allocationPending = null) {
+  return (allocationPending?.accounts ?? []).map((balance) => ({
+    id: `allocation-pending:${balance.account_id}`,
+    securityId: null,
+    accountId: balance.account_id,
+    account: balance.account_name ?? "Investment account",
+    selectionKey: `allocation-pending:${balance.account_id}`,
+    symbol: "Allocation pending",
+    badge: "…",
+    name: `${balance.account_name ?? "Investment account"} positions have not synced`,
+    isCash: false,
+    isAllocationPending: true,
+    securityType: "allocation_pending",
+    balanceGroup: balance.balance_group ?? null,
+    value: balance.value,
+    costBasis: null,
+    price: null,
+    priceAsOf: null,
+    allocation: balance.allocation_basis_points / 100,
+    shares: null,
+  }));
+}
+
 export function selectPortfolioHolding(
   holdings = [],
   selectionKey = null,

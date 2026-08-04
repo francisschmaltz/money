@@ -186,13 +186,19 @@ export class PlaidProvider {
     throw new PlaidApiError("Plaid transaction sync could not stabilize");
   }
 
-  async getInvestments(accessToken, { startDate, endDate } = {}) {
-    const holdings = await this.#request("/investments/holdings/get", {
+  async getInvestmentHoldings(accessToken) {
+    return this.#request("/investments/holdings/get", {
       access_token: accessToken,
     });
+  }
+
+  async getInvestmentTransactions(
+    accessToken,
+    { startDate, endDate } = {},
+  ) {
     const investmentTransactions = [];
-    const transactionSecurities = [];
-    let transactionAccounts = [];
+    const securities = [];
+    let accounts = [];
     if (startDate && endDate) {
       let offset = 0;
       do {
@@ -207,8 +213,8 @@ export class PlaidProvider {
         );
         const pageTransactions = page.investment_transactions ?? [];
         investmentTransactions.push(...pageTransactions);
-        transactionSecurities.push(...(page.securities ?? []));
-        transactionAccounts = page.accounts ?? transactionAccounts;
+        securities.push(...(page.securities ?? []));
+        accounts = page.accounts ?? accounts;
         offset += pageTransactions.length;
         const total = Number(
           page.total_investment_transactions ?? page.total ?? offset,
@@ -219,19 +225,35 @@ export class PlaidProvider {
       } while (true);
     }
     return {
+      accounts,
+      securities: deduplicateBy(
+        securities,
+        (security) => security.security_id,
+      ),
+      investmentTransactions,
+    };
+  }
+
+  async getInvestments(accessToken, { startDate, endDate } = {}) {
+    const holdings = await this.getInvestmentHoldings(accessToken);
+    const transactions = await this.getInvestmentTransactions(accessToken, {
+      startDate,
+      endDate,
+    });
+    return {
       accounts:
         holdings.accounts?.length
           ? holdings.accounts
-          : transactionAccounts,
+          : transactions.accounts,
       holdings: holdings.holdings ?? [],
       securities: deduplicateBy(
         [
           ...(holdings.securities ?? []),
-          ...transactionSecurities,
+          ...transactions.securities,
         ],
         (security) => security.security_id,
       ),
-      investmentTransactions,
+      investmentTransactions: transactions.investmentTransactions,
     };
   }
 

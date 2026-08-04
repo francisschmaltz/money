@@ -2893,6 +2893,7 @@ export class PgFinanceRepository {
         SELECT
           c.*,
           p.institution_id,
+          p.coverage_warnings,
           latest.imported_at AS last_imported_at,
           latest.total_row_count AS last_total_row_count,
           latest.new_row_count AS last_new_row_count,
@@ -3335,6 +3336,18 @@ export class PgFinanceRepository {
         lastSyncedAt ?? null,
       ],
     );
+    if (lastSyncedAt != null) {
+      await client.query(
+        `
+          UPDATE accounts
+          SET last_synced_at = $2,
+              updated_at = now()
+          WHERE connection_id = $1
+            AND active = true
+        `,
+        [itemId, lastSyncedAt],
+      );
+    }
     await client.query(
       `
         UPDATE plaid_connection_details
@@ -3528,7 +3541,7 @@ export class PgFinanceRepository {
   async upsertAccounts(
     itemId,
     accounts,
-    { syncedAt = new Date() } = {},
+    { syncedAt = null } = {},
     client = this.#client(),
   ) {
     if (!accounts.length) return;
@@ -3575,7 +3588,10 @@ export class PgFinanceRepository {
           credit_limit_minor = EXCLUDED.credit_limit_minor,
           is_liability = EXCLUDED.is_liability,
           active = true,
-          last_synced_at = EXCLUDED.last_synced_at,
+          last_synced_at = COALESCE(
+            EXCLUDED.last_synced_at,
+            accounts.last_synced_at
+          ),
           updated_at = now()
       `,
       [itemId, JSON.stringify(accounts), syncedAt],
@@ -3605,7 +3621,6 @@ export class PgFinanceRepository {
       modified = [],
       removedProviderIds = [],
       cursor,
-      syncedAt = new Date(),
     },
   ) {
     const changed = [...added, ...modified];
@@ -3733,10 +3748,7 @@ export class PgFinanceRepository {
       await this.updatePlaidItemState(
         itemId,
         {
-          status: "active",
-          errorCode: null,
           cursor,
-          lastSyncedAt: syncedAt,
         },
         client,
       );
@@ -3745,7 +3757,12 @@ export class PgFinanceRepository {
 
   async replaceInvestments(
     itemId,
-    { securities = [], holdings = [], transactions = [], asOf = new Date() },
+    {
+      securities = [],
+      holdings,
+      transactions = [],
+      asOf = new Date(),
+    },
   ) {
     await this.#withTransaction(async (client) => {
       if (securities.length) {
@@ -3784,11 +3801,13 @@ export class PgFinanceRepository {
         );
       }
 
-      await client.query(
-        "DELETE FROM holdings WHERE account_id IN (SELECT id FROM accounts WHERE connection_id = $1)",
-        [itemId],
-      );
-      if (holdings.length) {
+      if (holdings !== undefined) {
+        await client.query(
+          "DELETE FROM holdings WHERE account_id IN (SELECT id FROM accounts WHERE connection_id = $1)",
+          [itemId],
+        );
+      }
+      if (holdings?.length) {
         await client.query(
           `
             INSERT INTO holdings (
@@ -3980,7 +3999,9 @@ export class PgFinanceRepository {
           i.provider,
           i.ingestion_method,
           i.imported_through_on,
-          i.balance_as_of
+          i.balance_as_of,
+          i.status AS connection_status,
+          i.error_code AS connection_error_code
         FROM accounts a
         JOIN finance_connections i ON i.id = a.connection_id
         LEFT JOIN plaid_connection_details p ON p.connection_id = i.id
@@ -11871,6 +11892,7 @@ function mapFinanceConnection(row) {
     institution_name: row.institution_name,
     status: row.status,
     error_code: row.error_code,
+    coverage_warnings: row.coverage_warnings ?? [],
     last_synced_at: dateValue(row.last_synced_at),
     imported_through_on:
       row.imported_through_on == null
@@ -11904,6 +11926,8 @@ function mapAccount(row) {
     institution_id: row.institution_id ?? null,
     provider: row.provider ?? "plaid",
     ingestion_method: row.ingestion_method ?? "plaid",
+    connection_status: row.connection_status ?? null,
+    connection_error_code: row.connection_error_code ?? null,
     imported_through_on:
       row.imported_through_on == null
         ? null

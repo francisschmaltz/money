@@ -253,12 +253,18 @@
                 </small>
               <% } %>
             <% } else { %>
-              <small><%= connection.last_synced_at ? `Last synced ${new Date(connection.last_synced_at).toLocaleString()}` : hasStoredConnections ? "Waiting for first sync" : index === 3 ? "Synced yesterday" : "Healthy · Synced recently" %></small>
+              <small><%= connection.last_synced_at ? `Last successful sync ${new Date(connection.last_synced_at).toLocaleString()}` : connection.status === "syncing" ? "First sync in progress" : hasStoredConnections ? "No successful sync yet" : index === 3 ? "Synced yesterday" : "Healthy · Synced recently" %></small>
+              <% if (connection.status === "error" && connection.error_code) { %>
+                <small>Latest attempt failed · <code><%= connection.error_code %></code></small>
+              <% } %>
+              <% if (connection.coverage_warnings?.length) { %>
+                <small>Partial data · <%= connection.coverage_warnings.map((warning) => `${warning.product}: ${warning.code}`).join(" · ") %></small>
+              <% } %>
             <% } %>
           </span>
           <span class="status-pill <%= (connection.status === 'active' && !connection.manual_update_due) || !hasStoredConnections ? 'status-pill--good' : '' %>">
-            <i class="ph <%= connection.manual_update_due ? 'ph-clock-countdown' : connection.status === 'active' || !hasStoredConnections ? 'ph-check-circle' : connection.status === 'reauth_required' ? 'ph-warning-circle' : 'ph-cloud-slash' %>"></i>
-            <%= connection.manual_update_due ? "Manual update due" : connection.status === "reauth_required" ? "Reconnect" : connection.status === "error" ? "Needs attention" : "Connected" %>
+            <i class="ph <%= connection.manual_update_due ? 'ph-clock-countdown' : connection.status === 'active' || !hasStoredConnections ? 'ph-check-circle' : connection.status === 'syncing' ? 'ph-arrows-clockwise' : connection.status === 'reauth_required' ? 'ph-warning-circle' : 'ph-cloud-slash' %>"></i>
+            <%= connection.manual_update_due ? "Manual update due" : connection.status === "syncing" ? "Syncing" : connection.status === "reauth_required" ? "Reconnect" : connection.status === "error" ? "Needs attention" : "Connected" %>
           </span>
           <% if (hasStoredConnections) { %>
             <details class="connection-menu">
