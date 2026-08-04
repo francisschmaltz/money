@@ -66,6 +66,7 @@ test("cleanup rule API exposes admin CRUD with CSRF on mutations", async () => {
       field: "normalized_merchant",
       mode: "contains",
       value: "  AAPL SRV 0042  ",
+      amount: { operator: "less_than", amount_minor: 5_000 },
     },
     changes: {
       display_name: "  Apple Services  ",
@@ -99,6 +100,7 @@ test("cleanup rule API exposes admin CRUD with CSRF on mutations", async () => {
       field: "normalized_merchant",
       mode: "contains",
       value: "AAPL SRV 0042",
+      amount: { operator: "less_than", amount_minor: 5_000 },
     },
     changes: {
       display_name: "Apple Services",
@@ -143,7 +145,7 @@ test("cleanup rule API exposes admin CRUD with CSRF on mutations", async () => {
   ]);
 });
 
-test("cleanup rule API rejects malformed matchers and empty changes", async () => {
+test("cleanup rule API accepts match-only rules and rejects malformed matchers", async () => {
   let calls = 0;
   const app = appWith({
     financeService: {
@@ -169,7 +171,11 @@ test("cleanup rule API rejects malformed matchers and empty changes", async () =
       changes: { display_name: "Apple" },
     },
     {
-      matcher: { field: "normalized_merchant", value: "Apple" },
+      matcher: {
+        field: "normalized_merchant",
+        value: "Apple",
+        amount: { operator: "around", amount_minor: 5_000 },
+      },
       changes: {},
     },
     {
@@ -197,5 +203,19 @@ test("cleanup rule API rejects malformed matchers and empty changes", async () =
       .send(body)
       .expect(400);
   }
-  assert.equal(calls, 0);
+  await request(app)
+    .post("/api/v1/transaction-cleanup-rules")
+    .send({
+      matcher: { field: "normalized_name", value: "Check Paid" },
+      changes: {},
+    })
+    .expect(201);
+  await request(app)
+    .put("/api/v1/transaction-cleanup-rules/rule_1")
+    .send({
+      matcher: { field: "normalized_name", value: "Check Paid" },
+      changes: {},
+    })
+    .expect(200);
+  assert.equal(calls, 2);
 });

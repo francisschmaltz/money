@@ -105,6 +105,10 @@ test("rule list counts deterministic exact-or-contains winners", async () => {
   );
   assert.match(
     query.sql,
+    /transaction_cleanup_rule_amount_matches\(\s*rule\.match_amount_operator,\s*rule\.match_amount_minor,\s*t\.amount_minor\s*\)/,
+  );
+  assert.match(
+    query.sql,
     /\(rule\.match_mode = 'exact'\) DESC/,
   );
   assert.match(
@@ -163,8 +167,12 @@ test("creating a rule stores match mode and refreshes contained matches", async 
     "AAPL SRV",
     "aapl srv",
   ]);
-  assert.equal(insert.params[8], null);
-  assert.equal(insert.params[9], '["subscription"]');
+  assert.equal(insert.params[6], null);
+  assert.equal(insert.params[7], null);
+  assert.equal(insert.params[8], "Apple Services");
+  assert.equal(insert.params[9], "Subscriptions");
+  assert.equal(insert.params[10], null);
+  assert.equal(insert.params[11], '["subscription"]');
   const match = db.calls.find((call) =>
     call.sql.startsWith("SELECT id FROM transactions"),
   );
@@ -176,6 +184,8 @@ test("creating a rule stores match mode and refreshes contained matches", async 
     "normalized_name",
     "contains",
     "aapl srv",
+    null,
+    null,
   ]);
   const winning = db.calls.find((call) =>
     call.sql.startsWith("SELECT t.id FROM transactions t"),
@@ -210,7 +220,7 @@ test("recurring presentation uses the canonical cleanup winner order", async () 
   );
   assert.match(
     query.sql,
-    /ORDER BY \(rule\.match_mode = 'exact'\) DESC, \(rule\.match_field = 'normalized_merchant'\) DESC, length\(rule\.normalized_match_value\) DESC, rule\.updated_at DESC, rule\.id LIMIT 1/,
+    /ORDER BY \(rule\.match_mode = 'exact'\) DESC, \(rule\.match_amount_operator IS NOT NULL\) DESC, \(rule\.match_field = 'normalized_merchant'\) DESC, length\(rule\.normalized_match_value\) DESC, rule\.updated_at DESC, rule\.id LIMIT 1/,
   );
 });
 

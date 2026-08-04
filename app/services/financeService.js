@@ -4805,7 +4805,7 @@ function transactionCleanupRuleMutation(input) {
   }
   if (
     Object.keys(matcher).some(
-      (key) => !["field", "mode", "value"].includes(key),
+      (key) => !["field", "mode", "value", "amount"].includes(key),
     )
   ) {
     throw new TypeError("Unsupported cleanup matcher field");
@@ -4863,6 +4863,31 @@ function transactionCleanupRuleMutation(input) {
     matchValue: rawMatchValue,
     normalizedMatchValue: matchValue,
   };
+  if (Object.hasOwn(matcher, "amount")) {
+    const amount = matcher.amount;
+    if (!amount || typeof amount !== "object" || Array.isArray(amount)) {
+      throw new TypeError("matcher.amount must be an object");
+    }
+    if (
+      Object.keys(amount).some(
+        (key) => !["operator", "amount_minor", "amountMinor"].includes(key),
+      )
+    ) {
+      throw new TypeError("Unsupported cleanup amount matcher field");
+    }
+    const amountOperator = String(amount.operator ?? "").trim();
+    if (!["exact", "less_than", "more_than"].includes(amountOperator)) {
+      throw new TypeError(
+        "matcher.amount.operator must be exact, less_than, or more_than",
+      );
+    }
+    const amountMinor = Number(amount.amount_minor ?? amount.amountMinor);
+    if (!Number.isSafeInteger(amountMinor) || amountMinor < 1) {
+      throw new TypeError("matcher.amount.amount_minor must be a positive integer");
+    }
+    result.matchAmountOperator = amountOperator;
+    result.matchAmountMinor = amountMinor;
+  }
   const hasDisplayName =
     Object.hasOwn(changes, "display_name") ||
     Object.hasOwn(changes, "displayName");
@@ -4903,16 +4928,6 @@ function transactionCleanupRuleMutation(input) {
   if (Object.hasOwn(changes, "tags")) {
     result.tags = validateTransactionTags(changes.tags);
   }
-  if (
-    !hasDisplayName &&
-    !hasCategoryPrimary &&
-    !hasCashFlowRole &&
-    !Object.hasOwn(changes, "tags")
-  ) {
-    throw new TypeError(
-      "At least one cleanup rule change is required",
-    );
-  }
   if (input.enabled !== undefined) {
     if (typeof input.enabled !== "boolean") {
       throw new TypeError("enabled must be a boolean");
@@ -4948,6 +4963,17 @@ function transactionCleanupRuleResponse(rule) {
     matcher.normalizedValue ??
     rule?.normalized_match_value ??
     rule?.normalizedMatchValue ??
+    null;
+  const matchAmountOperator =
+    matcher.amount?.operator ??
+    rule?.match_amount_operator ??
+    rule?.matchAmountOperator ??
+    null;
+  const matchAmountMinor =
+    matcher.amount?.amount_minor ??
+    matcher.amount?.amountMinor ??
+    rule?.match_amount_minor ??
+    rule?.matchAmountMinor ??
     null;
   const changes = {};
   const displayName =
@@ -4989,6 +5015,14 @@ function transactionCleanupRuleResponse(rule) {
       mode: matchMode,
       value: matchValue,
       normalized_value: normalizedMatchValue,
+      ...(matchAmountOperator == null
+        ? {}
+        : {
+            amount: {
+              operator: matchAmountOperator,
+              amount_minor: Number(matchAmountMinor),
+            },
+          }),
     },
     changes,
     enabled: rule?.enabled !== false,

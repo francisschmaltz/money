@@ -4783,6 +4783,15 @@
     const matcherValue = root.querySelector(
       "[data-cleanup-rule-matcher-value]",
     );
+    const matcherAmountEnabled = root.querySelector(
+      "[data-cleanup-rule-amount-enabled]",
+    );
+    const matcherAmountOperator = root.querySelector(
+      "[data-cleanup-rule-amount-operator]",
+    );
+    const matcherAmount = root.querySelector(
+      "[data-cleanup-rule-amount]",
+    );
     const enabledInput = root.querySelector(
       "[data-cleanup-rule-enabled]",
     );
@@ -4835,6 +4844,20 @@
         : "Merchant";
     const matcherModeLabel = (rule) =>
       rule.matcher?.mode === "contains" ? "contains" : "exactly";
+    const matcherAmountLabel = (rule) => {
+      const amount = rule.matcher?.amount;
+      if (!amount) return "";
+      const operator = amount.operator === "less_than"
+        ? "under"
+        : amount.operator === "more_than"
+          ? "over"
+          : "exactly";
+      const value = new Intl.NumberFormat(undefined, {
+        style: "currency",
+        currency: "USD",
+      }).format(Number(amount.amount_minor) / 100);
+      return ` · amount ${operator} ${value}`;
+    };
 
     const changeLabels = (rule) => {
       const changes = rule.changes || {};
@@ -4886,12 +4909,12 @@
         "strong",
         `${matcherLabel(rule)} ${matcherModeLabel(rule)} “${
           rule.matcher?.value || ""
-        }”`,
+        }”${matcherAmountLabel(rule)}`,
       );
       const changes = appendText(
         copy,
         "span",
-        changeLabels(rule).join(" · "),
+        changeLabels(rule).join(" · ") || "Match only",
       );
       const arrow = document.createElement("i");
       arrow.className = "ph ph-arrow-right";
@@ -5033,6 +5056,18 @@
         matcherValue.value =
           rule?.matcher?.value ?? prefill?.matcher?.value ?? "";
       }
+      const amount = rule?.matcher?.amount ?? prefill?.matcher?.amount;
+      if (matcherAmountEnabled) matcherAmountEnabled.checked = Boolean(amount);
+      if (matcherAmountOperator) {
+        matcherAmountOperator.disabled = !amount;
+        matcherAmountOperator.value = amount?.operator ?? "exact";
+      }
+      if (matcherAmount) {
+        matcherAmount.disabled = !amount;
+        matcherAmount.value = amount
+          ? (Number(amount.amount_minor) / 100).toFixed(2)
+          : "";
+      }
       const changes = rule?.changes ?? prefill?.changes ?? {};
       for (const field of Object.keys(fields)) {
         setChange(
@@ -5091,6 +5126,15 @@
         });
       });
 
+    matcherAmountEnabled?.addEventListener("change", () => {
+      if (matcherAmountOperator) {
+        matcherAmountOperator.disabled = !matcherAmountEnabled.checked;
+      }
+      if (matcherAmount) {
+        matcherAmount.disabled = !matcherAmountEnabled.checked;
+      }
+    });
+
     root
       .querySelectorAll("[data-cleanup-rule-cancel]")
       .forEach((button) =>
@@ -5140,7 +5184,7 @@
       }
       const confirmed = window.confirm(
         `Delete the rule for “${rule.matcher?.value}”? ` +
-          "Existing automatic changes will revert and future cleanup will stop. " +
+          "Existing automatic changes will revert and matching will stop. " +
           "Manual edits will stay.",
       );
       if (!confirmed) return;
@@ -5234,12 +5278,6 @@
       if (changeToggle("cash_flow_role")?.checked) {
         changes.cash_flow_role = fields.cash_flow_role?.value;
       }
-      if (!Object.keys(changes).length) {
-        if (formStatus) {
-          formStatus.textContent = "Choose at least one change.";
-        }
-        return;
-      }
       const value = matcherValue?.value.trim();
       if (!value) {
         if (formStatus) {
@@ -5247,6 +5285,20 @@
         }
         matcherValue?.focus();
         return;
+      }
+      let amount;
+      if (matcherAmountEnabled?.checked) {
+        const major = Number(matcherAmount?.value);
+        const amountMinor = Math.round(major * 100);
+        if (!Number.isFinite(major) || major <= 0 || amountMinor < 1) {
+          if (formStatus) formStatus.textContent = "Enter a positive amount.";
+          matcherAmount?.focus();
+          return;
+        }
+        amount = {
+          operator: matcherAmountOperator?.value ?? "exact",
+          amount_minor: amountMinor,
+        };
       }
       const ruleId = ruleIdInput?.value;
       const method = ruleId ? "PUT" : "POST";
@@ -5263,6 +5315,7 @@
               field: matcherField?.value,
               mode: matcherMode?.value,
               value,
+              ...(amount ? { amount } : {}),
             },
             changes,
             enabled: Boolean(enabledInput?.checked),

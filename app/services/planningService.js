@@ -130,7 +130,7 @@ export class PlanningService {
         categories,
         incomeCategoryIds,
       );
-      const incomeStart = addMonthsToMonth(currentMonth, -4);
+      const incomeStart = shiftDateOnly(currentMonth, -90);
       const [incomeTransactions, incomeSplits] = incomeCategoryIds.length
         ? await Promise.all([
             this.#financeRepository.getTransactionsForPeriod(
@@ -153,12 +153,12 @@ export class PlanningService {
         : [[], []];
       const averageIncomeMinor = incomeCategoryIds.length
         ? Math.round(
-            netIncomeForTransactions(
+            projectedIncomeForTransactions(
               incomeTransactions,
               selectedIncomeIds,
               this.#currency,
               incomeSplits,
-            ) / 4,
+            ) / 3,
           )
         : 0;
       return {
@@ -389,7 +389,7 @@ export class PlanningService {
       income: {
         average_monthly_minor: averageIncomeMinor,
         actual_month_minor: actualIncomeMinor,
-        month_count: incomeCategoryIds.length ? 4 : 0,
+        month_count: incomeCategoryIds.length ? 3 : 0,
         category_ids: incomeCategoryIds,
       },
       currency: this.#currency,
@@ -2591,6 +2591,71 @@ function netIncomeForTransactions(
     }
     return sum + Number(transaction.amount_minor);
   }, 0);
+}
+
+export function projectedIncomeForTransactions(
+  transactions,
+  categoryIds,
+  currency,
+  splits = [],
+) {
+  if (!categoryIds.size) return 0;
+  const groups = new Map();
+  for (const transaction of expandTransactionsWithSplits(
+    transactions,
+    splits,
+  )) {
+    if (
+      transaction.pending ||
+      transaction.excluded_from_spending ||
+      transaction.currency_code !== currency ||
+      !categoryIds.has(transaction.category_id)
+    ) {
+      continue;
+    }
+    const identity = String(
+      transaction.display_name ??
+        transaction.merchant_name ??
+        transaction.name ??
+        "income",
+    )
+      .normalize("NFKD")
+      .replace(/\p{Diacritic}/gu, "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, " ")
+      .trim();
+    const key = `${transaction.account_id ?? ""}\u0000${identity}`;
+    const group = groups.get(key) ?? [];
+    group.push(transaction);
+    groups.set(key, group);
+  }
+  let total = 0;
+  for (const group of groups.values()) {
+    const normal = group.filter((transaction) => !hasBonusTag(transaction));
+    const normalAverage = normal.length
+      ? Math.round(
+          normal.reduce(
+            (sum, transaction) => sum + Number(transaction.amount_minor),
+            0,
+          ) / normal.length,
+        )
+      : 0;
+    total += group.reduce(
+      (sum, transaction) =>
+        sum +
+        (hasBonusTag(transaction)
+          ? normalAverage
+          : Number(transaction.amount_minor)),
+      0,
+    );
+  }
+  return total;
+}
+
+function hasBonusTag(transaction) {
+  return transaction.tags?.some(
+    (tag) => String(tag).trim().toLowerCase() === "bonus",
+  );
 }
 
 function uniqueIds(values, name) {

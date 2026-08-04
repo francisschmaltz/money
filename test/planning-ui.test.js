@@ -142,7 +142,7 @@ test("the standing budget is view-only by default with linked category status", 
     plan,
     /data-endpoint="\/api\/v1\/plan\/budget\/<%= encodeURIComponent\(line\.category_id\) %>"/,
   );
-  assert.match(plan, /Average monthly income/);
+  assert.match(plan, /90-day monthly income/);
   assert.match(plan, /Estimated leftover/);
   assert.match(plan, /Actual leftover/);
   assert.match(plan, /data-budget-add-tracking/);

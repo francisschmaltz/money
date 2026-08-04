@@ -11,6 +11,10 @@ const containsMigrationUrl = new URL(
   "../migrations/021_cleanup_rule_contains.sql",
   import.meta.url,
 );
+const matchOnlyMigrationUrl = new URL(
+  "../migrations/040_match_only_transaction_rules.sql",
+  import.meta.url,
+);
 
 test("cleanup rule schema stores exact matchers and nullable changes", async () => {
   const migration = await readFile(fileURLToPath(migrationUrl), "utf8");
@@ -90,4 +94,24 @@ test("cleanup rules support normalized contains with deterministic precedence", 
     migration,
     /CREATE OR REPLACE VIEW transaction_effective_spending_categories/,
   );
+});
+
+test("matching rules allow no cleanup changes and optional amount operators", async () => {
+  const migration = await readFile(
+    fileURLToPath(matchOnlyMigrationUrl),
+    "utf8",
+  );
+  assert.match(
+    migration,
+    /DROP CONSTRAINT IF EXISTS transaction_cleanup_rules_has_change_check/,
+  );
+  assert.match(
+    migration,
+    /match_amount_operator IN \('exact', 'less_than', 'more_than'\)/,
+  );
+  assert.match(
+    migration,
+    /CREATE OR REPLACE FUNCTION transaction_cleanup_rule_amount_matches/,
+  );
+  assert.match(migration, /abs\(transaction_amount_minor::numeric\)/);
 });

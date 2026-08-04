@@ -1159,7 +1159,7 @@ export function createApiRouter({
       if (!input) {
         invalidRequest(
           response,
-          "matcher and at least one valid cleanup change are required.",
+          "a valid matcher and optional valid cleanup changes are required.",
         );
         return;
       }
@@ -1200,7 +1200,7 @@ export function createApiRouter({
       if (!input) {
         invalidRequest(
           response,
-          "matcher and at least one valid cleanup change are required.",
+          "a valid matcher and optional valid cleanup changes are required.",
         );
         return;
       }
@@ -2089,14 +2089,19 @@ function transactionCleanupRuleInput(body = {}) {
     typeof body.matcher !== "object" ||
     Array.isArray(body.matcher) ||
     Object.keys(body.matcher).some(
-      (key) => !["field", "mode", "value"].includes(key),
+      (key) => !["field", "mode", "value", "amount"].includes(key),
     ) ||
     !body.changes ||
     typeof body.changes !== "object" ||
     Array.isArray(body.changes) ||
     Object.keys(body.changes).some(
       (key) =>
-        !["display_name", "category_primary", "tags"].includes(key),
+        ![
+          "display_name",
+          "category_primary",
+          "cash_flow_role",
+          "tags",
+        ].includes(key),
     )
   ) {
     return null;
@@ -2111,6 +2116,25 @@ function transactionCleanupRuleInput(body = {}) {
   const value = body.matcher.value.trim();
   if (!value || value.length > 160) return null;
 
+  let amount;
+  if (Object.hasOwn(body.matcher, "amount")) {
+    const input = body.matcher.amount;
+    if (
+      !input ||
+      typeof input !== "object" ||
+      Array.isArray(input) ||
+      Object.keys(input).some(
+        (key) => !["operator", "amount_minor"].includes(key),
+      ) ||
+      !["exact", "less_than", "more_than"].includes(input.operator)
+    ) {
+      return null;
+    }
+    const amountMinor = exactInteger(input.amount_minor, { minimum: 1 });
+    if (amountMinor === undefined) return null;
+    amount = { operator: input.operator, amount_minor: amountMinor };
+  }
+
   const changes = {};
   if (Object.hasOwn(body.changes, "display_name")) {
     if (typeof body.changes.display_name !== "string") return null;
@@ -2123,6 +2147,14 @@ function transactionCleanupRuleInput(body = {}) {
     const category = body.changes.category_primary.trim();
     if (!category || category.length > 100) return null;
     changes.category_primary = category;
+  }
+  if (Object.hasOwn(body.changes, "cash_flow_role")) {
+    if (typeof body.changes.cash_flow_role !== "string") return null;
+    const cashFlowRole = body.changes.cash_flow_role.trim().toLowerCase();
+    if (!["spending", "obligation", "transfer"].includes(cashFlowRole)) {
+      return null;
+    }
+    changes.cash_flow_role = cashFlowRole;
   }
   if (Object.hasOwn(body.changes, "tags")) {
     if (
@@ -2144,7 +2176,6 @@ function transactionCleanupRuleInput(body = {}) {
     }
     changes.tags = tags;
   }
-  if (!Object.keys(changes).length) return null;
   if (
     body.enabled !== undefined &&
     typeof body.enabled !== "boolean"
@@ -2152,7 +2183,7 @@ function transactionCleanupRuleInput(body = {}) {
     return null;
   }
   return {
-    matcher: { field, mode, value },
+    matcher: { field, mode, value, ...(amount ? { amount } : {}) },
     changes,
     ...(body.enabled === undefined ? {} : { enabled: body.enabled }),
   };

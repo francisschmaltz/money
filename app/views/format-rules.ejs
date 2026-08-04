@@ -84,6 +84,19 @@
         : "Merchant";
     const cleanupRuleMatcherMode = (rule) =>
       rule.matcher?.mode === "contains" ? "contains" : "exactly";
+    const cleanupRuleMatcherAmount = (rule) => {
+      const amount = rule.matcher?.amount;
+      if (!amount) return null;
+      const operator = amount.operator === "less_than"
+        ? "under"
+        : amount.operator === "more_than"
+          ? "over"
+          : "exactly";
+      return `${operator} ${formatMoney({
+        amount_minor: amount.amount_minor,
+        currency: "USD"
+      })}`;
+    };
     const cleanupRuleChanges = (rule) => [
       rule.changes?.display_name
         ? `Rename to ${rule.changes.display_name}`
@@ -129,6 +142,7 @@
           cleanupRuleChanges,
           cleanupRuleMatcherLabel,
           cleanupRuleMatcherMode,
+          cleanupRuleMatcherAmount,
           cleanupCategories,
           cleanupTagOptions
         }) %>

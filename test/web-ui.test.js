@@ -1417,6 +1417,10 @@ test("Format Rules exposes exact and contains automatic cleanup rules", async ()
           mode: "contains",
           value: "AAPL SRV 0042",
           normalized_value: "aapl srv",
+          amount: {
+            operator: "less_than",
+            amount_minor: 500_000,
+          },
         },
         changes: {
           display_name: "Apple billing",
@@ -1435,6 +1439,7 @@ test("Format Rules exposes exact and contains automatic cleanup rules", async ()
     html,
     /Transaction name contains “AAPL SRV 0042”/,
   );
+  assert.match(html, /amount under \$5,000\.00/);
   assert.match(
     html,
     /Rename to Apple billing · Subscriptions · Business/,
@@ -1453,6 +1458,8 @@ test("Format Rules exposes exact and contains automatic cleanup rules", async ()
   assert.match(html, /data-cleanup-search/);
   assert.match(html, /One-time cleanup/);
   assert.match(html, /data-cleanup-rerun/);
+  assert.match(html, /data-cleanup-rule-amount-enabled/);
+  assert.match(html, /Changes to apply <small>\(optional\)<\/small>/);
 
   const matcherSelect = html.match(
     /<select[^>]*data-cleanup-rule-matcher-field[\s\S]*?<\/select>/,

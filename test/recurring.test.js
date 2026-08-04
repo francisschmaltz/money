@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   detectRecurringStreams,
+  reconcileMatchedRecurringOccurrences,
   RecurringService,
 } from "../app/services/recurringDetector.js";
 import { detectSubscriptionInsights } from "../app/services/insightDetectors.js";
@@ -35,6 +36,82 @@ function charge({
     excluded_from_spending: false,
   };
 }
+
+test("match-only rules reconcile posted transfers within five days", () => {
+  const transactions = [
+    {
+      ...charge({
+        id: "rent-july",
+        date: "2026-07-01",
+        amount: -560_000,
+        merchant: "Check Paid #106",
+        account: "self-checking",
+      }),
+      normalized_name: "check paid",
+    },
+    {
+      ...charge({
+        id: "rent-august",
+        date: "2026-08-03",
+        amount: -560_000,
+        merchant: "Check Paid #108",
+        account: "self-checking",
+      }),
+      normalized_name: "check paid",
+      cash_flow_role: "transfer",
+      excluded_from_spending: true,
+    },
+  ];
+  const [stream] = reconcileMatchedRecurringOccurrences(
+    [],
+    [
+      {
+        id: "rent-stream",
+        service_family: "rent check",
+        display_name: "Rent Check",
+        stream_type: "bill",
+        detected_stream_type: "bill",
+        classification_signals: {},
+        cadence: "monthly",
+        account_id: "self-checking",
+        expected_amount_minor: 560_000,
+        min_amount_minor: 560_000,
+        max_amount_minor: 560_000,
+        monthly_equivalent_minor: 560_000,
+        currency_code: "USD",
+        cash_flow_role: "spending",
+        first_seen_on: "2026-01-01",
+        last_seen_on: "2026-07-01",
+        next_expected_on: "2026-08-01",
+        confidence_basis_points: 10_000,
+        status: "active",
+        transaction_ids: ["rent-july"],
+      },
+    ],
+    transactions,
+    [
+      {
+        id: "check-paid-matcher",
+        match_field: "normalized_name",
+        match_mode: "contains",
+        normalized_match_value: "check paid",
+        match_amount_operator: "exact",
+        match_amount_minor: 560_000,
+        display_name: null,
+        category_primary: null,
+        cash_flow_role: null,
+        tags: null,
+        enabled: true,
+      },
+    ],
+    new Date("2026-08-03T12:00:00.000Z"),
+  );
+
+  assert.equal(stream.last_seen_on, "2026-08-03");
+  assert.equal(stream.next_expected_on, "2026-09-03");
+  assert.deepEqual(stream.transaction_ids, ["rent-july", "rent-august"]);
+  assert.equal(stream.classification_signals.matched_rule_occurrence, true);
+});
 
 test("classifies repeated discretionary merchants as frequent spending", () => {
   const merchants = [

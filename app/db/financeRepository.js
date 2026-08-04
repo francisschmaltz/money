@@ -2238,8 +2238,14 @@ export class PgFinanceRepository {
               t.normalized_merchant,
               t.normalized_name
             )
+            AND transaction_cleanup_rule_amount_matches(
+              rule.match_amount_operator,
+              rule.match_amount_minor,
+              t.amount_minor
+            )
           ORDER BY
             (rule.match_mode = 'exact') DESC,
+            (rule.match_amount_operator IS NOT NULL) DESC,
             (rule.match_field = 'normalized_merchant') DESC,
             length(rule.normalized_match_value) DESC,
             rule.updated_at DESC,
@@ -2262,8 +2268,14 @@ export class PgFinanceRepository {
               original.normalized_merchant,
               original.normalized_name
             )
+            AND transaction_cleanup_rule_amount_matches(
+              rule.match_amount_operator,
+              rule.match_amount_minor,
+              original.amount_minor
+            )
           ORDER BY
             (rule.match_mode = 'exact') DESC,
+            (rule.match_amount_operator IS NOT NULL) DESC,
             (rule.match_field = 'normalized_merchant') DESC,
             length(rule.normalized_match_value) DESC,
             rule.updated_at DESC,
@@ -2338,6 +2350,8 @@ export class PgFinanceRepository {
       match_field: matchField,
       match_mode: matchMode = "exact",
       normalized_match_value: matchValue,
+      match_amount_operator: matchAmountOperator = null,
+      match_amount_minor: matchAmountMinor = null,
     },
   ) {
     const result = await client.query(
@@ -2352,9 +2366,21 @@ export class PgFinanceRepository {
             normalized_merchant,
             normalized_name
           )
+          AND transaction_cleanup_rule_amount_matches(
+            $5,
+            $6,
+            amount_minor
+          )
         ORDER BY id
       `,
-      [workspaceId, matchField, matchMode, matchValue],
+      [
+        workspaceId,
+        matchField,
+        matchMode,
+        matchValue,
+        matchAmountOperator,
+        matchAmountMinor,
+      ],
     );
     return result.rows.map((row) => row.id);
   }
@@ -2617,8 +2643,14 @@ export class PgFinanceRepository {
               t.normalized_merchant,
               t.normalized_name
             )
+            AND transaction_cleanup_rule_amount_matches(
+              rule.match_amount_operator,
+              rule.match_amount_minor,
+              t.amount_minor
+            )
           ORDER BY
             (rule.match_mode = 'exact') DESC,
+            (rule.match_amount_operator IS NOT NULL) DESC,
             (rule.match_field = 'normalized_merchant') DESC,
             length(rule.normalized_match_value) DESC,
             rule.updated_at DESC,
@@ -4980,8 +5012,14 @@ export class PgFinanceRepository {
               t.normalized_merchant,
               t.normalized_name
             )
+            AND transaction_cleanup_rule_amount_matches(
+              rule.match_amount_operator,
+              rule.match_amount_minor,
+              t.amount_minor
+            )
           ORDER BY
             (rule.match_mode = 'exact') DESC,
+            (rule.match_amount_operator IS NOT NULL) DESC,
             (rule.match_field = 'normalized_merchant') DESC,
             length(rule.normalized_match_value) DESC,
             rule.updated_at DESC,
@@ -5036,8 +5074,14 @@ export class PgFinanceRepository {
               original_transaction.normalized_merchant,
               original_transaction.normalized_name
             )
+            AND transaction_cleanup_rule_amount_matches(
+              rule.match_amount_operator,
+              rule.match_amount_minor,
+              original_transaction.amount_minor
+            )
           ORDER BY
             (rule.match_mode = 'exact') DESC,
+            (rule.match_amount_operator IS NOT NULL) DESC,
             (rule.match_field = 'normalized_merchant') DESC,
             length(rule.normalized_match_value) DESC,
             rule.updated_at DESC,
@@ -5408,8 +5452,14 @@ export class PgFinanceRepository {
               t.normalized_merchant,
               t.normalized_name
             )
+            AND transaction_cleanup_rule_amount_matches(
+              rule.match_amount_operator,
+              rule.match_amount_minor,
+              t.amount_minor
+            )
           ORDER BY
             (rule.match_mode = 'exact') DESC,
+            (rule.match_amount_operator IS NOT NULL) DESC,
             (rule.match_field = 'normalized_merchant') DESC,
             length(rule.normalized_match_value) DESC,
             rule.updated_at DESC,
@@ -5444,8 +5494,14 @@ export class PgFinanceRepository {
               original_transaction.normalized_merchant,
               original_transaction.normalized_name
             )
+            AND transaction_cleanup_rule_amount_matches(
+              rule.match_amount_operator,
+              rule.match_amount_minor,
+              original_transaction.amount_minor
+            )
           ORDER BY
             (rule.match_mode = 'exact') DESC,
+            (rule.match_amount_operator IS NOT NULL) DESC,
             (rule.match_field = 'normalized_merchant') DESC,
             length(rule.normalized_match_value) DESC,
             rule.updated_at DESC,
@@ -5514,9 +5570,15 @@ export class PgFinanceRepository {
                 t.normalized_merchant,
                 t.normalized_name
               )
+              AND transaction_cleanup_rule_amount_matches(
+                rule.match_amount_operator,
+                rule.match_amount_minor,
+                t.amount_minor
+              )
             ORDER BY
-              (rule.match_mode = 'exact') DESC,
-              (rule.match_field = 'normalized_merchant') DESC,
+            (rule.match_mode = 'exact') DESC,
+            (rule.match_amount_operator IS NOT NULL) DESC,
+            (rule.match_field = 'normalized_merchant') DESC,
               length(rule.normalized_match_value) DESC,
               rule.updated_at DESC,
               rule.id
@@ -5563,6 +5625,8 @@ export class PgFinanceRepository {
       matchMode = "exact",
       matchValue,
       normalizedMatchValue,
+      matchAmountOperator = null,
+      matchAmountMinor = null,
       displayName = null,
       categoryPrimary = null,
       cashFlowRole = null,
@@ -5576,13 +5640,14 @@ export class PgFinanceRepository {
         `
           INSERT INTO transaction_cleanup_rules (
             id, workspace_id, match_field, match_mode,
-            match_value, normalized_match_value, display_name,
+            match_value, normalized_match_value,
+            match_amount_operator, match_amount_minor, display_name,
             category_primary, cash_flow_role, tags, enabled,
             created_by, updated_by
           )
           VALUES (
-            $1, $2, $3, $4, $5, $6, $7, $8,
-            $9, $10::jsonb, $11, $12, $12
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+            $11, $12::jsonb, $13, $14, $14
           )
           RETURNING *
         `,
@@ -5593,6 +5658,8 @@ export class PgFinanceRepository {
           matchMode,
           matchValue,
           normalizedMatchValue,
+          matchAmountOperator,
+          matchAmountMinor,
           displayName,
           categoryPrimary,
           cashFlowRole,
@@ -5632,6 +5699,8 @@ export class PgFinanceRepository {
       matchMode = "exact",
       matchValue,
       normalizedMatchValue,
+      matchAmountOperator = null,
+      matchAmountMinor = null,
       displayName = null,
       categoryPrimary = null,
       cashFlowRole = null,
@@ -5664,12 +5733,14 @@ export class PgFinanceRepository {
               match_mode = $4,
               match_value = $5,
               normalized_match_value = $6,
-              display_name = $7,
-              category_primary = $8,
-              cash_flow_role = $9,
-              tags = $10::jsonb,
-              enabled = COALESCE($11::boolean, enabled),
-              updated_by = $12,
+              match_amount_operator = $7,
+              match_amount_minor = $8,
+              display_name = $9,
+              category_primary = $10,
+              cash_flow_role = $11,
+              tags = $12::jsonb,
+              enabled = COALESCE($13::boolean, enabled),
+              updated_by = $14,
               updated_at = now()
           WHERE workspace_id = $1 AND id = $2
           RETURNING *
@@ -5681,6 +5752,8 @@ export class PgFinanceRepository {
           matchMode,
           matchValue,
           normalizedMatchValue,
+          matchAmountOperator,
+          matchAmountMinor,
           displayName,
           categoryPrimary,
           cashFlowRole,
@@ -5822,6 +5895,155 @@ export class PgFinanceRepository {
     }));
   }
 
+  async autoTagIncomeBonuses(
+    workspaceId = DEFAULT_WORKSPACE_ID,
+    { asOf = new Date().toISOString().slice(0, 10) } = {},
+  ) {
+    return this.#withTransaction(async (client) => {
+      const bonusTagId = stableId("transaction-tag", `${workspaceId}:bonus`);
+      await client.query(
+        `
+          INSERT INTO transaction_tags (
+            id, workspace_id, name, normalized_name
+          )
+          VALUES ($1, $2, 'Bonus', 'bonus')
+          ON CONFLICT (workspace_id, normalized_name)
+          DO UPDATE SET name = EXCLUDED.name, updated_at = now()
+        `,
+        [bonusTagId, workspaceId],
+      );
+      const result = await client.query(
+        `
+          WITH income_candidates AS (
+            SELECT
+              t.id,
+              t.account_id,
+              t.currency_code,
+              t.amount_minor,
+              COALESCE(
+                NULLIF(
+                  btrim(regexp_replace(
+                    lower(COALESCE(
+                      CASE
+                        WHEN metadata.display_name_overridden
+                          THEN metadata.display_name
+                        ELSE COALESCE(
+                          metadata.display_name,
+                          cleanup_rule.display_name
+                        )
+                      END,
+                      ''
+                    )),
+                    '[^a-z0-9]+',
+                    ' ',
+                    'g'
+                  )),
+                  ''
+                ),
+                t.normalized_merchant,
+                t.normalized_name
+              ) AS income_identity
+            FROM transactions t
+            LEFT JOIN transaction_metadata metadata
+              ON metadata.workspace_id = t.workspace_id
+             AND metadata.transaction_id = t.id
+            LEFT JOIN LATERAL (
+              SELECT rule.*
+              FROM transaction_cleanup_rules rule
+              WHERE rule.workspace_id = t.workspace_id
+                AND rule.enabled = true
+                AND transaction_cleanup_rule_matches(
+                  rule.match_field,
+                  rule.match_mode,
+                  rule.normalized_match_value,
+                  t.normalized_merchant,
+                  t.normalized_name
+                )
+                AND transaction_cleanup_rule_amount_matches(
+                  rule.match_amount_operator,
+                  rule.match_amount_minor,
+                  t.amount_minor
+                )
+              ORDER BY
+            (rule.match_mode = 'exact') DESC,
+            (rule.match_amount_operator IS NOT NULL) DESC,
+            (rule.match_field = 'normalized_merchant') DESC,
+                length(rule.normalized_match_value) DESC,
+                rule.updated_at DESC,
+                rule.id
+              LIMIT 1
+            ) cleanup_rule ON true
+            WHERE t.workspace_id = $1
+              AND t.pending = false
+              AND t.amount_minor > 0
+              AND t.posted_on >= $2::date - 90
+              AND t.posted_on <= $2::date
+              AND concat_ws(
+                ' ',
+                metadata.display_name,
+                cleanup_rule.display_name,
+                t.merchant_name,
+                t.name
+              ) ~* '\\m(paycheck|payroll)\\M'
+          ),
+          peer_averages AS (
+            SELECT
+              candidate.id,
+              avg(peer.amount_minor)::numeric AS peer_average_minor,
+              count(*)::integer AS peer_count
+            FROM income_candidates candidate
+            JOIN income_candidates peer
+              ON peer.id <> candidate.id
+             AND peer.account_id = candidate.account_id
+             AND peer.currency_code = candidate.currency_code
+             AND peer.income_identity = candidate.income_identity
+            WHERE NOT EXISTS (
+              SELECT 1
+              FROM transaction_tag_assignments assignment
+              JOIN transaction_tags tag
+                ON tag.workspace_id = assignment.workspace_id
+               AND tag.id = assignment.tag_id
+              WHERE assignment.workspace_id = $1
+                AND assignment.transaction_id = peer.id
+                AND tag.normalized_name = 'bonus'
+            )
+            GROUP BY candidate.id
+            HAVING count(*) >= 2
+          ),
+          inferred_bonus AS (
+            SELECT candidate.id
+            FROM income_candidates candidate
+            JOIN peer_averages peers ON peers.id = candidate.id
+            WHERE candidate.amount_minor >=
+              ceil(peers.peer_average_minor * 1.5)
+              AND NOT EXISTS (
+                SELECT 1
+                FROM transaction_tag_assignments assignment
+                JOIN transaction_tags tag
+                  ON tag.workspace_id = assignment.workspace_id
+                 AND tag.id = assignment.tag_id
+                WHERE assignment.workspace_id = $1
+                  AND assignment.transaction_id = candidate.id
+                  AND tag.normalized_name = 'bonus'
+              )
+          )
+          INSERT INTO transaction_tag_assignments (
+            workspace_id, transaction_id, tag_id
+          )
+          SELECT $1, inferred_bonus.id, tag.id
+          FROM inferred_bonus
+          JOIN transaction_tags tag
+            ON tag.workspace_id = $1
+           AND tag.normalized_name = 'bonus'
+          ON CONFLICT DO NOTHING
+          RETURNING transaction_id
+        `,
+        [workspaceId, asOf],
+      );
+      return result.rows.map((row) => row.transaction_id);
+    });
+  }
+
   async findTransactionMatches(
     workspaceId = DEFAULT_WORKSPACE_ID,
     {
@@ -5953,9 +6175,15 @@ export class PgFinanceRepository {
                 t.normalized_merchant,
                 t.normalized_name
               )
+              AND transaction_cleanup_rule_amount_matches(
+                rule.match_amount_operator,
+                rule.match_amount_minor,
+                t.amount_minor
+              )
             ORDER BY
-              (rule.match_mode = 'exact') DESC,
-              (rule.match_field = 'normalized_merchant') DESC,
+            (rule.match_mode = 'exact') DESC,
+            (rule.match_amount_operator IS NOT NULL) DESC,
+            (rule.match_field = 'normalized_merchant') DESC,
               length(rule.normalized_match_value) DESC,
               rule.updated_at DESC,
               rule.id
@@ -5989,9 +6217,15 @@ export class PgFinanceRepository {
                 original_transaction.normalized_merchant,
                 original_transaction.normalized_name
               )
+              AND transaction_cleanup_rule_amount_matches(
+                rule.match_amount_operator,
+                rule.match_amount_minor,
+                original_transaction.amount_minor
+              )
             ORDER BY
-              (rule.match_mode = 'exact') DESC,
-              (rule.match_field = 'normalized_merchant') DESC,
+            (rule.match_mode = 'exact') DESC,
+            (rule.match_amount_operator IS NOT NULL) DESC,
+            (rule.match_field = 'normalized_merchant') DESC,
               length(rule.normalized_match_value) DESC,
               rule.updated_at DESC,
               rule.id
@@ -8770,8 +9004,14 @@ export class PgFinanceRepository {
               t.normalized_merchant,
               t.normalized_name
             )
+            AND transaction_cleanup_rule_amount_matches(
+              rule.match_amount_operator,
+              rule.match_amount_minor,
+              t.amount_minor
+            )
           ORDER BY
             (rule.match_mode = 'exact') DESC,
+            (rule.match_amount_operator IS NOT NULL) DESC,
             (rule.match_field = 'normalized_merchant') DESC,
             length(rule.normalized_match_value) DESC,
             rule.updated_at DESC,
@@ -8794,8 +9034,14 @@ export class PgFinanceRepository {
               original_transaction.normalized_merchant,
               original_transaction.normalized_name
             )
+            AND transaction_cleanup_rule_amount_matches(
+              rule.match_amount_operator,
+              rule.match_amount_minor,
+              original_transaction.amount_minor
+            )
           ORDER BY
             (rule.match_mode = 'exact') DESC,
+            (rule.match_amount_operator IS NOT NULL) DESC,
             (rule.match_field = 'normalized_merchant') DESC,
             length(rule.normalized_match_value) DESC,
             rule.updated_at DESC,
@@ -9610,9 +9856,15 @@ export class PgFinanceRepository {
                 t.normalized_merchant,
                 t.normalized_name
               )
+              AND transaction_cleanup_rule_amount_matches(
+                rule.match_amount_operator,
+                rule.match_amount_minor,
+                t.amount_minor
+              )
             ORDER BY
-              (rule.match_mode = 'exact') DESC,
-              (rule.match_field = 'normalized_merchant') DESC,
+            (rule.match_mode = 'exact') DESC,
+            (rule.match_amount_operator IS NOT NULL) DESC,
+            (rule.match_field = 'normalized_merchant') DESC,
               length(rule.normalized_match_value) DESC,
               rule.updated_at DESC,
               rule.id
@@ -11878,6 +12130,8 @@ function mapTransactionCleanupRule(row) {
     match_mode: row.match_mode ?? "exact",
     match_value: row.match_value,
     normalized_match_value: row.normalized_match_value,
+    match_amount_operator: row.match_amount_operator ?? null,
+    match_amount_minor: integer(row.match_amount_minor),
     display_name: row.display_name ?? null,
     category_id:
       row.resolved_category_id ??

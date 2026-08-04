@@ -6,8 +6,8 @@
   >
     <div class="cleanup-rules__heading">
       <div>
-        <h2 id="cleanup-rules-heading">Automatic cleanup rules</h2>
-        <p>Match a normalized name exactly or by contained text. Exact rules always win over contains rules.</p>
+        <h2 id="cleanup-rules-heading">Automatic matching rules</h2>
+        <p>Match a normalized name exactly or by contained text. Changes are optional; match-only rules can reconcile recurring transactions.</p>
       </div>
       <button class="button button--secondary" type="button" data-cleanup-rule-new>
         <i class="ph ph-plus" aria-hidden="true"></i>
@@ -24,8 +24,8 @@
         <article class="cleanup-rule-row <%= rule.enabled ? '' : 'cleanup-rule-row--disabled' %>" data-cleanup-rule="<%= rule.id %>">
           <span class="cleanup-rule-row__icon"><i class="ph ph-magic-wand" aria-hidden="true"></i></span>
           <span class="cleanup-rule-row__copy">
-            <strong><%= cleanupRuleMatcherLabel(rule) %> <%= cleanupRuleMatcherMode(rule) %> “<%= rule.matcher?.value %>”</strong>
-            <span><i class="ph ph-arrow-right" aria-hidden="true"></i> <%= changeLabels.join(" · ") %></span>
+            <strong><%= cleanupRuleMatcherLabel(rule) %> <%= cleanupRuleMatcherMode(rule) %> “<%= rule.matcher?.value %>”<% if (cleanupRuleMatcherAmount(rule)) { %> · amount <%= cleanupRuleMatcherAmount(rule) %><% } %></strong>
+            <span><i class="ph ph-arrow-right" aria-hidden="true"></i> <%= changeLabels.join(" · ") || "Match only" %></span>
             <small><%= matchCount %> matching posted transaction<%= matchCount === 1 ? "" : "s" %></small>
           </span>
           <span class="cleanup-rule-row__actions">
@@ -82,10 +82,25 @@
             <input name="matcher_value" type="text" maxlength="160" autocomplete="off" data-cleanup-rule-matcher-value required>
           </label>
           <small>Capitalization, punctuation, and extra spaces are normalized. Contains matches this text anywhere in the selected field; exact matches take priority.</small>
+          <label class="cleanup-edit-field">
+            <span class="cleanup-edit-field__toggle">
+              <input type="checkbox" data-cleanup-rule-amount-enabled>
+              Match amount
+            </span>
+            <span class="cleanup-rule-form__amount">
+              <select name="amount_operator" data-cleanup-rule-amount-operator disabled>
+                <option value="exact">Exactly</option>
+                <option value="less_than">Less than</option>
+                <option value="more_than">More than</option>
+              </select>
+              <input name="amount" type="number" min="0.01" step="0.01" inputmode="decimal" placeholder="5000.00" data-cleanup-rule-amount disabled>
+            </span>
+          </label>
+          <small>Uses the absolute transaction amount, so the same condition works for deposits and withdrawals.</small>
         </div>
 
         <fieldset>
-          <legend>Changes to apply</legend>
+          <legend>Changes to apply <small>(optional)</small></legend>
           <label class="cleanup-edit-field">
             <span class="cleanup-edit-field__toggle">
               <input type="checkbox" data-cleanup-rule-change="display_name">
@@ -136,7 +151,7 @@
         <% } %>
 
         <label class="cleanup-rule-form__enabled">
-          <span><strong>Enabled</strong><small>Apply this rule to matching posted transactions.</small></span>
+          <span><strong>Enabled</strong><small>Use this matcher for posted transactions and recurring reconciliation.</small></span>
           <input class="switch" name="enabled" type="checkbox" data-cleanup-rule-enabled checked>
         </label>
         <p class="save-status" role="status" data-cleanup-rule-form-status></p>

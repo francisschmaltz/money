@@ -709,11 +709,38 @@ function validatedTransactionCleanupMatcher(input) {
       "contains matchers require at least 3 normalized characters",
     );
   }
+  let amount;
+  if (Object.hasOwn(input, "amount")) {
+    const amountInput = input.amount;
+    if (
+      !amountInput ||
+      typeof amountInput !== "object" ||
+      Array.isArray(amountInput)
+    ) {
+      throw transactionCleanupRuleError("matcher.amount must be an object");
+    }
+    const operator = String(amountInput.operator ?? "").trim();
+    if (!["exact", "less_than", "more_than"].includes(operator)) {
+      throw transactionCleanupRuleError(
+        "matcher.amount.operator must be exact, less_than, or more_than",
+      );
+    }
+    const amountMinor = Number(
+      amountInput.amount_minor ?? amountInput.amountMinor,
+    );
+    if (!Number.isSafeInteger(amountMinor) || amountMinor < 1) {
+      throw transactionCleanupRuleError(
+        "matcher.amount.amount_minor must be a positive integer",
+      );
+    }
+    amount = { operator, amount_minor: amountMinor };
+  }
   return {
     field,
     mode,
     value,
     normalized_value: normalizedValue,
+    ...(amount ? { amount } : {}),
   };
 }
 
@@ -783,11 +810,6 @@ function validatedTransactionCleanupChanges(input) {
       );
     }
     changes.tags = tags;
-  }
-  if (!Object.keys(changes).length) {
-    throw transactionCleanupRuleError(
-      "At least one transaction change is required",
-    );
   }
   return changes;
 }
@@ -1098,14 +1120,32 @@ export class DemoFinanceService {
           rule.matcher.field === "normalized_merchant"
             ? normalizeMerchant(transaction.raw_merchant)
             : normalizeTransactionName(transaction.raw_name);
-        return (rule.matcher.mode ?? "exact") === "contains"
+        const nameMatches = (rule.matcher.mode ?? "exact") === "contains"
           ? value.includes(rule.matcher.normalized_value)
           : value === rule.matcher.normalized_value;
+        if (!nameMatches || !rule.matcher.amount) return nameMatches;
+        const actual = Math.abs(
+          Number(
+            transaction.amount?.amount_minor ??
+              transaction.amount_minor ??
+              0,
+          ),
+        );
+        const target = Number(rule.matcher.amount.amount_minor);
+        if (rule.matcher.amount.operator === "exact") {
+          return actual === target;
+        }
+        if (rule.matcher.amount.operator === "less_than") {
+          return actual < target;
+        }
+        return actual > target;
       })
       .sort(
         (left, right) =>
           Number((right.matcher.mode ?? "exact") === "exact") -
             Number((left.matcher.mode ?? "exact") === "exact") ||
+          Number(Boolean(right.matcher.amount)) -
+            Number(Boolean(left.matcher.amount)) ||
           Number(right.matcher.field === "normalized_merchant") -
             Number(left.matcher.field === "normalized_merchant") ||
           right.matcher.normalized_value.length -
@@ -1167,7 +1207,11 @@ export class DemoFinanceService {
         rule.id !== excludingId &&
         rule.matcher.field === matcher.field &&
         (rule.matcher.mode ?? "exact") === matcher.mode &&
-        rule.matcher.normalized_value === matcher.normalized_value,
+        rule.matcher.normalized_value === matcher.normalized_value &&
+        (rule.matcher.amount?.operator ?? null) ===
+          (matcher.amount?.operator ?? null) &&
+        (rule.matcher.amount?.amount_minor ?? null) ===
+          (matcher.amount?.amount_minor ?? null),
     );
     if (duplicate) {
       throw transactionCleanupRuleError(

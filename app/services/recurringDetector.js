@@ -201,7 +201,15 @@ export class RecurringService {
   }
 
   async detectAndStore({ workspaceId = this.#workspaceId } = {}) {
-    const [transactions, manualPatterns] = await Promise.all([
+    await this.#repository.autoTagIncomeBonuses?.(workspaceId, {
+      asOf: this.#now().toISOString().slice(0, 10),
+    });
+    const [
+      transactions,
+      manualPatterns,
+      existingStreams,
+      matchingRules,
+    ] = await Promise.all([
       this.#repository.getTransactionsForPeriod(
         workspaceId,
         {
@@ -215,15 +223,184 @@ export class RecurringService {
             activeOnly: true,
           })
         : [],
+      typeof this.#repository.listRecurringStreams === "function"
+        ? this.#repository.listRecurringStreams(workspaceId)
+        : [],
+      typeof this.#repository.listTransactionCleanupRules === "function"
+        ? this.#repository.listTransactionCleanupRules(workspaceId, {
+            includeDisabled: false,
+          })
+        : [],
     ]);
-    const streams = detectRecurringStreams(transactions, {
+    const detected = detectRecurringStreams(transactions, {
       manualPatterns,
       now: this.#now(),
     });
+    const streams = reconcileMatchedRecurringOccurrences(
+      detected,
+      existingStreams,
+      transactions,
+      matchingRules,
+      this.#now(),
+    );
     await this.#repository.replaceRecurringStreams(workspaceId, streams);
     await this.#repository.rebuildSearchDocuments(workspaceId);
     return streams;
   }
+}
+
+export function reconcileMatchedRecurringOccurrences(
+  detectedStreams,
+  existingStreams,
+  transactions,
+  matchingRules,
+  now = new Date(),
+) {
+  const matchOnlyRules = matchingRules.filter(
+    (rule) =>
+      rule.enabled !== false &&
+      rule.display_name == null &&
+      rule.category_primary == null &&
+      rule.cash_flow_role == null &&
+      rule.tags == null,
+  );
+  if (!matchOnlyRules.length) return detectedStreams;
+  const transactionById = new Map(
+    transactions.map((transaction) => [transaction.id, transaction]),
+  );
+  const detectedById = new Map(
+    detectedStreams.map((stream) => [stream.id, stream]),
+  );
+
+  for (const existing of existingStreams) {
+    if (
+      !["active", "resumed", "irregular"].includes(existing.status) ||
+      !existing.next_expected_on ||
+      !["weekly", "biweekly", "monthly", "quarterly", "annual"].includes(
+        existing.cadence,
+      )
+    ) {
+      continue;
+    }
+    const linkedIds = new Set(existing.transaction_ids ?? []);
+    const linked = [...linkedIds]
+      .map((id) => transactionById.get(id))
+      .filter(Boolean);
+    const identityRules = matchOnlyRules.filter((rule) =>
+      linked.some((transaction) => transactionMatchesRule(transaction, rule)),
+    );
+    if (!identityRules.length) continue;
+
+    let expectedOn = existing.next_expected_on;
+    const matched = [];
+    for (let occurrence = 0; occurrence < 24; occurrence += 1) {
+      const candidate = transactions
+        .filter(
+          (transaction) =>
+            !linkedIds.has(transaction.id) &&
+            !transaction.pending &&
+            transaction.account_id === existing.account_id &&
+            transaction.currency_code === existing.currency_code &&
+            Number(transaction.amount_minor) < 0 &&
+            Math.abs(Number(transaction.amount_minor)) ===
+              Number(existing.expected_amount_minor) &&
+            Math.abs(daysBetween(expectedOn, transaction.posted_on)) <= 5 &&
+            identityRules.some((rule) =>
+              transactionMatchesRule(transaction, rule),
+            ),
+        )
+        .sort(
+          (left, right) =>
+            Math.abs(daysBetween(expectedOn, left.posted_on)) -
+              Math.abs(daysBetween(expectedOn, right.posted_on)) ||
+            left.posted_on.localeCompare(right.posted_on) ||
+            left.id.localeCompare(right.id),
+        )[0];
+      if (!candidate) break;
+      matched.push(candidate);
+      linkedIds.add(candidate.id);
+      expectedOn = nextExpectedDate(candidate.posted_on, existing.cadence);
+    }
+    if (!matched.length) continue;
+
+    const latest = matched.at(-1);
+    const base = detectedById.get(existing.id) ?? {
+      id: existing.id,
+      service_family: existing.service_family,
+      display_name: existing.display_name,
+      stream_type: existing.detected_stream_type ?? existing.stream_type,
+      classification_signals: existing.classification_signals ?? {},
+      cadence: existing.cadence,
+      account_id: existing.account_id,
+      expected_amount_minor: existing.expected_amount_minor,
+      min_amount_minor: existing.min_amount_minor,
+      max_amount_minor: existing.max_amount_minor,
+      monthly_equivalent_minor: existing.monthly_equivalent_minor,
+      currency_code: existing.currency_code,
+      cash_flow_role: existing.cash_flow_role,
+      first_seen_on: existing.first_seen_on,
+      confidence_basis_points: existing.confidence_basis_points,
+      status: existing.status,
+      transaction_ids: [...linkedIds],
+      recent_amounts: [],
+    };
+    const reconciledIds = [
+      ...new Set([...(base.transaction_ids ?? []), ...linkedIds]),
+    ];
+    detectedById.set(existing.id, {
+      ...base,
+      classification_signals: {
+        ...(base.classification_signals ?? {}),
+        matched_rule_occurrence: true,
+      },
+      last_seen_on: latest.posted_on,
+      next_expected_on: expectedOn,
+      status: inferStatus(
+        { posted_on: latest.posted_on },
+        CADENCES.find((cadence) => cadence.name === existing.cadence),
+        now,
+      ),
+      transaction_ids: reconciledIds,
+      recent_amounts: [...(base.recent_amounts ?? []), ...matched]
+        .slice(-4)
+        .map((transaction) => ({
+          transaction_id: transaction.id ?? transaction.transaction_id,
+          posted_on: transaction.posted_on,
+          amount_minor: Math.abs(Number(transaction.amount_minor)),
+        })),
+    });
+  }
+  return [...detectedById.values()].sort(
+    (left, right) =>
+      right.monthly_equivalent_minor - left.monthly_equivalent_minor ||
+      left.display_name.localeCompare(right.display_name),
+  );
+}
+
+function transactionMatchesRule(transaction, rule) {
+  const field = rule.match_field ?? rule.matcher?.field;
+  const mode = rule.match_mode ?? rule.matcher?.mode ?? "exact";
+  const target =
+    rule.normalized_match_value ?? rule.matcher?.normalized_value ?? "";
+  const actual =
+    field === "normalized_merchant"
+      ? transaction.normalized_merchant
+      : transaction.normalized_name;
+  const identityMatches =
+    mode === "contains"
+      ? String(actual ?? "").includes(target)
+      : actual === target;
+  if (!identityMatches) return false;
+  const operator =
+    rule.match_amount_operator ?? rule.matcher?.amount?.operator ?? null;
+  if (!operator) return true;
+  const threshold = Number(
+    rule.match_amount_minor ?? rule.matcher?.amount?.amount_minor,
+  );
+  const amount = Math.abs(Number(transaction.amount_minor));
+  if (operator === "exact") return amount === threshold;
+  if (operator === "less_than") return amount < threshold;
+  return amount > threshold;
 }
 
 function buildManualStreams(transactions, patterns, now) {

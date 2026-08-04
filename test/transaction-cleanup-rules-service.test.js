@@ -35,6 +35,8 @@ test("cleanup rule service normalizes matchers and returns their mode", async ()
         match_mode: input.matchMode,
         match_value: input.matchValue,
         normalized_match_value: input.normalizedMatchValue,
+        match_amount_operator: input.matchAmountOperator,
+        match_amount_minor: input.matchAmountMinor,
         display_name: input.displayName,
         category_primary: input.categoryPrimary,
         cash_flow_role: input.cashFlowRole,
@@ -82,6 +84,7 @@ test("cleanup rule service normalizes matchers and returns their mode", async ()
         field: "normalized_merchant",
         mode: "contains",
         value: "  AAPL SRV 0042  ",
+        amount: { operator: "more_than", amount_minor: 100_000 },
       },
       changes: {
         display_name: "Apple Services",
@@ -100,6 +103,7 @@ test("cleanup rule service normalizes matchers and returns their mode", async ()
     mode: "contains",
     value: "AAPL SRV 0042",
     normalized_value: "aapl srv",
+    amount: { operator: "more_than", amount_minor: 100_000 },
   });
   assert.deepEqual(created.rule.changes, {
     display_name: "Apple Services",
@@ -120,6 +124,8 @@ test("cleanup rule service normalizes matchers and returns their mode", async ()
       matchMode: "contains",
       matchValue: "AAPL SRV 0042",
       normalizedMatchValue: "aapl srv",
+      matchAmountOperator: "more_than",
+      matchAmountMinor: 100_000,
       displayName: "Apple Services",
       categoryPrimary: "Fees & Interest",
       cashFlowRole: "obligation",
@@ -339,13 +345,10 @@ test("cleanup rule service rejects unsafe or ambiguous rules before repository w
     }),
     /must produce between 1 and 160 normalized characters/,
   );
-  await assert.rejects(
-    service.createTransactionCleanupRule({
-      matcher: { field: "normalized_merchant", value: "Apple" },
-      changes: {},
-    }),
-    /At least one cleanup rule change is required/,
-  );
+  await service.createTransactionCleanupRule({
+    matcher: { field: "normalized_merchant", value: "Apple" },
+    changes: {},
+  });
   await assert.rejects(
     service.createTransactionCleanupRule({
       matcher: { field: "normalized_merchant", value: "Apple" },
@@ -372,7 +375,7 @@ test("cleanup rule service rejects unsafe or ambiguous rules before repository w
     service.deleteTransactionCleanupRule({ rule_id: "../../oops" }),
     /rule_id is required/,
   );
-  assert.equal(writes, 0);
+  assert.equal(writes, 1);
 });
 
 test("cleanup rule service reports missing updates and deletes", async () => {
