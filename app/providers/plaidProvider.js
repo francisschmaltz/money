@@ -18,6 +18,14 @@ const REAUTH_CODES = new Set([
   "USER_PERMISSION_REVOKED",
 ]);
 
+function plaidRequestTimeout(error) {
+  if (!["TimeoutError", "AbortError"].includes(error?.name)) return null;
+  return new PlaidApiError("Plaid request timed out", {
+    errorType: "API_ERROR",
+    errorCode: "PLAID_REQUEST_TIMEOUT",
+  });
+}
+
 export class PlaidApiError extends Error {
   constructor(message, { status, errorType, errorCode, requestId } = {}) {
     super(message);
@@ -29,7 +37,11 @@ export class PlaidApiError extends Error {
     this.requiresReauth = REAUTH_CODES.has(errorCode);
     this.retryable =
       status >= 500 ||
-      ["INTERNAL_SERVER_ERROR", "RATE_LIMIT_EXCEEDED"].includes(errorCode);
+      [
+        "INTERNAL_SERVER_ERROR",
+        "RATE_LIMIT_EXCEEDED",
+        "PLAID_REQUEST_TIMEOUT",
+      ].includes(errorCode);
   }
 }
 
@@ -71,24 +83,31 @@ export class PlaidProvider {
   }
 
   async #request(path, body = {}) {
-    const response = await this.#fetch(`${this.#host}${path}`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "plaid-version": "2020-09-14",
-      },
-      body: JSON.stringify({
-        client_id: this.#clientId,
-        secret: this.#secret,
-        ...body,
-      }),
-      signal: AbortSignal.timeout(20_000),
-    });
+    let response;
+    try {
+      response = await this.#fetch(`${this.#host}${path}`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "plaid-version": "2020-09-14",
+        },
+        body: JSON.stringify({
+          client_id: this.#clientId,
+          secret: this.#secret,
+          ...body,
+        }),
+        signal: AbortSignal.timeout(20_000),
+      });
+    } catch (error) {
+      throw plaidRequestTimeout(error) ?? error;
+    }
 
     let payload;
     try {
       payload = await response.json();
-    } catch {
+    } catch (error) {
+      const timeout = plaidRequestTimeout(error);
+      if (timeout) throw timeout;
       throw new PlaidApiError("Plaid returned an invalid response", {
         status: response.status,
       });
@@ -208,7 +227,11 @@ export class PlaidProvider {
             access_token: accessToken,
             start_date: startDate,
             end_date: endDate,
-            options: { count: 500, offset },
+            options: {
+              count: 500,
+              offset,
+              ...(offset === 0 ? { async_update: true } : {}),
+            },
           },
         );
         const pageTransactions = page.investment_transactions ?? [];

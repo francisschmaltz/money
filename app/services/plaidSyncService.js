@@ -415,6 +415,7 @@ export class PlaidSyncService {
                 ? "reauth_required"
                 : "error",
             errorCode: code,
+            coverageWarnings: stats.optional_product_warnings,
           });
           await this.#repository.finishSyncRun(runId, {
             status: "failed",

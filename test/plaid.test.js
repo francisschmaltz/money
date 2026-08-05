@@ -148,6 +148,75 @@ test("Plaid holdings can be fetched without waiting for investment history", asy
   assert.deepEqual(paths, ["/investments/holdings/get"]);
 });
 
+test("Plaid investment history initializes asynchronously on its first page", async () => {
+  const requests = [];
+  const provider = new PlaidProvider({
+    clientId: "client-id",
+    secret: "secret",
+    fetchImpl: async (_url, options) => {
+      const request = JSON.parse(options.body);
+      requests.push(request);
+      const offset = request.options.offset;
+      return jsonResponse({
+        accounts: [],
+        securities: [],
+        investment_transactions: [
+          { investment_transaction_id: `transaction-${offset}` },
+        ],
+        total_investment_transactions: 2,
+      });
+    },
+  });
+
+  const result = await provider.getInvestmentTransactions("access-token", {
+    startDate: "2024-08-05",
+    endDate: "2026-08-05",
+  });
+
+  assert.equal(result.investmentTransactions.length, 2);
+  assert.deepEqual(requests.map((request) => request.options), [
+    { count: 500, offset: 0, async_update: true },
+    { count: 500, offset: 1 },
+  ]);
+});
+
+test("Plaid fetch aborts expose a stable retryable timeout error", async () => {
+  for (const name of ["TimeoutError", "AbortError"]) {
+    for (const phase of ["fetch", "response body"]) {
+      const transportError = new Error(
+        "transport details must not escape",
+      );
+      transportError.name = name;
+      const provider = new PlaidProvider({
+        clientId: "client-id",
+        secret: "secret",
+        fetchImpl: async () => {
+          if (phase === "fetch") throw transportError;
+          return {
+            ok: true,
+            status: 200,
+            async json() {
+              throw transportError;
+            },
+          };
+        },
+      });
+
+      await assert.rejects(
+        provider.getAccounts("access-token"),
+        (error) =>
+          error instanceof PlaidApiError &&
+          error.message === "Plaid request timed out" &&
+          error.errorType === "API_ERROR" &&
+          error.code === "PLAID_REQUEST_TIMEOUT" &&
+          error.requiresReauth === false &&
+          error.retryable === true,
+        `${name} during ${phase}`,
+      );
+    }
+  }
+});
+
 test("normalizer uses signed minor units and pending replacement IDs", () => {
   assert.equal(amountToMinor(12.345, "USD"), 1_235);
   assert.equal(amountToMinor(1_234, "JPY"), 1_234);
@@ -624,6 +693,76 @@ test("investment holdings persist before a later history failure", async () => {
   );
 });
 
+test("investment history initialization is non-fatal while Plaid prepares it", async () => {
+  const replacements = [];
+  const states = [];
+  let finished;
+  const repository = investmentSyncRepository({
+    async updatePlaidItemState(_itemId, state) {
+      states.push(state);
+    },
+    async replaceInvestments(_itemId, values) {
+      replacements.push(values);
+    },
+    async finishSyncRun(_runId, result) {
+      finished = result;
+    },
+  });
+  const account = plaidInvestmentAccount({
+    accountId: "fidelity-401k",
+    name: "Cisco 401(k)",
+    subtype: "401k",
+    balance: 141_279.23,
+  });
+  const provider = {
+    ...investmentSyncProvider({
+      accounts: [account],
+      holdingsResult: {
+        accounts: [account],
+        holdings: [
+          plaidHolding({
+            accountId: "fidelity-401k",
+            securityId: "target-fund",
+            value: 141_279.23,
+          }),
+        ],
+        securities: [plaidSecurity("target-fund", "Target fund")],
+      },
+    }),
+    async getInvestmentTransactions() {
+      throw new PlaidApiError("Investment history is preparing", {
+        status: 400,
+        errorType: "ITEM_ERROR",
+        errorCode: "PRODUCT_NOT_READY",
+      });
+    },
+  };
+  const service = new PlaidSyncService({
+    provider,
+    repository,
+    secretRepository: { async get() { return "access-token"; } },
+    now: () => new Date("2026-08-05T18:00:00Z"),
+  });
+
+  const stats = await service.syncItem("local-item");
+
+  const warning = {
+    product: "investment_transactions",
+    code: "PRODUCT_NOT_READY",
+  };
+  assert.equal(replacements.length, 1);
+  assert.equal(replacements[0].holdings.length, 1);
+  assert.deepEqual(stats.optional_product_warnings, [warning]);
+  assert.deepEqual(states.at(-1), {
+    status: "active",
+    errorCode: null,
+    lastSyncedAt: new Date("2026-08-05T18:00:00Z"),
+    coverageWarnings: [warning],
+  });
+  assert.equal(finished.status, "succeeded");
+  assert.deepEqual(finished.stats.optional_product_warnings, [warning]);
+});
+
 test("investment response accounts are stored before their holdings", async () => {
   const accountBatches = [];
   const replacements = [];
@@ -777,6 +916,65 @@ test("a funded investment account with an empty holdings response preserves posi
     states.find((state) => state.status === "active").coverageWarnings,
     stats.optional_product_warnings,
   );
+});
+
+test("a later sync failure retains an empty holdings coverage warning", async () => {
+  const states = [];
+  let finished;
+  const repository = investmentSyncRepository({
+    async updatePlaidItemState(_itemId, state) {
+      states.push(state);
+    },
+    async finishSyncRun(_runId, result) {
+      finished = result;
+    },
+  });
+  const account = plaidInvestmentAccount({
+    accountId: "fidelity-401k",
+    name: "Cisco 401(k)",
+    subtype: "401k",
+    balance: 141_279.23,
+  });
+  const provider = {
+    ...investmentSyncProvider({
+      accounts: [account],
+      holdingsResult: {
+        accounts: [account],
+        holdings: [],
+        securities: [],
+      },
+    }),
+    async getInvestmentTransactions() {
+      throw new PlaidApiError("Plaid request timed out", {
+        errorType: "API_ERROR",
+        errorCode: "PLAID_REQUEST_TIMEOUT",
+      });
+    },
+  };
+  const service = new PlaidSyncService({
+    provider,
+    repository,
+    secretRepository: { async get() { return "access-token"; } },
+    now: () => new Date("2026-08-05T18:00:00Z"),
+  });
+
+  await assert.rejects(
+    service.syncItem("local-item"),
+    /Plaid request timed out/,
+  );
+
+  const warning = {
+    product: "investment_holdings",
+    code: "EMPTY_HOLDINGS_WITH_POSITIVE_BALANCE",
+  };
+  assert.deepEqual(states.at(-1), {
+    status: "error",
+    errorCode: "PLAID_REQUEST_TIMEOUT",
+    coverageWarnings: [warning],
+  });
+  assert.equal(finished.status, "failed");
+  assert.equal(finished.errorCode, "PLAID_REQUEST_TIMEOUT");
+  assert.deepEqual(finished.stats.optional_product_warnings, [warning]);
 });
 
 test("sync fences read models before its first write and publishes after success", async () => {
@@ -1007,6 +1205,49 @@ test("standalone Plaid reauthentication webhooks update Item state", async () =>
       "USER_ACCOUNT_REVOKED",
     ],
   );
+});
+
+test("investment history completion webhooks queue an Item sync", async () => {
+  const jobs = [];
+  const service = new PlaidSyncService({
+    provider: {
+      async verifyWebhook() {
+        return true;
+      },
+    },
+    repository: {
+      async getPlaidItemByProviderId() {
+        return { id: "local-item" };
+      },
+    },
+    secretRepository: {},
+    jobQueue: {
+      async enqueue(type, payload, options) {
+        jobs.push({ type, payload, options });
+        return { id: "job" };
+      },
+    },
+  });
+
+  const result = await service.handleWebhook({
+    rawBody: Buffer.from(
+      JSON.stringify({
+        webhook_type: "INVESTMENTS_TRANSACTIONS",
+        webhook_code: "HISTORICAL_UPDATE",
+        item_id: "provider-item",
+      }),
+    ),
+    verificationHeader: "verified",
+  });
+
+  assert.deepEqual(result, { accepted: true, queued: true });
+  assert.deepEqual(jobs, [
+    {
+      type: "plaid.sync_item",
+      payload: { itemId: "local-item" },
+      options: { dedupeKey: "local-item" },
+    },
+  ]);
 });
 
 test("job dedupe only coalesces work that is still queued", async () => {
