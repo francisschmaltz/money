@@ -122,6 +122,7 @@ export function createRuntime(config) {
     planningRepository,
     secretRepository,
     jobQueue,
+    logger: log,
     markReadModelSourceUnstable: (
       client,
       _workspaceId,

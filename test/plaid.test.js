@@ -13,6 +13,9 @@ import {
   PlaidProvider,
 } from "../app/providers/plaidProvider.js";
 import {
+  normalizePlaidCurrencyCode,
+  normalizePlaidHolding,
+  normalizePlaidSecurity,
   normalizePlaidTransaction,
   normalizeTransactionName,
   amountToMinor,
@@ -240,6 +243,49 @@ test("normalizer uses signed minor units and pending replacement IDs", () => {
   assert.equal(normalized.normalized_name, "store");
   assert.equal(normalized.cash_flow_role, "spending");
   assert.equal(normalized.excluded_from_spending, false);
+});
+
+test("Plaid currency codes are canonicalized before fixed-width persistence", () => {
+  assert.equal(
+    normalizePlaidCurrencyCode({ iso_currency_code: " usd " }),
+    "USD",
+  );
+  assert.equal(
+    normalizePlaidCurrencyCode({
+      iso_currency_code: "US Dollars",
+      unofficial_currency_code: "btc",
+    }),
+    "BTC",
+  );
+  assert.equal(
+    normalizePlaidCurrencyCode(
+      { unofficial_currency_code: "US Dollars" },
+      "eur",
+    ),
+    "EUR",
+  );
+  assert.equal(
+    normalizePlaidHolding(
+      {
+        account_id: "fidelity-401k",
+        security_id: "fund",
+        institution_value: 100,
+        unofficial_currency_code: "US Dollars",
+      },
+      "USD",
+    ).currency_code,
+    "USD",
+  );
+  assert.equal(
+    normalizePlaidSecurity(
+      {
+        security_id: "fund",
+        unofficial_currency_code: "US Dollars",
+      },
+      "USD",
+    ).currency_code,
+    "USD",
+  );
 });
 
 test("normalizer assigns cash-flow roles from specific Plaid categories", () => {
@@ -1040,6 +1086,49 @@ test("a partially applied sync publishes its failure boundary", async () => {
   );
 });
 
+test("internal sync failures record their stage and emit safe diagnostics", async () => {
+  const syncError = new Error("transaction page failed");
+  const logs = [];
+  const { service, finishedRuns, itemStates } = readModelFenceSyncHarness({
+    syncError,
+    logger: (...entries) => logs.push(entries),
+  });
+
+  await assert.rejects(
+    service.syncItem("local-item", { enqueueDerived: false }),
+    syncError,
+  );
+
+  assert.equal(
+    itemStates.at(-1).errorCode,
+    "SYNC_TRANSACTIONS_FETCH_ERROR",
+  );
+  assert.equal(
+    finishedRuns.at(-1).errorCode,
+    "SYNC_TRANSACTIONS_FETCH_ERROR",
+  );
+  assert.equal(
+    finishedRuns.at(-1).stats.failure_stage,
+    "transactions_fetch",
+  );
+  assert.deepEqual(logs, [
+    [
+      "error",
+      "Plaid sync failed",
+      {
+        connectionId: "local-item",
+        runId: "run",
+        stage: "transactions_fetch",
+        syncErrorCode: "SYNC_TRANSACTIONS_FETCH_ERROR",
+        sourceErrorName: "Error",
+        sourceErrorCode: null,
+        retryable: false,
+        stats: finishedRuns.at(-1).stats,
+      },
+    ],
+  ]);
+});
+
 test("missing Plaid Items and credentials do not touch the read-model fence", async () => {
   for (const scenario of [
     {
@@ -1454,8 +1543,11 @@ function readModelFenceSyncHarness({
   },
   accessToken = "access-token",
   syncError = null,
+  logger = null,
 } = {}) {
   const events = [];
+  const finishedRuns = [];
+  const itemStates = [];
   let currentClient = null;
   let transactionNumber = 0;
   const record = (label) => {
@@ -1495,6 +1587,7 @@ function readModelFenceSyncHarness({
       return "run";
     },
     async updatePlaidItemState(_itemId, state) {
+      itemStates.push(state);
       record(`item:${state.status}`);
     },
     async upsertAccounts() {
@@ -1513,6 +1606,7 @@ function readModelFenceSyncHarness({
       record("search:rebuild");
     },
     async finishSyncRun(_runId, result) {
+      finishedRuns.push(result);
       record(`run:finish:${result.status}`);
     },
   };
@@ -1556,6 +1650,7 @@ function readModelFenceSyncHarness({
       },
     },
     now: () => new Date("2026-08-01T12:00:00Z"),
+    logger,
     async markReadModelSourceUnstable(client, workspaceId, itemId) {
       assert.equal(client, currentClient);
       events.push(
@@ -1574,5 +1669,5 @@ function readModelFenceSyncHarness({
       );
     },
   });
-  return { service, events };
+  return { service, events, finishedRuns, itemStates };
 }

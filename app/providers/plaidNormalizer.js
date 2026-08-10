@@ -5,6 +5,22 @@ import {
 } from "../services/transactionCategories.js";
 import { canonicalSecurityType } from "../services/investmentSecurities.js";
 
+export function normalizePlaidCurrencyCode(
+  source = {},
+  fallback = "USD",
+) {
+  for (const candidate of [
+    source?.iso_currency_code,
+    source?.unofficial_currency_code,
+    fallback,
+    "USD",
+  ]) {
+    const normalized = String(candidate ?? "").trim().toUpperCase();
+    if (/^[A-Z]{3}$/.test(normalized)) return normalized;
+  }
+  return "USD";
+}
+
 export function amountToMinor(amount, currency = "USD") {
   if (amount == null || !Number.isFinite(Number(amount))) return null;
   const exponent = currencyFractionDigits(currency);
@@ -131,10 +147,7 @@ function plaidCashFlowRole(primary, detailed, ...descriptions) {
 }
 
 export function normalizePlaidAccount(account, institutionName = null) {
-  const currency =
-    account.balances?.iso_currency_code ??
-    account.balances?.unofficial_currency_code ??
-    "USD";
+  const currency = normalizePlaidCurrencyCode(account.balances);
   const isLiability = ["credit", "loan"].includes(account.type);
   return {
     id: stableId("account", account.account_id),
@@ -160,10 +173,7 @@ export function normalizePlaidAccount(account, institutionName = null) {
 }
 
 export function normalizePlaidTransaction(transaction) {
-  const currency =
-    transaction.iso_currency_code ??
-    transaction.unofficial_currency_code ??
-    "USD";
+  const currency = normalizePlaidCurrencyCode(transaction);
   const primary =
     transaction.personal_finance_category?.primary ??
     transaction.category?.[0] ??
@@ -212,11 +222,8 @@ export function normalizePlaidTransaction(transaction) {
   };
 }
 
-export function normalizePlaidSecurity(security) {
-  const currency =
-    security.iso_currency_code ??
-    security.unofficial_currency_code ??
-    "USD";
+export function normalizePlaidSecurity(security, fallbackCurrency = "USD") {
+  const currency = normalizePlaidCurrencyCode(security, fallbackCurrency);
   return {
     id: stableId("security", security.security_id),
     provider_security_id: security.security_id,
@@ -229,11 +236,8 @@ export function normalizePlaidSecurity(security) {
   };
 }
 
-export function normalizePlaidHolding(holding) {
-  const currency =
-    holding.iso_currency_code ??
-    holding.unofficial_currency_code ??
-    "USD";
+export function normalizePlaidHolding(holding, fallbackCurrency = "USD") {
+  const currency = normalizePlaidCurrencyCode(holding, fallbackCurrency);
   return {
     id: stableId(
       "holding",
@@ -263,11 +267,14 @@ export function normalizePlaidHolding(holding) {
   };
 }
 
-export function normalizePlaidInvestmentTransaction(transaction) {
-  const currency =
-    transaction.iso_currency_code ??
-    transaction.unofficial_currency_code ??
-    "USD";
+export function normalizePlaidInvestmentTransaction(
+  transaction,
+  fallbackCurrency = "USD",
+) {
+  const currency = normalizePlaidCurrencyCode(
+    transaction,
+    fallbackCurrency,
+  );
   return {
     id: stableId(
       "investment_transaction",

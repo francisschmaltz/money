@@ -18,6 +18,15 @@ const OPTIONAL_PRODUCT_ERRORS = new Set([
 ]);
 const READ_MODEL_CHANGED = Symbol.for("money.readModelChanged");
 
+function syncStageErrorCode(stage) {
+  const normalized = String(stage ?? "unknown")
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return `SYNC_${normalized || "UNKNOWN"}_ERROR`;
+}
+
 function webhookResult(value, changed) {
   Object.defineProperty(value, READ_MODEL_CHANGED, {
     value: Boolean(changed),
@@ -32,6 +41,7 @@ export class PlaidSyncService {
   #jobQueue;
   #now;
   #workspaceId;
+  #logger;
   #markReadModelSourceUnstable;
   #publishReadModelBoundary;
 
@@ -42,6 +52,7 @@ export class PlaidSyncService {
     jobQueue = null,
     now = () => new Date(),
     workspaceId = "shared",
+    logger = null,
     markReadModelSourceUnstable = null,
     publishReadModelBoundary = null,
   }) {
@@ -56,6 +67,10 @@ export class PlaidSyncService {
     this.#jobQueue = jobQueue;
     this.#now = now;
     this.#workspaceId = workspaceId;
+    if (logger != null && typeof logger !== "function") {
+      throw new TypeError("logger must be a function");
+    }
+    this.#logger = logger;
     if (
       markReadModelSourceUnstable != null &&
       typeof markReadModelSourceUnstable !== "function"
@@ -217,8 +232,17 @@ export class PlaidSyncService {
     };
     const persistHoldings = async (holdingsResult) => {
       await persistProviderAccounts(holdingsResult.accounts ?? []);
-      const holdings = (holdingsResult.holdings ?? []).map(
-        normalizePlaidHolding,
+      const holdings = (holdingsResult.holdings ?? []).map((holding) =>
+        normalizePlaidHolding(
+          holding,
+          accountsByProviderId.get(holding.account_id)?.currency_code,
+        ),
+      );
+      const holdingCurrencyBySecurityId = new Map(
+        holdings.map((holding) => [
+          holding.provider_security_id,
+          holding.currency_code,
+        ]),
       );
       const fundedInvestmentAccount = [...accountsByProviderId.values()].some(
         (account) =>
@@ -233,8 +257,11 @@ export class PlaidSyncService {
         });
       } else {
         await this.#repository.replaceInvestments(itemId, {
-          securities: (holdingsResult.securities ?? []).map(
-            normalizePlaidSecurity,
+          securities: (holdingsResult.securities ?? []).map((security) =>
+            normalizePlaidSecurity(
+              security,
+              holdingCurrencyBySecurityId.get(security.security_id),
+            ),
           ),
           holdings,
           asOf: this.#now(),
@@ -243,19 +270,24 @@ export class PlaidSyncService {
       stats.holdings = holdings.length;
     };
     let finalBoundaryCommitted = false;
+    let stage = "accounts_fetch";
 
     try {
       const accountResponse = await this.#provider.getAccounts(accessToken);
+      stage = "accounts_persist";
       const normalizedAccounts = await persistProviderAccounts(
         accountResponse.accounts ?? [],
       );
 
+      stage = "transactions_fetch";
       const transactionSync = await this.#provider.syncTransactions(
         accessToken,
         item.transactions_cursor,
       );
+      stage = "transactions_normalize";
       const added = transactionSync.added.map(normalizePlaidTransaction);
       const modified = transactionSync.modified.map(normalizePlaidTransaction);
+      stage = "transactions_persist";
       await this.#repository.applyTransactionSync({
         itemId,
         added,
@@ -282,15 +314,18 @@ export class PlaidSyncService {
           typeof this.#provider.getInvestmentHoldings === "function" &&
           typeof this.#provider.getInvestmentTransactions === "function"
         ) {
+          stage = "investment_holdings_fetch";
           const holdingsResult = await this.#optionalProduct(
             "investment_holdings",
             () => this.#provider.getInvestmentHoldings(accessToken),
             stats,
           );
           if (holdingsResult) {
+            stage = "investment_holdings_persist";
             await persistHoldings(holdingsResult);
           }
 
+          stage = "investment_transactions_fetch";
           const transactionsResult = await this.#optionalProduct(
             "investment_transactions",
             () =>
@@ -301,15 +336,22 @@ export class PlaidSyncService {
             stats,
           );
           if (transactionsResult) {
+            stage = "investment_transactions_persist";
             await persistProviderAccounts(
               transactionsResult.accounts ?? [],
             );
             const transactions = (
               transactionsResult.investmentTransactions ?? []
-            ).map(normalizePlaidInvestmentTransaction);
+            ).map((transaction) =>
+              normalizePlaidInvestmentTransaction(
+                transaction,
+                accountsByProviderId.get(transaction.account_id)
+                  ?.currency_code,
+              ),
+            );
             await this.#repository.replaceInvestments(itemId, {
               securities: (transactionsResult.securities ?? []).map(
-                normalizePlaidSecurity,
+                (security) => normalizePlaidSecurity(security),
               ),
               transactions,
               asOf: this.#now(),
@@ -317,6 +359,7 @@ export class PlaidSyncService {
             stats.investment_transactions = transactions.length;
           }
         } else {
+          stage = "investments_fetch";
           const investmentResult = await this.#optionalProduct(
             "investments",
             () =>
@@ -327,14 +370,19 @@ export class PlaidSyncService {
             stats,
           );
           if (investmentResult) {
+            stage = "investments_persist";
             await persistHoldings(investmentResult);
             const transactions =
-              investmentResult.investmentTransactions.map(
-                normalizePlaidInvestmentTransaction,
+              investmentResult.investmentTransactions.map((transaction) =>
+                normalizePlaidInvestmentTransaction(
+                  transaction,
+                  accountsByProviderId.get(transaction.account_id)
+                    ?.currency_code,
+                ),
               );
             await this.#repository.replaceInvestments(itemId, {
               securities: (investmentResult.securities ?? []).map(
-                normalizePlaidSecurity,
+                (security) => normalizePlaidSecurity(security),
               ),
               transactions,
               asOf: this.#now(),
@@ -344,18 +392,21 @@ export class PlaidSyncService {
         }
       }
 
+      stage = "accounts_finalize";
       await this.#repository.deactivateMissingAccounts(
         itemId,
         [...activeProviderAccountIds],
       );
 
       if (normalizedAccounts.some(supportsPlaidLiabilities)) {
+        stage = "liabilities_fetch";
         const liabilityResult = await this.#optionalProduct(
           "liabilities",
           () => this.#provider.getLiabilities(accessToken),
           stats,
         );
         if (liabilityResult) {
+          stage = "liabilities_persist";
           const liabilities = normalizePlaidLiabilities(liabilityResult);
           await this.#repository.replaceLiabilities(itemId, liabilities, {
             asOf: this.#now(),
@@ -364,6 +415,7 @@ export class PlaidSyncService {
         }
       }
 
+      stage = "sync_finalize";
       await this.#transaction(async (client) => {
         await this.#repository.updatePlaidItemState(itemId, {
           status: "active",
@@ -390,6 +442,7 @@ export class PlaidSyncService {
       finalBoundaryCommitted = true;
 
       if (this.#jobQueue && enqueueDerived) {
+        stage = "derived_enqueue";
         await this.#enqueueJob(
           "finance.detect_recurring",
           { workspaceId: item.workspace_id },
@@ -406,7 +459,23 @@ export class PlaidSyncService {
                 "INVESTMENT_TRANSACTIONS_PERSISTENCE_MISMATCH",
               ].includes(error?.code)
             ? error.code
-            : "SYNC_ERROR";
+            : syncStageErrorCode(stage);
+      stats.failure_stage = stage;
+      try {
+        this.#logger?.("error", "Plaid sync failed", {
+          connectionId: itemId,
+          runId,
+          stage,
+          syncErrorCode: code,
+          sourceErrorName: error?.name ?? "Error",
+          sourceErrorCode:
+            typeof error?.code === "string" ? error.code : null,
+          retryable: Boolean(error?.retryable),
+          stats,
+        });
+      } catch {
+        // Logging must never hide the original sync failure.
+      }
       if (!finalBoundaryCommitted) {
         await this.#transaction(async (client) => {
           await this.#repository.updatePlaidItemState(itemId, {
