@@ -3,8 +3,10 @@
 Money is a shared personal-finance dashboard and scoped MCP server for
 `money.example.com`. It imports accounts through Plaid and Apple Card CSV,
 stores normalized finance data in PostgreSQL, produces deterministic insights,
-and gives Open WebUI structured results that compatible clients can render as native
-cards.
+and gives Open WebUI structured results that compatible clients can render as
+native cards.
+
+![Money dashboard running with deterministic demo data](docs/screenshots/dashboard.png)
 
 The stack is deliberately boring: Node 24, Express 5, EJS, vanilla JavaScript,
 Chart.js, PostgreSQL, and the official MCP SDK. There is no TypeScript, ORM,
