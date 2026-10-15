@@ -623,6 +623,8 @@ export class FinanceService {
     const accountId = options.accountId ?? options.account_id ?? null;
     const category = options.category ?? null;
     const groupBy = options.groupBy ?? options.group_by ?? "category";
+    const search = options.search ?? options.query ?? null;
+    const merchant = options.merchant ?? null;
     const segmentLimit = bounded(
       options.segmentLimit ?? options.segment_limit,
       12,
@@ -637,6 +639,8 @@ export class FinanceService {
           endOn: current.end_on,
           accountId,
           category: splitAware ? null : category,
+          ...(search ? { search } : {}),
+          ...(merchant ? { merchant } : {}),
         }),
         optionalRepositoryCall(
           this.#repository,
@@ -664,6 +668,7 @@ export class FinanceService {
         splits,
         splitAware ? category : null,
         categoryDefinitions,
+        merchant,
       ),
       currentPeriod: current,
       previousPeriod: previous,
@@ -684,7 +689,7 @@ export class FinanceService {
       });
     const spendingSeriesCount = data.series.length;
     data.series = sampleSeries(data.series, 80);
-    data.filters = { account_id: accountId, category };
+    data.filters = { account_id: accountId, category, query: search, merchant };
     const warnings =
       spendingSeriesCount > data.series.length
         ? ["Spending series was sampled to 80 points for card delivery."]
@@ -711,6 +716,7 @@ export class FinanceService {
     const accountId = options.accountId ?? options.account_id ?? null;
     const category = options.category ?? null;
     const search = options.search ?? options.query ?? null;
+    const merchant = options.merchant ?? null;
     const splitAware =
       typeof this.#repository.listTransactionSplits === "function";
     const [transactions, splits, freshness, categoryDefinitions] =
@@ -721,6 +727,7 @@ export class FinanceService {
         accountId,
         category: splitAware ? null : category,
         search,
+        merchant,
       }),
       optionalRepositoryCall(
         this.#repository,
@@ -748,6 +755,7 @@ export class FinanceService {
         splits,
         splitAware ? category : null,
         categoryDefinitions,
+        merchant,
       ),
       period: current,
       interval,
@@ -755,7 +763,7 @@ export class FinanceService {
     });
     const cashFlowBucketCount = data.buckets.length;
     data.buckets = sampleSeries(data.buckets, 80);
-    data.filters = { account_id: accountId, category, query: search };
+    data.filters = { account_id: accountId, category, query: search, merchant };
     const warnings =
       cashFlowBucketCount > data.buckets.length
         ? ["Cash-flow buckets were sampled to 80 points for card delivery."]
@@ -1107,7 +1115,16 @@ export class FinanceService {
         "Portfolio series was sampled to 80 points for card delivery.",
       );
     }
-    data.holdings = data.holdings.slice(0, holdingsLimit);
+    const cursorKind = `holdings:${retirementScope}:${accountId ?? "all"}`;
+    let holdingsOffset;
+    try { holdingsOffset = decodeOffsetCursor(options.holdingsCursor ?? options.holdings_cursor, cursorKind); }
+    catch { throw badRequest("Invalid holdings cursor."); }
+    const hasMoreHoldings = holdingsOffset + holdingsLimit < data.holdings.length;
+    data.holdings = data.holdings.slice(holdingsOffset, holdingsOffset + holdingsLimit);
+    data.page_info = {
+      has_more: hasMoreHoldings,
+      next_cursor: hasMoreHoldings ? encodeOffsetCursor(cursorKind, holdingsOffset + holdingsLimit) : null,
+    };
     data.period = { name: period, start_on: startOn, end_on: endOn };
     data.filters = {
       account_id: accountId,
@@ -1132,6 +1149,119 @@ export class FinanceService {
 
   async getFinanceInsights(options = {}) {
     return this.#getFinanceInsights(options);
+  }
+
+  async getTransactionDetail({ transaction_id } = {}) {
+    const id = requiredId(transaction_id, "transaction_id");
+    const [transaction, recurringContext, freshness] = await Promise.all([
+      this.#repository.getTransaction(this.#workspaceId, id, { includeProviderLocation: true }),
+      optionalRepositoryCall(this.#repository, "getTransactionRecurringContext", null, this.#workspaceId, id),
+      this.#dataFreshness(),
+    ]);
+    if (!transaction) throw notFound("Transaction not found.");
+    return this.#result({
+      data: {
+        transaction: { ...transactionCard(transaction), location: transactionLocation(transaction.provider_location) },
+        recurring_context: recurringContext,
+      },
+      freshness,
+      title: effectiveTransactionName(transaction),
+      path: `/transactions?transaction=${encodeURIComponent(id)}`,
+      summary: "Transaction details returned.",
+    });
+  }
+
+  async getRecurringDetail({ stream_id } = {}) {
+    const id = requiredId(stream_id, "stream_id");
+    const [streams, freshness] = await Promise.all([
+      this.#repository.listRecurringStreams(this.#workspaceId, { includeInactive: true }),
+      this.#dataFreshness(),
+    ]);
+    const stream = streams.find((candidate) => candidate.id === id);
+    if (!stream) throw notFound("Recurring payment not found.");
+    const transactions = await this.#repository.getTransactionsByIds(this.#workspaceId, stream.transaction_ids ?? []);
+    return this.#result({
+      data: {
+        recurring_payment: recurringCard(stream),
+        transactions: transactions.sort((left, right) => right.posted_on.localeCompare(left.posted_on)).slice(0, 20).map(transactionCard),
+      },
+      freshness,
+      title: stream.name ?? stream.merchant_name,
+      path: `/recurring?item=${encodeURIComponent(id)}`,
+      summary: "Recurring payment and recent supporting transactions returned.",
+    });
+  }
+
+  async listConnections() {
+    const [connections, freshness] = await Promise.all([
+      this.#repository.listFinanceConnections(this.#workspaceId),
+      this.#dataFreshness(),
+    ]);
+    return this.#result({
+      data: { connections: connections.map(publicConnection) },
+      freshness,
+      title: "Connections",
+      path: "/settings#connections",
+      summary: `${connections.length} finance connections returned.`,
+    });
+  }
+
+  async listManualAssets({ include_inactive = false, limit = 50, cursor = null } = {}) {
+    const pageSize = bounded(limit, 50, 100);
+    let offset;
+    try { offset = decodeOffsetCursor(cursor, `manual-assets:${include_inactive}`); }
+    catch { throw badRequest("Invalid manual asset cursor."); }
+    const [assets, freshness] = await Promise.all([
+      this.#repository.listManualAssets(this.#workspaceId, { includeInactive: include_inactive }),
+      this.#dataFreshness(),
+    ]);
+    const hasMore = offset + pageSize < assets.length;
+    return this.#result({
+      data: {
+        manual_assets: assets.slice(offset, offset + pageSize).map(manualAssetCard),
+        page_info: { has_more: hasMore, next_cursor: hasMore ? encodeOffsetCursor(`manual-assets:${include_inactive}`, offset + pageSize) : null },
+      }, freshness, title: "Manual assets", path: "/accounts", summary: "Manual asset page returned.",
+    });
+  }
+
+  async getInsightFeed({ section = "all", view = "active", limit = 50, cursor = null } = {}) {
+    if (!["all", "weekly", "investments", "subscriptions"].includes(section) || !["active", "archive"].includes(view)) {
+      throw badRequest("Invalid insight section or view.");
+    }
+    const pageSize = bounded(limit, 50, 100);
+    let offset;
+    try { offset = decodeOffsetCursor(cursor, `insight-feed:${view}:${section}`); }
+    catch { throw badRequest("Invalid insight feed cursor."); }
+    const [findings, freshness] = await Promise.all([
+      this.#repository.listInsightFindings(this.#workspaceId, {
+        family: section === "all" ? null : section,
+        scope: view,
+        limit: pageSize + 1,
+        offset,
+      }),
+      this.#dataFreshness(),
+    ]);
+    const hasMore = findings.length > pageSize;
+    return this.#result({
+      data: {
+        section, view, findings: findings.slice(0, pageSize),
+        page_info: { has_more: hasMore, next_cursor: hasMore ? encodeOffsetCursor(`insight-feed:${view}:${section}`, offset + pageSize) : null },
+      },
+      freshness,
+      title: "Insights",
+      path: "/insights",
+      summary: "Finance insight page returned.",
+    });
+  }
+
+  async getInsightDetail({ finding_id } = {}) {
+    const id = requiredId(finding_id, "finding_id");
+    const [finding, freshness] = await Promise.all([
+      this.#repository.getInsightFinding(this.#workspaceId, id),
+      this.#dataFreshness(),
+    ]);
+    if (!finding) throw notFound("Insight not found.");
+    return this.#result({ data: { finding }, freshness, title: finding.title, path: `/insights?finding=${encodeURIComponent(id)}`, summary: finding.explanation });
   }
 
   async #getFinanceInsights(
@@ -1343,6 +1473,7 @@ export class FinanceService {
       }[result.entity_type] ?? "Other";
       const items = groups.get(label) ?? [];
       items.push({
+        ...(options.includeEntityIds ? { entity_type: result.entity_type, entity_id: result.entity_id } : {}),
         title: result.title,
         meta: result.subtitle ?? "",
         url: searchResultUrl(result),
@@ -3955,6 +4086,18 @@ export class FinanceService {
       summary,
     };
   }
+}
+
+export function publicConnection(connection) {
+  // Explicitly allowlist metadata: provider credentials must never cross this boundary.
+  const fields = [
+    "id", "provider", "ingestion_method", "freshness_mode", "institution_id",
+    "institution_name", "status", "error_code", "coverage_warnings",
+    "last_synced_at", "imported_through_on", "balance_as_of", "last_imported_at",
+    "last_import", "account_id", "mask", "current_balance_minor", "credit_limit_minor",
+    "manual_update_due",
+  ];
+  return Object.fromEntries(fields.map((field) => [field, connection[field] ?? null]));
 }
 
 function accountCard(account) {

@@ -180,6 +180,9 @@ function apiInput(path, query) {
       accountId: stringValue(values.account_id, 128),
       category: stringValue(values.category, 100),
       search: stringValue(values.search, 120),
+      merchant: stringValue(values.merchant, 160),
+      currencyCode: currencyValue(values.currency_code),
+      sort: stringValue(values.sort, 20),
       status: stringValue(values.status, 20) || "all",
       minAmountMinor: signedIntegerValue(values.min_amount_minor),
       maxAmountMinor: signedIntegerValue(values.max_amount_minor),
@@ -187,7 +190,7 @@ function apiInput(path, query) {
         values.include_pending === undefined
           ? true
           : booleanValue(values.include_pending),
-      limit: integerValue(values.limit, { maximum: 200 }),
+      limit: integerValue(values.limit, { maximum: 100 }),
       cursor: stringValue(values.cursor, 512),
     };
   }
@@ -199,6 +202,8 @@ function apiInput(path, query) {
       groupBy: stringValue(values.group_by, 20) || "category",
       accountId: stringValue(values.account_id, 128),
       category: stringValue(values.category, 100),
+      search: stringValue(values.search, 120),
+      merchant: stringValue(values.merchant, 160),
       segmentLimit: integerValue(values.segment_limit, { maximum: 30 }),
     };
   }
@@ -210,6 +215,7 @@ function apiInput(path, query) {
       accountId: stringValue(values.account_id, 128),
       category: stringValue(values.category, 100),
       search: stringValue(values.search, 120),
+      merchant: stringValue(values.merchant, 160),
     };
   }
   if (path === "recurring") {
@@ -219,6 +225,7 @@ function apiInput(path, query) {
       cadence: stringValue(values.cadence, 20) || "all",
       status: stringValue(values.status, 20) || "active",
       includeInactive: booleanValue(values.include_inactive),
+      includeFrequentSpending: booleanValue(values.include_frequent_spending),
       limit: integerValue(values.limit, { maximum: 100 }),
       cursor: stringValue(values.cursor, 512),
     };
@@ -226,6 +233,7 @@ function apiInput(path, query) {
   if (path === "net-worth") {
     return {
       ...commonPeriod,
+      includeComponents: booleanValue(values.include_components),
       interval: stringValue(values.interval, 20) || "week",
       limit: integerValue(values.limit, { maximum: 366 }),
     };
@@ -240,6 +248,7 @@ function apiInput(path, query) {
       holdingsLimit: integerValue(values.holdings_limit, {
         maximum: 100,
       }),
+      ...(values.holdings_cursor ? { holdingsCursor: stringValue(values.holdings_cursor, 512) } : {}),
     };
   }
   return {};
@@ -383,11 +392,29 @@ export function createApiRouter({
   planningService = null,
   plaidSyncService,
   plaidRedirectUri = null,
+  plaidIosRedirectUri = null,
   appleCardImportService,
 } = {}) {
   const router = Router();
 
   router.use("/api", requireAuth);
+
+  function plaidRedirectForRequest(request) {
+    const platform = request.body?.platform ?? "web";
+    if (!["web", "ios"].includes(platform)) {
+      const error = new Error("platform must be web or ios.");
+      error.statusCode = 400;
+      error.expose = true;
+      throw error;
+    }
+    if (platform === "ios" && !plaidIosRedirectUri) {
+      const error = new Error("Native Plaid OAuth is unavailable.");
+      error.statusCode = 503;
+      error.expose = true;
+      throw error;
+    }
+    return platform === "ios" ? plaidIosRedirectUri : plaidRedirectUri;
+  }
 
   router.get(
     "/api/v1/me/appearance",
@@ -469,6 +496,97 @@ export function createApiRouter({
     });
   }
 
+  router.get("/api/v1/credit", (request, response, next) => {
+    const period = stringValue(request.query.period, 8) || "1m";
+    if (!["1w", "1m", "1y", "all"].includes(period)) {
+      invalidRequest(response, "period must be 1w, 1m, 1y, or all.");
+      return;
+    }
+    invoke(financeService, "getCreditSummary", { period }, response, next);
+  });
+
+  router.get("/api/v1/connections", requireAdmin, (_request, response, next) => {
+    invoke(financeService, "listConnections", {}, response, next);
+  });
+
+  router.get("/api/v1/manual-assets", (request, response, next) => {
+    invoke(financeService, "listManualAssets", {
+      include_inactive: booleanValue(request.query.include_inactive),
+      limit: integerValue(request.query.limit, { maximum: 100 }),
+      cursor: stringValue(request.query.cursor, 512),
+    }, response, next);
+  });
+
+  router.get("/api/v1/recurring/:streamId", (request, response, next) => {
+    invoke(financeService, "getRecurringDetail", {
+      stream_id: request.params.streamId,
+    }, response, next);
+  });
+
+  router.get("/api/v1/insight-feed", (request, response, next) => {
+    invoke(financeService, "getInsightFeed", {
+      section: stringValue(request.query.section, 20) || "all",
+      view: stringValue(request.query.view, 20) || "active",
+      limit: integerValue(request.query.limit, { maximum: 100 }),
+      cursor: stringValue(request.query.cursor, 512),
+    }, response, next);
+  });
+
+  router.get(["/api/v1/insight-feed/:findingId", "/api/v1/insights/:findingId"], (request, response, next) => {
+    invoke(financeService, "getInsightDetail", {
+      finding_id: request.params.findingId,
+    }, response, next);
+  });
+
+  router.get("/api/v1/search", (request, response, next) => {
+    const entityType = stringValue(request.query.entity_type, 30);
+    if (entityType && !["transaction", "account", "recurring", "insight", "manual_asset"].includes(entityType)) {
+      invalidRequest(response, "The requested search filter is not supported.");
+      return;
+    }
+    if (typeof financeService?.search !== "function") {
+      unavailable(response, "Finance search");
+      return;
+    }
+    Promise.resolve(financeService.search(stringValue(request.query.q, 120) || "", {
+      entityTypes: entityType ? [entityType] : null,
+      limit: integerValue(request.query.limit, { maximum: 50 }),
+      includeEntityIds: true,
+    })).then((result) => response.json(result)).catch(next);
+  });
+
+  router.get("/api/v1/plan/overview", async (request, response, next) => {
+    if (typeof planningService?.getPlanningOverview !== "function") {
+      unavailable(response, "Finance planning");
+      return;
+    }
+    try {
+      const model = await planningService.getPlanningOverview({ month_on: request.query.month_on ?? null });
+      response.json({
+        data: {
+          safe_to_spend: model.safeToSpend,
+          obligations: model.obligations,
+          goals: model.goals,
+          archived_goals: model.archivedGoals,
+          history_insights: model.historyInsights,
+          budget: model.budget,
+          previous_budget: model.previousBudget,
+          schedule_runs: model.scheduleRuns,
+          audit_events: model.auditEvents,
+          alerts: model.alerts,
+        },
+        data_as_of: model.freshness,
+        partial: model.partial === true,
+        warnings: model.warnings ?? [],
+      });
+    } catch (error) { next(error); }
+  });
+
+  router.get("/api/v1/plan/goals/:goalId", (request, response, next) => {
+    invoke(planningService, "getFinanceGoal", { goal_id: request.params.goalId }, response, next);
+  });
+
+
   router.get(
     "/api/v1/credit-scores",
     (request, response, next) => {
@@ -530,7 +648,10 @@ export function createApiRouter({
       invoke(
         planningService,
         "getBudgetStatus",
-        { month_on: request.query.month_on ?? null },
+        {
+          month_on: request.query.month_on ?? null,
+          include_available_categories: booleanValue(request.query.include_available_categories),
+        },
         response,
         next,
       );
@@ -919,7 +1040,7 @@ export function createApiRouter({
       try {
         const result = await plaidSyncService.createLinkToken({
           userId: request.user?.id || request.user?.email,
-          redirectUri: plaidRedirectUri,
+          redirectUri: plaidRedirectForRequest(request),
         });
         response.json({
           link_token: result.linkToken,
@@ -978,7 +1099,7 @@ export function createApiRouter({
         const result = await plaidSyncService.createUpdateLinkToken({
           itemId: request.params.itemId,
           userId: request.user?.id || request.user?.email,
-          redirectUri: plaidRedirectUri,
+          redirectUri: plaidRedirectForRequest(request),
         });
         response.json({
           link_token: result.linkToken,
@@ -1328,6 +1449,24 @@ export function createApiRouter({
     },
   );
 
+  router.get(["/api/v1/transactions/:transactionId", "/api/v1/transactions/:transactionId/detail"], async (request, response, next) => {
+    if (typeof financeService?.getTransactionDetail !== "function" ||
+        typeof planningService?.getTransactionSplit !== "function" ||
+        typeof planningService?.getTransactionGoalSpending !== "function") {
+      unavailable(response, "Transaction details");
+      return;
+    }
+    try {
+      const input = { transaction_id: request.params.transactionId };
+      const [detail, splits, spending] = await Promise.all([
+        financeService.getTransactionDetail(input),
+        planningService.getTransactionSplit(input),
+        planningService.getTransactionGoalSpending(input),
+      ]);
+      response.json({ ...detail, data: { ...detail.data, splits, goal_spending: spending.data } });
+    } catch (error) { next(error); }
+  });
+
   router.put(
     "/api/v1/transactions/:transactionId/note",
     requireCsrf,
@@ -1663,7 +1802,6 @@ export function createApiRouter({
 
   router.get(
     "/api/v1/categories",
-    requireAdmin,
     (request, response, next) => {
       invoke(
         financeService,

@@ -1120,7 +1120,7 @@ test("quality feedback and recurring classification routes validate structured a
   ]);
 });
 
-test("spending category routes are admin-only, CSRF-protected, and preserve merge input", async () => {
+test("spending categories allow member reads and preserve protected admin mutations", async () => {
   const calls = [];
   const middleware = [];
   const actor = { id: "user-admin", is_admin: true };
@@ -1242,7 +1242,6 @@ test("spending category routes are admin-only, CSRF-protected, and preserve merg
     ],
   ]);
   assert.deepEqual(middleware, [
-    "admin:GET",
     "admin:POST",
     "csrf:POST",
     "admin:PATCH",

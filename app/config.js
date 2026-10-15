@@ -138,6 +138,10 @@ export function loadConfig(environment = process.env, argv = process.argv.slice(
     environment.SESSION_SECRET ||
       (production ? "" : "development-only-secret"),
   ).trim();
+  const appleTeamId = String(environment.APPLE_TEAM_ID || "").trim();
+  if (appleTeamId && !/^[A-Z0-9]{10}$/.test(appleTeamId)) {
+    throw new Error("APPLE_TEAM_ID must be the public 10-character Apple developer Team ID.");
+  }
 
   const config = {
     nodeEnvironment,
@@ -148,6 +152,7 @@ export function loadConfig(environment = process.env, argv = process.argv.slice(
     trustProxy: boolean(environment.TRUST_PROXY),
     demoMode,
     demoScenario,
+    mobile: { appleTeamId },
     database: {
       url: databaseUrl,
       ssl: boolean(environment.DATABASE_SSL),

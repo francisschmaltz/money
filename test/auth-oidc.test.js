@@ -14,8 +14,10 @@ import {
   createSessionMiddleware,
   identityForOidcClaims,
   identityForStoredSession,
+  identityForStoredIdentity,
   validateOidcConfiguration,
 } from "../app/auth.js";
+import { createMobileAuth, MemoryMobileAuthStore } from "../app/mobileAuth.js";
 
 const issuer =
   "https://sso-example.sso.duosecurity.com/oidc/DIEXAMPLE";
@@ -76,17 +78,24 @@ function config(overrides = {}) {
 function authApp({
   oidcConfiguration = configuration(),
   onAuthenticated = null,
+  mobileAuth = null,
 } = {}) {
   const app = express();
   const appConfig = config();
+  app.use(express.json());
   app.use(createSessionMiddleware({ config: appConfig, pool: null }));
   app.use(
     createAuth({
       config: appConfig,
       oidcConfiguration,
       onAuthenticated,
+      mobileAuth,
     }).router,
   );
+  if (mobileAuth) {
+    app.use(mobileAuth.authenticate);
+    app.use(mobileAuth.router);
+  }
   app.get("/signed-in", (req, res) => {
     res.json({ user: req.user || null });
   });
@@ -529,6 +538,50 @@ test("OIDC callback validates state, nonce, and signs in a verified user", async
     .expect(302)
     .expect("location", "/login?error=not-allowed");
   assert.equal(tokenRequests, 1, "a consumed callback cannot be replayed");
+
+  const mobileConfig = { ...config(), publicBaseUrl: "http://127.0.0.1" };
+  const store = new MemoryMobileAuthStore();
+  const mobileAuth = createMobileAuth({ config: mobileConfig, store,
+    resolveIdentity: (stored) => identityForStoredIdentity(stored, mobileConfig),
+  });
+  const mobileApp = authApp({ oidcConfiguration, mobileAuth,
+    onAuthenticated: async () => ({ id: "local-user-1" }),
+  });
+  const mobileBrowser = request.agent(mobileApp);
+  const verifier = "v".repeat(43);
+  const { createHash } = await import("node:crypto");
+  const start = await mobileBrowser.get("/auth/mobile/start").query({
+    state: "mobile-state-1234567890",
+    code_challenge: createHash("sha256").update(verifier).digest("base64url"),
+    code_challenge_method: "S256",
+  }).expect(302);
+  const mobileParameters = loginParameters(start.headers.location);
+  assert.equal(mobileParameters.get("redirect_uri"), redirectUri,
+    "mobile broker must retain the confidential Duo callback");
+  expectedNonce = mobileParameters.get("nonce");
+  const mobileCallback = await mobileBrowser.get("/auth/duo/callback")
+    .query({ code: "native-code", state: mobileParameters.get("state") }).expect(302);
+  const target = new URL(mobileCallback.headers.location);
+  assert.equal(`${target.origin}${target.pathname}`, "http://127.0.0.1/auth/ios/callback");
+  assert.equal(target.searchParams.get("state"), "mobile-state-1234567890");
+  const exchange = await request(mobileApp).post("/auth/mobile/exchange")
+    .send({ code: target.searchParams.get("code"), code_verifier: verifier }).expect(200);
+  const nativeSession = await request(mobileApp).get("/api/v1/session")
+    .set("Authorization", `Bearer ${exchange.body.access_token}`).expect(200);
+  assert.equal(nativeSession.body.user.id, "local-user-1");
+  assert.equal(nativeSession.body.user.email, "reader@example.com");
+  assert.equal(tokenRequests, 2);
+  assert.doesNotMatch(JSON.stringify([...store.sessions.values()]), /test-access-token/);
+
+  await mobileBrowser.get("/auth/mobile/start").query({
+    state: "mobile-state-1234567890",
+    code_challenge: createHash("sha256").update(verifier).digest("base64url"),
+    code_challenge_method: "S256",
+  }).expect(302);
+  const failed = await mobileBrowser.get("/auth/duo/callback")
+    .query({ code: "bad-native-code", state: "wrong-state" }).expect(302);
+  assert.equal(new URL(failed.headers.location).searchParams.get("error"), "authentication_failed");
+  assert.equal(tokenRequests, 2, "wrong state must never reach the provider token endpoint");
 });
 
 test("OIDC callback rejects the wrong state before token exchange", async () => {

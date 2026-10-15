@@ -4,6 +4,12 @@ import test from "node:test";
 import { loadConfig, readiness } from "../app/config.js";
 import { databaseSslOptions } from "../app/db/pool.js";
 
+test("Apple site association uses an explicitly configured public Team ID", () => {
+  assert.equal(loadConfig({ NODE_ENV: "test" }, []).mobile.appleTeamId, "");
+  assert.equal(loadConfig({ NODE_ENV: "test", APPLE_TEAM_ID: "ABCDE12345" }, []).mobile.appleTeamId, "ABCDE12345");
+  assert.throws(() => loadConfig({ NODE_ENV: "test", APPLE_TEAM_ID: "not-a-team" }, []), /APPLE_TEAM_ID/);
+});
+
 test("database TLS verification defaults on and can be explicitly disabled", () => {
   assert.equal(databaseSslOptions(), undefined);
   assert.deepEqual(

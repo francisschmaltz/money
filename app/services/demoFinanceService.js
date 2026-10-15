@@ -19,6 +19,7 @@ import {
   validateInsightLlmSettings,
 } from "./narrativeService.js";
 import { DEMO_IDS } from "../demo/fixtureIds.js";
+import { FinanceService, publicConnection } from "./financeService.js";
 import {
   buildDefaultAccounts,
   buildDefaultBudgetDefaults,
@@ -606,6 +607,20 @@ function decodeDemoTransactionCursor(cursor) {
     error.statusCode = 400;
     throw error;
   }
+}
+
+function demoReadOffset(cursor, kind) {
+  if (!cursor) return 0;
+  try {
+    const parsed = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
+    if (parsed.kind !== kind || !Number.isSafeInteger(parsed.offset) || parsed.offset < 0) throw new Error();
+    return parsed.offset;
+  } catch { throw demoCategoryError("Invalid page cursor."); }
+}
+
+function demoReadPage(kind, offset, limit, total) {
+  const hasMore = offset + limit < total;
+  return { has_more: hasMore, next_cursor: hasMore ? Buffer.from(JSON.stringify({ kind, offset: offset + limit })).toString("base64url") : null };
 }
 
 function compareDemoServiceTransactions(left, right, sort) {
@@ -1471,6 +1486,115 @@ export class DemoFinanceService {
     });
   }
 
+  async getTransactionDetail({ transaction_id } = {}) {
+    const transaction = this.#transactions.find((candidate) => candidate.id === transaction_id);
+    if (!transaction) throw demoCategoryError("Transaction not found.", 404);
+    const stream = this.#recurring.find((candidate) =>
+      (candidate.transactions ?? []).some((entry) => entry.id === transaction_id));
+    return result({
+      data: {
+        transaction: { ...publicDemoTransaction(transaction), location: transaction.location ?? null },
+        recurring_context: {
+          transaction_id, cash_flow_role: transaction.cash_flow_role,
+          account_active: true, has_stable_identity: true,
+          pattern: null,
+          linked_stream: stream ? { id: stream.id, stream_type: stream.type, cadence: stream.cadence } : null,
+        },
+      },
+      title: transaction.display_name, path: `/transactions?transaction=${encodeURIComponent(transaction_id)}`,
+      summary: "Transaction details returned.",
+    });
+  }
+
+  async listPendingEditRecoveries() {
+    // The existing demo fixture has no orphaned pending-to-posted edits.
+    return { recoveries: [] };
+  }
+
+  async getRecurringDetail({ stream_id } = {}) {
+    const stream = this.#recurring.find((candidate) => candidate.id === stream_id);
+    if (!stream) throw demoCategoryError("Recurring payment not found.", 404);
+    return result({
+      data: { recurring_payment: structuredClone(stream), transactions: structuredClone(stream.transactions ?? []) },
+      title: stream.service, path: `/recurring?item=${encodeURIComponent(stream_id)}`,
+      summary: "Recurring payment and supporting transactions returned.",
+    });
+  }
+
+  async listConnections() {
+    const connections = new Map();
+    for (const account of this.#accountCards()) {
+      const id = account.institution_id;
+      if (!connections.has(id)) connections.set(id, publicConnection({
+        id, provider: "plaid", ingestion_method: "plaid", freshness_mode: "automatic",
+        institution_id: id, institution_name: account.institution_name,
+        status: "active", last_synced_at: DATA_AS_OF, coverage_warnings: [],
+        manual_update_due: false,
+      }));
+    }
+    return result({ data: { connections: [...connections.values()] }, title: "Connections", path: "/settings#connections", summary: "Demo finance connections returned." });
+  }
+
+  async listManualAssets({ include_inactive = false, limit = 50, cursor = null } = {}) {
+    const kind = `manual-assets:${include_inactive}`;
+    const offset = demoReadOffset(cursor, kind);
+    const pageSize = Math.max(1, Math.min(100, Number(limit) || 50));
+    const cards = this.#manualAssetCards({ includeInactive: include_inactive });
+    return result({ data: { manual_assets: structuredClone(cards.slice(offset, offset + pageSize)), page_info: demoReadPage(kind, offset, pageSize, cards.length) }, title: "Manual assets", path: "/accounts", summary: "Manual asset page returned." });
+  }
+
+  async getInsightFeed({ section = "all", view = "active", limit = 50, cursor = null } = {}) {
+    if (!["all", "weekly", "investments", "subscriptions"].includes(section) || !["active", "archive"].includes(view)) {
+      throw demoCategoryError("Invalid insight section or view.");
+    }
+    const kind = `insight-feed:${view}:${section}`;
+    const offset = demoReadOffset(cursor, kind);
+    const pageSize = Math.max(1, Math.min(100, Number(limit) || 50));
+    const findings = [...this.#insightFindings.values()].filter((finding) =>
+      (section === "all" || finding.family === section) &&
+      (view === "active" ? finding.state === "active" : finding.state !== "active"));
+    return result({
+      data: { section, view, findings: structuredClone(findings.slice(offset, offset + pageSize)), page_info: demoReadPage(kind, offset, pageSize, findings.length) },
+      title: "Insights", path: "/insights", summary: "Finance insight page returned.",
+      partial: this.#insightStatus.data_stale, warnings: this.#insightStatus.data_warnings,
+    });
+  }
+
+  async getInsightDetail({ finding_id } = {}) {
+    const finding = this.#insightFindings.get(finding_id);
+    if (!finding) throw demoCategoryError("Insight not found.", 404);
+    return result({ data: { finding: structuredClone(finding) }, title: finding.title, path: `/insights?finding=${encodeURIComponent(finding_id)}`, summary: finding.explanation });
+  }
+
+  #nativeAnalyticsService() {
+    return new FinanceService({
+      now: () => new Date(DATA_AS_OF),
+      repository: {
+        getDataFreshness: async () => ({ data_as_of: DATA_AS_OF, partial: false, warnings: [] }),
+        listTransactionSplits: async () => [],
+        listSpendingCategories: async () => (await this.listSpendingCategories()).categories,
+        getTransactionsForPeriod: async (_workspace, options) => {
+          const transactions = [];
+          let cursor = null;
+          do {
+            const page = await this.listTransactions({ ...options, limit: 100, cursor });
+            transactions.push(...page.data.transactions);
+            cursor = page.data.page_info.next_cursor;
+          } while (cursor);
+          return transactions.map((transaction) => ({
+            ...transaction,
+            name: transaction.raw_name,
+            merchant_name: transaction.raw_merchant,
+            posted_on: transaction.posted_on ?? transaction.date,
+            amount_minor: transaction.amount.amount_minor,
+            currency_code: transaction.amount.currency,
+            account_id: transaction.account.id,
+          }));
+        },
+      },
+    });
+  }
+
   async getFinanceInsights({
     section = "all",
     view = "active",
@@ -1567,6 +1691,7 @@ export class DemoFinanceService {
       1,
       Math.min(100, Number(options.limit) || 50),
     );
+    const offset = demoReadOffset(options.cursor, "accounts");
     const allAccounts = this.#accountCards();
     const filtered = allAccounts.filter(
       (account) =>
@@ -1575,7 +1700,7 @@ export class DemoFinanceService {
           account.institution_id === institutionId) &&
         (!balanceGroup || account.balance_group === balanceGroup),
     );
-    const page = filtered.slice(0, limit);
+    const page = filtered.slice(offset, offset + limit);
     const groups = new Map();
     for (const account of page) {
       const key = account.institution_name;
@@ -1605,10 +1730,7 @@ export class DemoFinanceService {
         manual_asset_count: manualAssets.length,
         balance_summary: balanceSummary,
         credit_summary: creditSummary,
-        page_info: {
-          has_more: filtered.length > page.length,
-          next_cursor: null,
-        },
+        page_info: demoReadPage("accounts", offset, limit, filtered.length),
         freshness: FRESHNESS,
       },
     });
@@ -2225,6 +2347,11 @@ export class DemoFinanceService {
     accountId = null,
     account_id = null,
     category = null,
+    merchant = null,
+    currencyCode = null,
+    minAmountMinor = null,
+    maxAmountMinor = null,
+    includePending = true,
     sort = "date",
     limit = 50,
     cursor = null,
@@ -2240,6 +2367,7 @@ export class DemoFinanceService {
     const offset = decodeDemoTransactionCursor(cursor);
     const filtered = this.#transactions
       .filter((transaction) => {
+        if (!includePending && transaction.pending) return false;
         if (status === "pending") return transaction.pending;
         if (status === "posted") return !transaction.pending;
         return true;
@@ -2251,6 +2379,10 @@ export class DemoFinanceService {
           (!effectiveEnd || date < effectiveEnd) &&
           (!effectiveAccount ||
             transaction.account.id === effectiveAccount) &&
+          (!merchant || transaction.display_name === merchant) &&
+          (!currencyCode || transaction.amount.currency === currencyCode) &&
+          (minAmountMinor == null || transaction.amount.amount_minor >= minAmountMinor) &&
+          (maxAmountMinor == null || transaction.amount.amount_minor <= maxAmountMinor) &&
           (!category ||
             transaction.category_primary === category ||
             transaction.category === category)
@@ -2296,7 +2428,8 @@ export class DemoFinanceService {
     });
   }
 
-  async getSpendingSummary() {
+  async getSpendingSummary(options = {}) {
+    if (Object.values(options).some((value) => value != null)) return this.#nativeAnalyticsService().getSpendingSummary(options);
     return result({
       title: "Spending",
       subtitle: "July vs June",
@@ -2344,7 +2477,8 @@ export class DemoFinanceService {
     });
   }
 
-  async getCashFlow() {
+  async getCashFlow(options = {}) {
+    if (Object.values(options).some((value) => value != null)) return this.#nativeAnalyticsService().getCashFlow(options);
     return result({
       title: "Cash flow",
       subtitle: "July 2026",
@@ -2376,44 +2510,24 @@ export class DemoFinanceService {
     });
   }
 
-  async listRecurringPayments({ kind = "all", limit = 50 } = {}) {
-    const roleByStream = new Map(
-      this.getPlanningRecurringStreams().map((stream) => [
-        stream.id,
-        stream.cash_flow_role,
-      ]),
-    );
-    const streams = this.#recurring
-      .map((stream) => ({
-        ...stream,
-        cash_flow_role:
-          roleByStream.get(stream.id) ??
-          stream.cash_flow_role ??
-          "spending",
-      }))
-      .filter((stream) => {
-        if (kind === "subscriptions") return stream.type === "subscription";
-        if (kind === "bills") return stream.type === "bill";
-        return true;
-      })
-      .slice(0, limit);
-    const monthly = streams.reduce(
-      (sum, stream) => sum + stream.monthly_equivalent.amount_minor,
-      0,
-    );
+  async listRecurringPayments({ kind = "all", type = "all", cadence = "all", status = "active", includeInactive = false, includeFrequentSpending = true, limit = 50, cursor = null } = {}) {
+    const roleByStream = new Map(this.getPlanningRecurringStreams().map((stream) => [stream.id, stream.cash_flow_role]));
+    const offset = demoReadOffset(cursor, "recurring");
+    const pageSize = Math.max(1, Math.min(100, Number(limit) || 50));
+    const requestedType = type !== "all" ? type : kind === "subscriptions" ? "subscription" : kind === "bills" ? "bill" : "all";
+    const streams = this.#recurring.map((stream) => ({
+      ...stream, cash_flow_role: roleByStream.get(stream.id) ?? stream.cash_flow_role ?? "spending",
+    })).filter((stream) =>
+      (includeFrequentSpending || stream.type !== "frequent_spending") &&
+      (requestedType === "all" || stream.type === requestedType) &&
+      (cadence === "all" || stream.cadence === cadence) &&
+      (includeInactive || status === "all" || (status === "active" ? ["active", "resumed", "irregular"].includes(stream.status ?? "active") : stream.status === status)));
+    const monthly = streams.filter((stream) => stream.type !== "frequent_spending").reduce((sum, stream) => sum + stream.monthly_equivalent.amount_minor, 0);
+    const page = structuredClone(streams.slice(offset, offset + pageSize));
     return result({
-      title: "Recurring payments",
-      subtitle: `${streams.length} shown`,
-      path: "/recurring",
-      summary: `${streams.length} recurring payments total about ${(monthly / 100).toLocaleString("en-US", { style: "currency", currency: "USD" })} per month. Data is fresh as of July 26 at 6:42 PM UTC.`,
-      data: {
-        kind,
-        monthly_equivalent: money(monthly),
-        annual_equivalent: money(monthly * 12),
-        recurring_payments: structuredClone(streams),
-        page_info: { has_more: false, next_cursor: null },
-        freshness: FRESHNESS,
-      },
+      title: "Recurring payments", subtitle: `${streams.length} detected`, path: "/recurring",
+      summary: `${streams.length} recurring payments returned. Data is fresh as of July 26 at 6:42 PM UTC.`,
+      data: { kind, monthly_equivalent: money(monthly), annual_equivalent: money(monthly * 12), recurring_payments: page, streams: page, page_info: demoReadPage("recurring", offset, pageSize, streams.length), freshness: FRESHNESS },
     });
   }
 
@@ -2459,8 +2573,8 @@ export class DemoFinanceService {
     });
   }
 
-  async getNetWorthHistory() {
-    return result({
+  async getNetWorthHistory(options = {}) {
+    const response = result({
       title: "Net worth",
       subtitle: "Seven months",
       path: "/?view=net-worth",
@@ -2493,6 +2607,22 @@ export class DemoFinanceService {
         freshness: FRESHNESS,
       },
     });
+    if (options.includeComponents === true) {
+      const balance = this.#balanceSummary();
+      const components = {
+        cash_balance: balance.cash_balance,
+        short_term_worth: balance.short_term_worth,
+        retirement_assets: balance.retirement_assets,
+      };
+      Object.assign(response.data, Object.fromEntries(Object.entries(components).map(([key, value]) => [`current_${key}`, value])));
+      response.data.series = response.data.series.map((point, index, series) => ({
+        ...point,
+        ...Object.fromEntries(Object.entries(components).map(([key, value]) => [key, index === series.length - 1 ? value : null])),
+      }));
+      response.partial = true;
+      response.warnings.push("Demo component history contains only the current known snapshot.");
+    }
+    return response;
   }
 
   async getPortfolioSummary(options = {}) {
@@ -2528,6 +2658,8 @@ export class DemoFinanceService {
         Number(options.holdingsLimit ?? options.holdings_limit) || 50,
       ),
     );
+    const holdingsKind = `holdings:${retirementScope}:${accountId ?? "all"}`;
+    const holdingsOffset = demoReadOffset(options.holdingsCursor ?? options.holdings_cursor, holdingsKind);
     const accountCards = this.#accountCards();
     const accountGroups = new Map(
       accountCards.map((account) => [
@@ -2592,7 +2724,7 @@ export class DemoFinanceService {
     const retirementValue = investmentHoldings
       .filter((holding) => holding.balance_group === "retirement")
       .reduce((sum, holding) => sum + holding.value_minor, 0);
-    const holdingCards = scoped.slice(0, holdingsLimit).map((holding) => ({
+    const holdingCards = scoped.slice(holdingsOffset, holdingsOffset + holdingsLimit).map((holding) => ({
       id: holding.id,
       security_id: holding.security_id,
       account_id: holding.account_id,
@@ -2676,6 +2808,7 @@ export class DemoFinanceService {
         estimated_return_basis_points: estimatedReturn,
         estimated_performance_basis_points: estimatedReturn,
         holdings: holdingCards,
+        page_info: demoReadPage(holdingsKind, holdingsOffset, holdingsLimit, scoped.length),
         allocation,
         series: [
           { timestamp: "2026-07-01", value: money(startTotal) },
@@ -2719,6 +2852,7 @@ export class DemoFinanceService {
     const items = [
       ...this.#transactions.map((transaction) => ({
         entityType: "transaction",
+        ...(options.includeEntityIds ? { entity_type: "transaction", entity_id: transaction.id } : {}),
         group: "Transactions",
         title: transaction.display_name,
         meta: [
@@ -2734,6 +2868,7 @@ export class DemoFinanceService {
       })),
       ...this.#accountCards().map((account) => ({
         entityType: "account",
+        ...(options.includeEntityIds ? { entity_type: "account", entity_id: account.id } : {}),
         group: "Accounts",
         title: account.name,
         meta: `${account.type} · ${account.mask}`,
@@ -2743,6 +2878,7 @@ export class DemoFinanceService {
       })),
       ...this.#recurring.map((stream) => ({
         entityType: "recurring",
+        ...(options.includeEntityIds ? { entity_type: "recurring", entity_id: stream.id } : {}),
         group: "Recurring",
         title: stream.service,
         meta: `${stream.cadence} · ${stream.type}`,
@@ -2754,6 +2890,7 @@ export class DemoFinanceService {
         .filter((asset) => asset.active)
         .map((asset) => ({
           entityType: "manual_asset",
+        ...(options.includeEntityIds ? { entity_type: "manual_asset", entity_id: asset.id } : {}),
           group: "Assets",
           title: asset.name,
           meta: `Manual ${asset.asset_type}`,
@@ -2763,6 +2900,7 @@ export class DemoFinanceService {
         })),
       ...insightItems.map(({ finding, family }) => ({
         entityType: "insight",
+        ...(options.includeEntityIds ? { entity_type: "insight", entity_id: finding.id } : {}),
         group: "Insights",
         title: finding.title,
         meta: `${family} · ${finding.type}`,

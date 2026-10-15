@@ -713,6 +713,8 @@ export class PlanningService {
         ...budgetAlerts,
       ],
       freshness: safe.data_as_of,
+      partial: safe.partial || budget.partial || previousBudget.partial,
+      warnings: [...new Set([...(safe.warnings ?? []), ...(budget.warnings ?? []), ...(previousBudget.warnings ?? [])])],
     };
   }
 

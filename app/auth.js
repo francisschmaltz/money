@@ -71,6 +71,12 @@ export function identityForStoredSession(
   ) {
     return null;
   }
+  return identityForStoredIdentity(stored, config);
+}
+
+// Session expiry belongs to its transport; role resolution is shared.
+export function identityForStoredIdentity(stored, config) {
+  if (typeof stored?.subject !== "string" || !stored.subject) return null;
   const identity = identityForEmail(stored.email, config, {
     name: stored.name,
   });
@@ -269,6 +275,7 @@ export function createAuth({
   oidcConfiguration = null,
   csrfMiddleware = (_request, _response, next) => next(),
   onAuthenticated = null,
+  mobileAuth = null,
 }) {
   const passport = new Authenticator();
   const router = Router();
@@ -327,6 +334,20 @@ export function createAuth({
   router.use(passport.initialize());
   router.use(passport.session());
 
+  if (mobileAuth) {
+    router.get("/auth/mobile/start", mobileAuth.begin, (request, response, next) => {
+      if (config.auth.mode === "mock" && !config.production) {
+        const email = [...config.auth.adminEmails][0] || "demo@example.com";
+        Promise.resolve(mobileAuth.complete(request, response, {
+          id: "demo-user", email, name: "Demo User", subject: "mock:demo-user",
+          isAdmin: config.auth.adminEmails.has(email),
+        })).catch(next);
+        return;
+      }
+      passport.authenticate(OIDC_STRATEGY)(request, response, next);
+    });
+  }
+
   if (config.auth.mode === "mock") {
     router.use((request, _response, next) => {
       if (!request.user) {
@@ -345,6 +366,7 @@ export function createAuth({
   }
 
   router.get("/auth/login", (request, response, next) => {
+    delete request.session.mobileAuth;
     const returnTo = safeLocalReturnTo(request.query.return_to);
     request.session.returnTo = returnTo;
     if (config.auth.mode === "mock") {
@@ -357,10 +379,22 @@ export function createAuth({
   if (config.auth.mode === "oidc") {
     router.get(
       "/auth/duo/callback",
-      passport.authenticate(OIDC_STRATEGY, {
-        failureRedirect: "/login?error=not-allowed",
-        session: false,
-      }),
+      (request, response, next) => {
+        if (mobileAuth && request.session?.mobileAuth) {
+          passport.authenticate(OIDC_STRATEGY, { session: false }, (error, user) => {
+            if (error || !user) {
+              mobileAuth.fail(request, response);
+              return;
+            }
+            Promise.resolve(mobileAuth.complete(request, response, user)).catch(next);
+          })(request, response, next);
+          return;
+        }
+        passport.authenticate(OIDC_STRATEGY, {
+          failureRedirect: "/login?error=not-allowed",
+          session: false,
+        })(request, response, next);
+      },
       (request, response) => {
         const returnTo = request.session.returnTo || "/";
         const authenticatedUser = request.user;

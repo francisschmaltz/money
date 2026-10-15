@@ -82,6 +82,13 @@ export function allowedHost(allowedHosts) {
 }
 
 export function ensureCsrfToken(request, response, next) {
+  // Native requests carry an explicit bearer credential rather than cookies.
+  // Avoid saving an anonymous browser session for every cookieless API call.
+  if (request.get("authorization") !== undefined || request.path === "/auth/mobile/exchange") {
+    response.locals.csrfToken = "";
+    next();
+    return;
+  }
   if (!request.session) {
     response.locals.csrfToken = "";
     next();
@@ -95,6 +102,10 @@ export function ensureCsrfToken(request, response, next) {
 }
 
 export function requireCsrf(request, response, next) {
+  if (request.nativeSession) {
+    next();
+    return;
+  }
   const presented = request.get("x-csrf-token") || request.body?._csrf;
   if (
     !request.session?.csrfToken ||

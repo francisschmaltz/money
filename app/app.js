@@ -6,7 +6,8 @@ import helmet from "helmet";
 import rateLimit from "express-rate-limit";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 
-import { createAuth, createSessionMiddleware, requireAdmin, requireUser } from "./auth.js";
+import { createAuth, createSessionMiddleware, identityForStoredIdentity, requireAdmin, requireUser } from "./auth.js";
+import { createMobileAuth } from "./mobileAuth.js";
 import { readiness } from "./config.js";
 import { checkDatabase } from "./db/pool.js";
 import { log } from "./log.js";
@@ -312,12 +313,32 @@ export function createApp({
 
   app.use(createPlaidWebhookRouter({ plaidSyncService }));
 
+  app.get("/.well-known/apple-app-site-association", (_request, response) => {
+    const teamId = config.mobile?.appleTeamId;
+    if (!teamId) return response.status(404).json({ error: "association_not_configured" });
+    const appId = `${teamId}.com.yaboiii.money`;
+    response.json({
+      webcredentials: { apps: [appId] },
+      applinks: { details: [{ appIDs: [appId], components: [{ "/": "/plaid/ios/callback" }] }] },
+    });
+  });
+
   app.use(createSessionMiddleware({ config, pool }));
   app.use(ensureCsrfToken);
+  const mobileAuth = createMobileAuth({
+    config, pool,
+    resolveIdentity: (stored) => identityForStoredIdentity(stored, config),
+    appearancePreferenceService,
+    capabilities: {
+      plaid_link: Boolean(plaidSyncService),
+      apple_card_csv_import: Boolean(appleCardImportService),
+    },
+  });
   const auth = createAuth({
     config,
     oidcConfiguration,
     csrfMiddleware: requireCsrf,
+    mobileAuth,
     onAuthenticated: repository
       ? (identity) =>
           repository.upsertUser({
@@ -328,6 +349,8 @@ export function createApp({
       : null,
   });
   app.use(auth.router);
+  app.use(mobileAuth.authenticate);
+  app.use(mobileAuth.router);
   app.use((request, response, next) => {
     response.locals.viewer = viewer(request.user);
     next();
@@ -343,6 +366,7 @@ export function createApp({
       planningService,
       plaidSyncService,
       plaidRedirectUri: config.plaid.redirectUri,
+      plaidIosRedirectUri: new URL("/plaid/ios/callback", config.publicBaseUrl).href,
       appleCardImportService,
     }),
   );

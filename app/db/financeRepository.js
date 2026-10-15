@@ -10234,7 +10234,7 @@ export class PgFinanceRepository {
 
   async listInsightFindings(
     workspaceId = DEFAULT_WORKSPACE_ID,
-    { family = null, scope = "active", limit = 100 } = {},
+    { family = null, scope = "active", limit = 100, offset = 0 } = {},
   ) {
     if (!["active", "archive", "all"].includes(scope)) {
       throw new TypeError("Invalid insight finding scope");
@@ -10266,13 +10266,14 @@ export class PgFinanceRepository {
           END,
           generated_at DESC,
           id
-        LIMIT $4
+        LIMIT $4 OFFSET $5
       `,
       [
         workspaceId,
         family,
         scope,
         Math.max(1, Math.min(200, limit)),
+        Math.max(0, Number.isSafeInteger(offset) ? offset : 0),
       ],
     );
     return result.rows.map(mapInsightFinding);
