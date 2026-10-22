@@ -772,7 +772,7 @@ test(
       await pool.query(
         `
           UPDATE transactions
-          SET pending = true
+          SET currency_code = 'CAD'
           WHERE workspace_id = $1 AND id = $2
         `,
         [workspaceId, historyTransactionId],

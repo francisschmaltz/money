@@ -604,7 +604,6 @@ export class PlanningService {
       transaction.provider_amount_minor ?? transaction.amount_minor,
     );
     const eligible =
-      transaction.pending === false &&
       transaction.currency_code === this.#currency &&
       providerAmountMinor < 0 &&
       transaction.excluded_from_spending !== true;
@@ -2293,14 +2292,11 @@ function assertGoalSpendEligible(transaction) {
 }
 
 function goalSpendIneligibleReason(transaction, amountMinor) {
-  if (transaction?.pending !== false) {
-    return "Pending transactions cannot be spent from a goal.";
-  }
   if (transaction.currency_code !== "USD") {
     return "Only USD transactions can be spent from a goal.";
   }
   if (!Number.isSafeInteger(amountMinor) || amountMinor >= 0) {
-    return "Only posted outflows can be spent from a goal.";
+    return "Only outflows can be spent from a goal.";
   }
   if (transaction.excluded_from_spending === true) {
     return "Change this outflow’s cash-flow role to Spending before using a goal.";

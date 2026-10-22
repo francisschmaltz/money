@@ -1893,7 +1893,6 @@ export class PgPlanningRepository {
       if (
         addsGoalSpending(before, nextLines) &&
         (
-          transaction.pending ||
           transaction.currency_code !== "USD" ||
           transaction.amount_minor >= 0 ||
           transaction.excluded_from_spending
@@ -1903,7 +1902,7 @@ export class PgPlanningRepository {
           {
             code: "transaction_not_posted_usd_expense",
             message:
-              "Only posted, included USD expense transactions can spend from goals.",
+              "Only included USD expense transactions can spend from goals.",
           },
           current,
         );

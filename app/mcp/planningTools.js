@@ -69,7 +69,7 @@ const DEFINITIONS = Object.freeze({
   get_transaction_goal_spending: {
     title: "Get transaction goal spending",
     description:
-      "Get one transaction's effective goal-spending eligibility, active links, unassigned amount, goal versions, and goal_spend_version. A posted USD outflow with cash-flow role Spending is eligible even when its provider labels it a transfer. Read this immediately before spending from a goal or reversing goal spending; never guess either optimistic version.",
+      "Get one transaction's effective goal-spending eligibility, active links, unassigned amount, goal versions, and goal_spend_version. A pending or posted USD outflow with cash-flow role Spending is eligible even when its provider labels it a transfer. Read this immediately before spending from a goal or reversing goal spending; never guess either optimistic version.",
   },
   create_finance_goal: {
     title: "Create finance goal",
@@ -119,7 +119,7 @@ const DEFINITIONS = Object.freeze({
   spend_from_finance_goal: {
     title: "Spend from finance goal",
     description:
-      "Attribute part of a posted USD outflow with cash-flow role Spending, including a provider-labeled transfer explicitly reclassified as Spending, to an active finance goal. The attributed portion stops counting against monthly Plan actuals but remains in transaction and goal history. Spending may exceed its remaining earmark or target; usage can exceed 100%, the remaining plan never becomes negative, and the positive overage is reported as over_by. A source overrun consumes the goal's other funding before it becomes unfunded, so finishing an overused goal cannot create fake Safe to Spend. This is virtual attribution, not a payment, transfer, brokerage sale, or trade. Confirm the transaction, goal, source, and amount, then pass exact current versions.",
+      "Attribute part of a pending or posted USD outflow with cash-flow role Spending, including a provider-labeled transfer explicitly reclassified as Spending, to an active finance goal. Allocations follow linked posted replacements, keep their percentage when the charge changes, and return funds if the charge disappears. The attributed portion stops counting against monthly Plan actuals but remains in transaction and goal history. Spending may exceed its remaining earmark or target; usage can exceed 100%, the remaining plan never becomes negative, and the positive overage is reported as over_by. A source overrun consumes the goal's other funding before it becomes unfunded, so finishing an overused goal cannot create fake Safe to Spend. This is virtual attribution, not a payment, transfer, brokerage sale, or trade. Confirm the transaction, goal, source, and amount, then pass exact current versions.",
   },
   reverse_goal_spend: {
     title: "Reverse goal spending",

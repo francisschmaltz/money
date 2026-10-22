@@ -934,17 +934,15 @@ test("transaction splits support pending charges and remain exact, signed, and r
 test("transaction goal spending releases and restores earmarks without losing progress", async () => {
   const { service, goal } = fixture();
 
-  await assert.rejects(
-    service.spendFromFinanceGoal({
-      transaction_id: "pending",
-      goal_id: goal.id,
-      source: "cash",
-      amount_minor: 100,
-      expected_goal_version: 1,
-      expected_transaction_version: 0,
-    }),
-    /Pending transactions/,
-  );
+  const pendingFixture = fixture();
+  await pendingFixture.service.spendFromFinanceGoal({
+    transaction_id: "pending",
+    goal_id: pendingFixture.goal.id,
+    source: "cash",
+    amount_minor: 100,
+    expected_goal_version: 1,
+    expected_transaction_version: 0,
+  });
 
   const spent = await service.spendFromFinanceGoal({
     transaction_id: "posted",

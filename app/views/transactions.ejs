@@ -291,12 +291,10 @@
               ? selectedTransactionGoalSpending
               : null;
           const goalSpends = goalSpending?.goal_spends ?? [];
-          const isPostedOutflow =
-            selectedTransaction.status === "posted" &&
-            transactionProviderAmount.amount_minor < 0;
+          const isOutflow = transactionProviderAmount.amount_minor < 0;
           const canAddGoalSpend =
             goalSpending?.eligible === true &&
-            isPostedOutflow &&
+            isOutflow &&
             transactionProviderAmount.currency === "USD";
           const activeGoals =
             typeof selectedTransactionGoals !== "undefined"
@@ -492,7 +490,7 @@
               <p class="card-note transaction-allocation__notice">Transaction splits currently support USD only.</p>
             <% } %>
 
-            <% if (goalSpending && (goalSpends.length || isPostedOutflow)) { %>
+            <% if (goalSpending && (goalSpends.length || isOutflow)) { %>
               <details class="plan-disclosure transaction-disclosure transaction-goal-editor">
                 <summary>
                   <span>

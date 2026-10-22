@@ -599,7 +599,6 @@ export function createDemoPlanningService({
         0,
       );
       const eligible =
-        transaction.pending === false &&
         transaction.currency_code === "USD" &&
         transaction.amount_minor < 0 &&
         demoCashFlowRole(transaction) === "spending";
@@ -623,13 +622,11 @@ export function createDemoPlanningService({
           eligible,
           ineligible_reason: eligible
             ? null
-            : transaction.pending
-              ? "Pending transactions cannot be spent from a goal."
-              : transaction.amount_minor >= 0
-                ? "Only posted outflows can be spent from a goal."
-                : demoCashFlowRole(transaction) !== "spending"
-                  ? "Only Spending outflows can be spent from a goal."
-                  : "Only posted USD outflows can be spent from a goal.",
+            : transaction.amount_minor >= 0
+              ? "Only outflows can be spent from a goal."
+              : demoCashFlowRole(transaction) !== "spending"
+                ? "Only Spending outflows can be spent from a goal."
+                : "Only USD outflows can be spent from a goal.",
         },
         ...freshness,
         warnings: [],
@@ -786,17 +783,12 @@ export function createDemoPlanningService({
         input.transaction_id,
       );
       if (!transaction) throw demoNotFound("Transaction not found.");
-      if (transaction.pending) {
-        throw demoConflict(
-          "Pending transactions cannot be spent from a goal.",
-        );
-      }
       if (
         transaction.currency_code !== "USD" ||
         transaction.amount_minor >= 0
       ) {
         throw demoConflict(
-          "Only posted USD outflows can be spent from a goal.",
+          "Only USD outflows can be spent from a goal.",
         );
       }
       if (demoCashFlowRole(transaction) !== "spending") {
